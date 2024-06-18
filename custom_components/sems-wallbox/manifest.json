@@ -1,0 +1,12 @@
+{
+  "domain": "sems-wallbox",
+  "name": "GoodWe SEMS API for Wallbox",
+  "config_flow": true,
+  "documentation": "https://github.com/prezervos/goodwe-wallbox-sems-home-assistant",
+  "issue_tracker": "https://github.com/prezervos/goodwe-wallbox-sems-home-assistant/issues",
+  "iot_class": "cloud_polling",	
+  "requirements": [],
+  "dependencies": [],
+  "codeowners": ["@prezervos"],
+  "version": "1.0.0"
+}
