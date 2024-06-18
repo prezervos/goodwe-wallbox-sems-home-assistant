@@ -7,9 +7,11 @@ from homeassistant import exceptions
 
 _LOGGER = logging.getLogger(__name__)
 
-# _LoginURL = "https://eu.semsportal.com/api/v2/Common/CrossLogin"
+
 _LoginURL = "https://www.semsportal.com/api/v2/Common/CrossLogin"
 _PowerStationURLPart = "/v2/PowerStation/GetMonitorDetailByPowerstationId"
+_WallboxURL = "https://www.semsportal.com/api/v3/EvCharger/GetCurrentChargeinfo"
+_SetChargeModeURL = "https://www.semsportal.com/api/v3/EvCharger/SetChargeMode"
 _PowerControlURL = "https://www.semsportal.com/api/PowerStation/SaveRemoteControlInverter"
 _RequestTimeout = 30  # seconds
 
@@ -64,7 +66,7 @@ class SemsApi:
 
             # Process response as JSON
             jsonResponse = login_response.json()  # json.loads(login_response.text)
-            # _LOGGER.debug("Login JSON response %s", jsonResponse)
+            _LOGGER.debug("Login JSON response %s", jsonResponse)
             # Get all the details from our response, needed to make the next POST request (the one that really fetches the data)
             # Also store the api url send with the authentication request for later use
             tokenDict = jsonResponse["data"]
@@ -80,7 +82,7 @@ class SemsApi:
         """Get the latest data from the SEMS API and updates the state."""
         try:
             # Get the status of our SEMS Power Station
-            _LOGGER.debug("SEMS - Making Power Station Status API Call")
+            _LOGGER.debug("SEMS - Making Wallbox Status API Call")
             if maxTokenRetries <= 0:
                 _LOGGER.info(
                     "SEMS - Maximum token fetch tries reached, aborting for now"
@@ -101,18 +103,30 @@ class SemsApi:
                 "token": json.dumps(self._token),
             }
 
-            powerStationURL = self._token["api"] + _PowerStationURLPart
+            # powerStationURL = self._token["api"] + _PowerStationURLPart
+            # _LOGGER.debug(
+            #     "Querying SEMS API (%s) for power station id: %s",
+            #     powerStationURL,
+            #     powerStationId,
+            # )
+
+            # data = '{"powerStationId":"' + powerStationId + '"}'
+
+            # response = requests.post(
+            #     powerStationURL, headers=headers, data=data, timeout=_RequestTimeout
+            # )
             _LOGGER.debug(
-                "Querying SEMS API (%s) for power station id: %s",
-                powerStationURL,
-                powerStationId,
+                "Querying SEMS API (%s) for Wallbox Serial No: %s",
+                _WallboxURL,
+                powerStationId
             )
 
-            data = '{"powerStationId":"' + powerStationId + '"}'
+            data = '{"sn":"' + powerStationId + '"}'
 
             response = requests.post(
-                powerStationURL, headers=headers, data=data, timeout=_RequestTimeout
+                _WallboxURL, headers=headers, data=data, timeout=_RequestTimeout
             )
+
             jsonResponse = response.json()
             # try again and renew token is unsuccessful
             if jsonResponse["msg"] != "success" or jsonResponse["data"] is None:
@@ -133,7 +147,7 @@ class SemsApi:
         """Schedule the downtime of the station"""
         try:
             # Get the status of our SEMS Power Station
-            _LOGGER.debug("SEMS - Making Power Station Status API Call")
+            _LOGGER.debug("SEMS - Making Wallbox Status API Call")
             if maxTokenRetries <= 0:
                 _LOGGER.info(
                     "SEMS - Maximum token fetch tries reached, aborting for now"
@@ -182,6 +196,65 @@ class SemsApi:
         except Exception as exception:
             _LOGGER.error("Unable to execute Power control command. %s", exception)
 
+    def set_charge_mode(self, wallboxSn, type, chargePower=None, renewToken=False, maxTokenRetries=2):
+        """Schedule the downtime of the station"""
+        try:
+            # Get the status of our SEMS Power Station
+            _LOGGER.debug("SEMS - Making Wallbox SetChargeMode API Call")
+            if maxTokenRetries <= 0:
+                _LOGGER.info(
+                    "SEMS - Maximum token fetch tries reached, aborting for now"
+                )
+                raise OutOfRetries
+            if self._token is None or renewToken:
+                _LOGGER.debug(
+                    "API token not set (%s) or new token requested (%s), fetching",
+                    self._token,
+                    renewToken,
+                )
+                self._token = self.getLoginToken(self._username, self._password)
+
+            # Prepare Power Station status Headers
+            headers = {
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "token": json.dumps(self._token),
+            }
+
+            setChargeModeURL = _SetChargeModeURL
+
+            _LOGGER.debug(
+                "Sending SetChargeMode command (%s) for wallbox SN: %s",
+                setChargeModeURL,
+                wallboxSn,
+            )
+
+            if chargePower:
+                data = {
+                    "sn": wallboxSn,
+                    "type": type,
+                    "charge_power": chargePower
+                }
+            else:
+                data = {
+                    "sn": wallboxSn,
+                    "type": type
+                }
+
+            response = requests.post(
+                setChargeModeURL, headers=headers, json=data, timeout=_RequestTimeout
+            )
+            if (response.status_code != 200):
+                # try again and renew token is unsuccessful
+                _LOGGER.warn(
+                    "SetChargeMode command not successful, retrying with new token, %s retries remaining",
+                    maxTokenRetries,
+                )
+                return
+
+            return
+        except Exception as exception:
+            _LOGGER.error("Unable to execute SetChargeMode command. %s", exception)
 
 class OutOfRetries(exceptions.HomeAssistantError):
     """Error to indicate too many error attempts."""

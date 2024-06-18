@@ -11,7 +11,7 @@
         "step": {
             "user": {
                 "data": {
-                    "powerstation_id": "Power Station ID",
+                    "wallbox_serial_No": "Serial No of the wallbox",
                     "password": "Password",
                     "username": "Username",
                     "scan_interval": "Update Interval (seconds)"
@@ -19,5 +19,5 @@
             }
         }
     },
-    "title": "GoodWe SEMS PV API"
+    "title": "GoodWe SEMS API for Wallbox"
 }

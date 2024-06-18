@@ -30,10 +30,10 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
         # logging.exception("Something awful happened!")
         raise UpdateFailed(f"Error communicating with API: {err}")
 
-    inverters = result["inverter"]
+    inverter = result
     entities = []
-    for inverter in inverters:
-        entities.append(SemsSwitch(semsApi, inverter["invert_full"]["sn"]))
+
+    entities.append(SemsSwitch(semsApi, inverter["sn"]))
 
     async_add_entities(entities)
 
@@ -43,12 +43,12 @@ class SemsSwitch(SwitchEntity):
         super().__init__()
         self.api = api
         self.sn = sn
-        _LOGGER.debug(f"Creating SemsSwitch for Inverter {self.sn}")
+        _LOGGER.debug(f"Creating SemsSwitch for Wallbox {self.sn}")
 
     @property
     def name(self) -> str:
         """Return the name of the switch."""
-        return f"Inverter {self.sn} Switch"
+        return f"Wallbox {self.sn} Switch"
 
 
     @property
@@ -67,9 +67,9 @@ class SemsSwitch(SwitchEntity):
         }
 
     def async_turn_off(self, **kwargs):
-        _LOGGER.debug(f"Inverter {self.sn} set to Off")
+        _LOGGER.debug(f"Wallbox {self.sn} set to Off")
         self.api.change_status(self.sn, 2)
 
     def async_turn_on(self, **kwargs):
-        _LOGGER.debug(f"Inverter {self.sn} set to On")
+        _LOGGER.debug(f"Wallbox {self.sn} set to On")
         self.api.change_status(self.sn, 4)
