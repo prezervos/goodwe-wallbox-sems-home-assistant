@@ -127,11 +127,11 @@ class SemsSensor(CoordinatorEntity, SensorEntity):
 
     @property
     def device_class(self):
-        return SensorDeviceClass.POWER_FACTOR
+        return SensorDeviceClass.ENUM
 
     @property
-    def unit_of_measurement(self):
-        return UnitOfPower.WATT
+    def options(self):
+        return ["Charging", "Standby", "Offline", "Unknown"]
 
     @property
     def name(self) -> str:
@@ -151,7 +151,15 @@ class SemsSensor(CoordinatorEntity, SensorEntity):
         #     "state, self data: %s", self.coordinator.data[self.sn]
         # )
         data = self.coordinator.data[self.sn]
-        return int(data["chargeEnergy"]) if int(data["chargeEnergy"]) > 0 else 0
+        if data["status"] == 'EVDetail_Status_Title_Charging':
+            return "Charging"
+        elif data["status"] == 'EVDetail_Status_Title_Waiting':
+            return "Standby"
+        elif data["status"] == 'EVDetail_Status_Title_Offline':
+            return "Offline"
+        else:
+            return "Unknown"
+
 
     # For backwards compatibility
     @property

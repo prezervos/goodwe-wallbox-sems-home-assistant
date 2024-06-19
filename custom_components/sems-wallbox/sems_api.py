@@ -258,7 +258,7 @@ class SemsApi:
                 setChargeModeURL, headers=headers, json=data, timeout=_RequestTimeout
             )
             # _LOGGER.debug(f"Response: {response.json()}")
-            
+
             if response.status_code != 200:
                 # try again and renew token is unsuccessful
                 _LOGGER.debug(
