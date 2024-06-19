@@ -14,7 +14,7 @@ from .const import DOMAIN
 from .sems_api import SemsApi
 
 # For your initial PR, limit it to 1 platform.
-PLATFORMS = ["sensor", "switch"]
+PLATFORMS = ["sensor", "switch", "select"]
 
 
 async def async_setup(hass: HomeAssistant, config: dict):
@@ -33,10 +33,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass, entry.data[CONF_USERNAME], entry.data[CONF_PASSWORD]
     )
 
-    for platform in PLATFORMS:
-        hass.async_create_task(
-            hass.config_entries.async_forward_entry_setup(entry, platform)
-        )
+    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     return True
 

@@ -5,14 +5,15 @@ import requests
 
 from homeassistant import exceptions
 
+from functools import wraps
+
 _LOGGER = logging.getLogger(__name__)
 
-
-_LoginURL = "https://www.semsportal.com/api/v2/Common/CrossLogin"
+_LoginURL = "https://eu.semsportal.com/api/v2/Common/CrossLogin"
 _PowerStationURLPart = "/v2/PowerStation/GetMonitorDetailByPowerstationId"
-_WallboxURL = "https://www.semsportal.com/api/v3/EvCharger/GetCurrentChargeinfo"
-_SetChargeModeURL = "https://www.semsportal.com/api/v3/EvCharger/SetChargeMode"
-_PowerControlURL = "https://www.semsportal.com/api/PowerStation/SaveRemoteControlInverter"
+_WallboxURL = "https://eu.semsportal.com/api/v3/EvCharger/GetCurrentChargeinfo"
+_SetChargeModeURL = "https://eu.semsportal.com/api/v3/EvCharger/SetChargeMode"
+_PowerControlURL = "https://eu.semsportal.com/api/PowerStation/SaveRemoteControlInverter"
 _RequestTimeout = 30  # seconds
 
 _DefaultHeaders = {
@@ -49,8 +50,7 @@ class SemsApi:
 
             # Prepare Login Data to retrieve Authentication Token
             # Dict won't work here somehow, so this magic string creation must do.
-            login_data = '{"account":"' + userName + '","pwd":"' + password + '"}'
-            # login_data = {"account": userName, "pwd": password}
+            login_data = '{"account":"' + userName + '","pwd":"' + password + '" }'
 
             # Make POST request to retrieve Authentication Token from SEMS API
             login_response = requests.post(
@@ -78,7 +78,7 @@ class SemsApi:
             _LOGGER.error("Unable to fetch login token from SEMS API. %s", exception)
             return None
 
-    def getData(self, powerStationId, renewToken=False, maxTokenRetries=2):
+    def getData(self, powerStationId, renewToken=False, maxTokenRetries=20):
         """Get the latest data from the SEMS API and updates the state."""
         try:
             # Get the status of our SEMS Power Station
@@ -177,7 +177,7 @@ class SemsApi:
 
             data = {
                 "InverterSN": inverterSn,
-                "InverterStatusSettingMark":"1",
+                "InverterStatusSettingMark": "1",
                 "InverterStatus": str(status)
             }
 
@@ -196,7 +196,7 @@ class SemsApi:
         except Exception as exception:
             _LOGGER.error("Unable to execute Power control command. %s", exception)
 
-    def set_charge_mode(self, wallboxSn, type, chargePower=None, renewToken=False, maxTokenRetries=2):
+    def set_charge_mode(self, wallboxSn, mode, chargePower=None, renewToken=False, maxTokenRetries=20):
         """Schedule the downtime of the station"""
         try:
             # Get the status of our SEMS Power Station
@@ -219,34 +219,49 @@ class SemsApi:
                 "Content-Type": "application/json",
                 "Accept": "application/json",
                 "token": json.dumps(self._token),
+                # "token": '{"uid": "d828fb31-508a-4e84-bfcc-b7ba66164092", "timestamp": 1718757570161, "token": "6578cf439e60fc9d4ba9717cc916992e", "client": "ios", "version": "", "language": "en", "api": "https://eu.semsportal.com/api/"}'
             }
 
             setChargeModeURL = _SetChargeModeURL
 
             _LOGGER.debug(
-                "Sending SetChargeMode command (%s) for wallbox SN: %s",
+                "Sending SetChargeMode command (%s) for wallbox SN: %s mode: %s chargepower: %s",
                 setChargeModeURL,
                 wallboxSn,
+                mode,
+                chargePower
             )
 
             if chargePower:
                 data = {
                     "sn": wallboxSn,
-                    "type": type,
+                    "type": mode,
                     "charge_power": chargePower
                 }
             else:
                 data = {
                     "sn": wallboxSn,
-                    "type": type
+                    "type": mode
                 }
+
+            # request = requests.Request("POST", setChargeModeURL, headers=headers, json=data)
+            #
+            # request = request.prepare()
+            # output = f"{request.method} {request.path_url} HTTP/1.1\r\n"
+            # output += '\r\n'.join(f'{k}: {v}' for k, v in request.headers.items())
+            # output += "\r\n\r\n"
+            # if request.body is not None:
+            #     output += request.body.decode() if isinstance(request.body, bytes) else request.body
+            # _LOGGER.debug(f"Request: {output}")
 
             response = requests.post(
                 setChargeModeURL, headers=headers, json=data, timeout=_RequestTimeout
             )
-            if (response.status_code != 200):
+            # _LOGGER.debug(f"Response: {response.json()}")
+            
+            if response.status_code != 200:
                 # try again and renew token is unsuccessful
-                _LOGGER.warn(
+                _LOGGER.debug(
                     "SetChargeMode command not successful, retrying with new token, %s retries remaining",
                     maxTokenRetries,
                 )
@@ -255,6 +270,7 @@ class SemsApi:
             return
         except Exception as exception:
             _LOGGER.error("Unable to execute SetChargeMode command. %s", exception)
+
 
 class OutOfRetries(exceptions.HomeAssistantError):
     """Error to indicate too many error attempts."""
