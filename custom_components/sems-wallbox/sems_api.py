@@ -13,7 +13,8 @@ _LoginURL = "https://eu.semsportal.com/api/v2/Common/CrossLogin"
 _PowerStationURLPart = "/v2/PowerStation/GetMonitorDetailByPowerstationId"
 _WallboxURL = "https://eu.semsportal.com/api/v3/EvCharger/GetCurrentChargeinfo"
 _SetChargeModeURL = "https://eu.semsportal.com/api/v3/EvCharger/SetChargeMode"
-_PowerControlURL = "https://eu.semsportal.com/api/PowerStation/SaveRemoteControlInverter"
+_PowerControlURL = "https://eu.semsportal.com/api/v3/EvCharger/Charging"
+
 _RequestTimeout = 30  # seconds
 
 _DefaultHeaders = {
@@ -176,9 +177,8 @@ class SemsApi:
             )
 
             data = {
-                "InverterSN": inverterSn,
-                "InverterStatusSettingMark": "1",
-                "InverterStatus": str(status)
+                "sn": inverterSn,
+                "status": str(status)
             }
 
             response = requests.post(

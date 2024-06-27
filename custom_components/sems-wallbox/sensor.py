@@ -4,7 +4,7 @@ Support for power production statistics from GoodWe SEMS API.
 For more details about this platform, please refer to the documentation at
 https://github.com/TimSoethout/goodwe-sems-home-assistant
 """
-
+from decimal import Decimal
 from typing import Coroutine
 from homeassistant.core import HomeAssistant
 import homeassistant
@@ -160,7 +160,6 @@ class SemsSensor(CoordinatorEntity, SensorEntity):
         else:
             return "Unknown"
 
-
     # For backwards compatibility
     @property
     def extra_state_attributes(self):
@@ -174,7 +173,7 @@ class SemsSensor(CoordinatorEntity, SensorEntity):
     @property
     def is_on(self) -> bool:
         """Return entity status."""
-        self.coordinator.data[self.sn]["status"] != None
+        return self.coordinator.data[self.sn]["status"] is not None
 
     @property
     def should_poll(self) -> bool:
@@ -230,8 +229,22 @@ class SemsStatisticsSensor(CoordinatorEntity, SensorEntity):
         return SensorDeviceClass.ENERGY
 
     @property
-    def unit_of_measurement(self):
+    def native_unit_of_measurement(self):
         return UnitOfEnergy.KILO_WATT_HOUR
+
+    @property
+    def state_class(self):
+        return SensorStateClass.TOTAL_INCREASING
+
+    @property
+    def native_value(self) -> Decimal:
+        """Return the value reported by the sensor."""
+        return self.coordinator.data[self.sn]["chargeEnergy"]
+
+    @property
+    def available(self):
+        """Return if entity is available."""
+        return self.coordinator.last_update_success
 
     @property
     def name(self) -> str:
@@ -241,17 +254,6 @@ class SemsStatisticsSensor(CoordinatorEntity, SensorEntity):
     @property
     def unique_id(self) -> str:
         return f"{self.coordinator.data[self.sn]['sn']}-energy"
-
-    @property
-    def state(self):
-        """Return the state of the device."""
-        # _LOGGER.debug("state, coordinator data: %s", self.coordinator.data)
-        # _LOGGER.debug("self.sn: %s", self.sn)
-        # _LOGGER.debug(
-        #     "state, self data: %s", self.coordinator.data[self.sn]
-        # )
-        data = self.coordinator.data[self.sn]
-        return data["chargeEnergy"]
 
     @property
     def should_poll(self) -> bool:
@@ -273,11 +275,6 @@ class SemsStatisticsSensor(CoordinatorEntity, SensorEntity):
             "sw_version": data.get("fireware", "unknown"),
             # "via_device": (DOMAIN, self.api.bridgeid),
         }
-
-    @property
-    def state_class(self):
-        """used by Metered entities / Long Term Statistics"""
-        return SensorStateClass.MEASUREMENT
 
     async def async_added_to_hass(self):
         """When entity is added to hass."""
