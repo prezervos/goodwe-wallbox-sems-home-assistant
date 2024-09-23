@@ -129,6 +129,14 @@ class SemsNumber(CoordinatorEntity, NumberEntity):
         return 0.1
 
     @property
+    def min_value(self):
+        return 4.2
+
+    @property
+    def max_value(self):
+        return 11
+
+    @property
     def unique_id(self) -> str:
         return f"{self.coordinator.data[self.sn]["sn"]}_number_set_charge_power"
 
@@ -158,7 +166,7 @@ class SemsNumber(CoordinatorEntity, NumberEntity):
         self.async_write_ha_state()
 
     async def async_update(self) -> None:
-        await self.coordinator.async_request_refresh()
+        await self.coordinator.async_refresh()
         set_charge_power = self.coordinator.data[self.sn]["set_charge_power"]
         self._attr_native_value = float(set_charge_power)
         _LOGGER.debug(f"Updating SemsNumber for Wallbox state to {set_charge_power}")
@@ -166,22 +174,10 @@ class SemsNumber(CoordinatorEntity, NumberEntity):
 
     async def async_set_native_value(self, value: float) -> None:
         active_mode = self.coordinator.data[self.sn]["chargeMode"]
-        _LOGGER.debug(f"Setting set_charge_power to {float(set_charge_power)}")
+        _LOGGER.debug(f"Setting set_charge_power to {value}")
         await self.hass.async_add_executor_job(
             self.api.set_charge_mode, self.sn, active_mode, value
         )
         await self.coordinator.async_request_refresh()
-        set_charge_power = self.coordinator.data[self.sn]["set_charge_power"]
-        self._attr_native_value = float(set_charge_power)
-        self.async_write_ha_state()
-
-    async def async_set_value(self, value: float) -> None:
-        active_mode = self.coordinator.data[self.sn]["chargeMode"]
-        _LOGGER.debug(f"Setting set_charge_power to {float(set_charge_power)}")
-        await self.hass.async_add_executor_job(
-            self.api.set_charge_mode, self.sn, active_mode, value
-        )
-        await self.coordinator.async_request_refresh()
-        set_charge_power = self.coordinator.data[self.sn]["set_charge_power"]
-        self._attr_native_value = float(set_charge_power)
+        self._attr_native_value = float(value)
         self.async_write_ha_state()
