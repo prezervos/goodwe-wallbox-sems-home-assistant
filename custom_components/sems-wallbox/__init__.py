@@ -1,20 +1,18 @@
 """The sems integration."""
+
 from __future__ import annotations
 
 import asyncio
 
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant
-from homeassistant.const import (
-    CONF_PASSWORD,
-    CONF_USERNAME,
-)
 
 from .const import DOMAIN
 from .sems_api import SemsApi
 
 # For your initial PR, limit it to 1 platform.
-PLATFORMS = ["sensor", "switch", "select"]
+PLATFORMS = ["number", "select", "sensor", "switch"]
 
 
 async def async_setup(hass: HomeAssistant, config: dict):

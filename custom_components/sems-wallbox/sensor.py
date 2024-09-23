@@ -4,30 +4,25 @@ Support for power production statistics from GoodWe SEMS API.
 For more details about this platform, please refer to the documentation at
 https://github.com/TimSoethout/goodwe-sems-home-assistant
 """
-from decimal import Decimal
-from typing import Coroutine
-from homeassistant.core import HomeAssistant
-import homeassistant
-import logging
 
 from datetime import timedelta
+from decimal import Decimal
+import logging
 
+from homeassistant.components.sensor import (
+    SensorDeviceClass,
+    SensorEntity,
+    SensorStateClass,
+)
+from homeassistant.const import CONF_SCAN_INTERVAL, UnitOfEnergy, UnitOfPower
+from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import (
     CoordinatorEntity,
     DataUpdateCoordinator,
     UpdateFailed,
 )
-from homeassistant.components.sensor import (
-    SensorEntity,
-    SensorDeviceClass,
-    SensorStateClass,
-)
-from homeassistant.const import (
-    CONF_SCAN_INTERVAL,
-    UnitOfPower,
-    UnitOfEnergy,
-)
-from .const import DOMAIN, CONF_STATION_ID, DEFAULT_SCAN_INTERVAL
+
+from .const import CONF_STATION_ID, DEFAULT_SCAN_INTERVAL, DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -61,7 +56,7 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
             data = {}
             if inverter is None:
                 # something went wrong, probably token could not be fetched
-                raise UpdateFailed(
+                raise UpdateFailed(  # noqa: TRY301
                     "Error communicating with API, probably token could not be fetched, see debug logs"
                 )
 
@@ -70,7 +65,7 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
             _LOGGER.debug("Found wallbox attribute %s %s", name, sn)
             data[sn] = inverter
 
-            #_LOGGER.debug("Resulting data: %s", data)
+            # _LOGGER.debug("Resulting data: %s", data)
             return data
         # except ApiError as err:
         except Exception as err:
@@ -106,6 +101,9 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
         SemsStatisticsSensor(coordinator, ent)
         for idx, ent in enumerate(coordinator.data)
     )
+    async_add_entities(
+        SemsPowerSensor(coordinator, ent) for idx, ent in enumerate(coordinator.data)
+    )
 
 
 class SemsSensor(CoordinatorEntity, SensorEntity):
@@ -118,7 +116,7 @@ class SemsSensor(CoordinatorEntity, SensorEntity):
       available
     """
 
-    def __init__(self, coordinator, sn):
+    def __init__(self, coordinator, sn) -> None:
         """Pass coordinator to CoordinatorEntity."""
         super().__init__(coordinator)
         self.coordinator = coordinator
@@ -151,11 +149,11 @@ class SemsSensor(CoordinatorEntity, SensorEntity):
         #     "state, self data: %s", self.coordinator.data[self.sn]
         # )
         data = self.coordinator.data[self.sn]
-        if data["status"] == 'EVDetail_Status_Title_Charging':
+        if data["status"] == "EVDetail_Status_Title_Charging":
             return "Charging"
-        elif data["status"] == 'EVDetail_Status_Title_Waiting':
+        elif data["status"] == "EVDetail_Status_Title_Waiting":
             return "Standby"
-        elif data["status"] == 'EVDetail_Status_Title_Offline':
+        elif data["status"] == "EVDetail_Status_Title_Offline":
             return "Offline"
         else:
             return "Unknown"
@@ -197,6 +195,91 @@ class SemsSensor(CoordinatorEntity, SensorEntity):
             "manufacturer": "GoodWe",
             "model": self.extra_state_attributes.get("model", "unknown"),
             "sw_version": self.extra_state_attributes.get("fireware", "unknown"),
+            # "via_device": (DOMAIN, self.api.bridgeid),
+        }
+
+    async def async_added_to_hass(self):
+        """When entity is added to hass."""
+        self.async_on_remove(
+            self.coordinator.async_add_listener(self.async_write_ha_state)
+        )
+
+    async def async_update(self):
+        """Update the entity.
+
+        Only used by the generic entity update service.
+        """
+        await self.coordinator.async_request_refresh()
+
+
+class SemsPowerSensor(CoordinatorEntity, SensorEntity):
+    """SemsSensor using CoordinatorEntity.
+
+    The CoordinatorEntity class provides:
+      should_poll
+      async_update
+      async_added_to_hass
+      available
+    """
+
+    def __init__(self, coordinator, sn):
+        """Pass coordinator to CoordinatorEntity."""
+        super().__init__(coordinator)
+        self.coordinator = coordinator
+        self.sn = sn
+        _LOGGER.debug("Creating SemsPowerSensor with id %s", self.sn)
+
+    @property
+    def device_class(self):
+        return SensorDeviceClass.POWER
+
+    @property
+    def unit_of_measurement(self):
+        return UnitOfPower.KILO_WATT
+
+    @property
+    def name(self) -> str:
+        """Return the name of the sensor."""
+        return "Wallbox power"
+
+    @property
+    def unique_id(self) -> str:
+        return f"{self.coordinator.data[self.sn]['sn']}_power"
+
+    @property
+    def state(self):
+        """Return the state of the device."""
+        # _LOGGER.debug("state, coordinator data: %s", self.coordinator.data)
+        # _LOGGER.debug("self.sn: %s", self.sn)
+        # _LOGGER.debug(
+        #     "state, self data: %s", self.coordinator.data[self.sn]
+        # )
+        data = self.coordinator.data[self.sn]
+        return max(0, float(data["power"]))
+
+    @property
+    def should_poll(self) -> bool:
+        """No need to poll. Coordinator notifies entity of updates."""
+        return False
+
+    @property
+    def available(self):
+        """Return if entity is available."""
+        return self.coordinator.last_update_success
+
+    @property
+    def device_info(self):
+        # _LOGGER.debug("self.device_state_attributes: %s", self.device_state_attributes)
+        data = self.coordinator.data[self.sn]
+        return {
+            "identifiers": {
+                # Serial numbers are unique identifiers within a specific domain
+                (DOMAIN, self.sn)
+            },
+            # "name": self.name,
+            "manufacturer": "GoodWe",
+            "model": data.get("model", "unknown"),
+            "sw_version": data.get("fireware", "unknown"),
             # "via_device": (DOMAIN, self.api.bridgeid),
         }
 
@@ -288,5 +371,3 @@ class SemsStatisticsSensor(CoordinatorEntity, SensorEntity):
         Only used by the generic entity update service.
         """
         await self.coordinator.async_request_refresh()
-
-
