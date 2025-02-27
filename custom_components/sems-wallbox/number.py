@@ -14,7 +14,7 @@ from homeassistant.components.number import (
     NumberEntityDescription,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import CONF_SCAN_INTERVAL
+from homeassistant.const import CONF_SCAN_INTERVAL, UnitOfPower
 from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.helpers.entity import Entity
 from homeassistant.helpers.update_coordinator import (
@@ -125,15 +125,19 @@ class SemsNumber(CoordinatorEntity, NumberEntity):
         return NumberDeviceClass.POWER
 
     @property
+    def native_unit_of_measurement(self):
+        return UnitOfPower.KILO_WATT
+
+    @property
     def native_step(self):
         return 0.1
 
     @property
-    def min_value(self):
+    def native_min_value(self):
         return 4.2
 
     @property
-    def max_value(self):
+    def native_max_value(self):
         return 11
 
     @property
@@ -176,7 +180,7 @@ class SemsNumber(CoordinatorEntity, NumberEntity):
         active_mode = self.coordinator.data[self.sn]["chargeMode"]
         _LOGGER.debug(f"Setting set_charge_power to {value}")
         await self.hass.async_add_executor_job(
-            self.api.set_charge_mode, self.sn, active_mode, value
+            self.api.set_charge_mode, self.sn, 0 if value > 4.2 else active_mode, value
         )
         await self.coordinator.async_request_refresh()
         self._attr_native_value = float(value)
