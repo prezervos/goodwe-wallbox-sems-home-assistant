@@ -9,11 +9,11 @@ from functools import wraps
 
 _LOGGER = logging.getLogger(__name__)
 
-_LoginURL = "https://eu.semsportal.com/api/v2/Common/CrossLogin"
+_LoginURL = "https://www.semsportal.com/api/v3/Common/CrossLogin"
 _PowerStationURLPart = "/v2/PowerStation/GetMonitorDetailByPowerstationId"
-_WallboxURL = "https://eu.semsportal.com/api/v3/EvCharger/GetCurrentChargeinfo"
-_SetChargeModeURL = "https://eu.semsportal.com/api/v3/EvCharger/SetChargeMode"
-_PowerControlURL = "https://eu.semsportal.com/api/v3/EvCharger/Charging"
+_WallboxURL = "https://www.semsportal.com/api/v3/EvCharger/GetCurrentChargeinfo"
+_SetChargeModeURL = "https://www.semsportal.com/api/v3/EvCharger/SetChargeMode"
+_PowerControlURL = "https://www.semsportal.com/api/v3/EvCharger/Charging"
 
 _RequestTimeout = 30  # seconds
 
@@ -119,7 +119,7 @@ class SemsApi:
             _LOGGER.debug(
                 "Querying SEMS API (%s) for Wallbox Serial No: %s",
                 _WallboxURL,
-                powerStationId
+                powerStationId,
             )
 
             data = '{"sn":"' + powerStationId + '"}'
@@ -128,9 +128,10 @@ class SemsApi:
                 _WallboxURL, headers=headers, data=data, timeout=_RequestTimeout
             )
 
+            response.raise_for_status()
             jsonResponse = response.json()
             # try again and renew token is unsuccessful
-            if jsonResponse["msg"] != "success" or jsonResponse["data"] is None:
+            if jsonResponse["data"] is None:
                 _LOGGER.debug(
                     "Query not successful (%s), retrying with new token, %s retries remaining",
                     jsonResponse["msg"],
@@ -176,15 +177,12 @@ class SemsApi:
                 inverterSn,
             )
 
-            data = {
-                "sn": inverterSn,
-                "status": str(status)
-            }
+            data = {"sn": inverterSn, "status": str(status)}
 
             response = requests.post(
                 powerControlURL, headers=headers, json=data, timeout=_RequestTimeout
             )
-            if (response.status_code != 200):
+            if response.status_code != 200:
                 # try again and renew token is unsuccessful
                 _LOGGER.warn(
                     "Power control command not successful, retrying with new token, %s retries remaining",
@@ -196,7 +194,9 @@ class SemsApi:
         except Exception as exception:
             _LOGGER.error("Unable to execute Power control command. %s", exception)
 
-    def set_charge_mode(self, wallboxSn, mode, chargePower=None, renewToken=False, maxTokenRetries=20):
+    def set_charge_mode(
+        self, wallboxSn, mode, chargePower=None, renewToken=False, maxTokenRetries=20
+    ):
         """Schedule the downtime of the station"""
         try:
             # Get the status of our SEMS Power Station
@@ -219,7 +219,7 @@ class SemsApi:
                 "Content-Type": "application/json",
                 "Accept": "application/json",
                 "token": json.dumps(self._token),
-                # "token": '{"uid": "d828fb31-508a-4e84-bfcc-b7ba66164092", "timestamp": 1718757570161, "token": "6578cf439e60fc9d4ba9717cc916992e", "client": "ios", "version": "", "language": "en", "api": "https://eu.semsportal.com/api/"}'
+                # "token": '{"uid": "d828fb31-508a-4e84-bfcc-b7ba66164092", "timestamp": 1718757570161, "token": "6578cf439e60fc9d4ba9717cc916992e", "client": "ios", "version": "", "language": "en", "api": "https://www.semsportal.com/api/"}'
             }
 
             setChargeModeURL = _SetChargeModeURL
@@ -229,20 +229,13 @@ class SemsApi:
                 setChargeModeURL,
                 wallboxSn,
                 mode,
-                chargePower
+                chargePower,
             )
 
             if chargePower:
-                data = {
-                    "sn": wallboxSn,
-                    "type": mode,
-                    "charge_power": chargePower
-                }
+                data = {"sn": wallboxSn, "type": mode, "charge_power": chargePower}
             else:
-                data = {
-                    "sn": wallboxSn,
-                    "type": mode
-                }
+                data = {"sn": wallboxSn, "type": mode}
 
             # request = requests.Request("POST", setChargeModeURL, headers=headers, json=data)
             #
