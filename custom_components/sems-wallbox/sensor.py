@@ -87,6 +87,22 @@ class SemsSensor(CoordinatorEntity, SensorEntity):
             return "Offline"
         return "Unknown"
 
+        @property
+    def workstate(self) -> str:
+        """Is car pluged-in or not, Return the workstate of the device as human readable string."""
+        data = self.coordinator.data.get(self.sn, {})
+        workstate = data.get("workstate")
+
+        if workstate == "EVDetail_Status_Waiting_stat00":
+            return "Not Plugged-In"
+        if workstate == "EVDetail_Status_Waiting_Stat01":
+            return "Connected"
+        if workstate == "EVDetail_Status_Waiting_Stat02":
+            return "Finished Charging"
+        if workstate == "":
+            return "null"
+        return "Unknown"
+        
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         """Return the state attributes of the monitored installation."""
