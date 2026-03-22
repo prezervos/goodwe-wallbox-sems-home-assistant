@@ -88,6 +88,53 @@ class SemsSensor(CoordinatorEntity, SensorEntity):
             return "Offline"
         return "Unknown"
 
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return the state attributes of the monitored installation."""
+        data = self.coordinator.data.get(self.sn, {}) or {}
+        attributes = {
+            k: v for k, v in data.items() if k is not None and v is not None
+        }
+        if "status" in data:
+            attributes["statusText"] = data["status"]
+        return attributes
+
+    @property
+    def icon(self) -> str:
+        """Return dynamic icon based on status."""
+        state = self.state  # använder befintlig property 'state'
+        if state == "Charging":
+            return "mdi:battery-charging-100"
+        if state == "Standby":
+            return "mdi:ev-station"
+        if state == "Offline":
+            return "mdi:power-plug-off"
+        return "mdi:help-circle-outline"
+        
+    @property
+    def available(self) -> bool:
+        """Return if entity is available."""
+        return self.coordinator.last_update_success
+
+    @property
+    def device_info(self) -> dict[str, Any]:
+        data = self.coordinator.data.get(self.sn, {}) or {}
+        return {
+            "identifiers": {(DOMAIN, self.sn)},
+            "manufacturer": "GoodWe",
+            "model": data.get("model", "unknown"),
+            "sw_version": data.get("fireware", "unknown"),
+        }
+
+    async def async_added_to_hass(self) -> None:
+        """When entity is added to hass."""
+        await super().async_added_to_hass()
+
+    async def async_update(self) -> None:
+        """Update the entity via the coordinator."""
+        await self.coordinator.async_request_refresh()
+        
+
 class SemsWorkStateSensor(CoordinatorEntity, SensorEntity):
     """Workstate of Wallbox (Not Plugged in / Connected / Finished Charging / -- (charging) / Unknown)."""
 
@@ -127,18 +174,20 @@ class SemsWorkStateSensor(CoordinatorEntity, SensorEntity):
         if workstate == "":
             return "--"
         return "Unknown"
-        
-    @property
-    def extra_state_attributes(self) -> dict[str, Any]:
-        """Return the state attributes of the monitored installation."""
-        data = self.coordinator.data.get(self.sn, {}) or {}
-        attributes = {
-            k: v for k, v in data.items() if k is not None and v is not None
-        }
-        if "status" in data:
-            attributes["statusText"] = data["status"]
-        return attributes
 
+    @property
+    def icon(self) -> str:
+        state = self.native_value
+        if state == "Not Plugged in":
+            return "mdi:power-plug-off-outline"
+        if state == "Connected":
+            return "mdi:power-plug"
+        if state == "Finished Charging":
+            return "mdi:battery-check"
+        if state == "--":
+            return "mdi:progress-clock"
+        return "mdi:help-circle-outline"
+        
     @property
     def available(self) -> bool:
         """Return if entity is available."""
@@ -149,7 +198,6 @@ class SemsWorkStateSensor(CoordinatorEntity, SensorEntity):
         data = self.coordinator.data.get(self.sn, {}) or {}
         return {
             "identifiers": {(DOMAIN, self.sn)},
-            "name": self.name,
             "manufacturer": "GoodWe",
             "model": data.get("model", "unknown"),
             "sw_version": data.get("fireware", "unknown"),
