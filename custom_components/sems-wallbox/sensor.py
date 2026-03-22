@@ -43,6 +43,7 @@ async def async_setup_entry(
     entities: list[SensorEntity] = []
     for sn in sns:
         entities.append(SemsSensor(coordinator, sn))
+        entities.append(SemsWorkStateSensor(coordinator, sn))
         entities.append(SemsStatisticsSensor(coordinator, sn))
         entities.append(SemsPowerSensor(coordinator, sn))
 
@@ -87,20 +88,44 @@ class SemsSensor(CoordinatorEntity, SensorEntity):
             return "Offline"
         return "Unknown"
 
-        @property
-    def workstate(self) -> str:
-        """Is car pluged-in or not, Return the workstate of the device as human readable string."""
+class SemsWorkStateSensor(CoordinatorEntity, SensorEntity):
+    """Workstate of Wallbox (Not Plugged in / Connected / Finished Charging / -- (charging) / Unknown)."""
+
+    _attr_device_class = SensorDeviceClass.ENUM
+    _attr_options = ["Not Plugged in", "Connected", "Finished Charging", "--", "Unknown"]
+    _attr_should_poll = False
+
+    def __init__(self, coordinator: SemsUpdateCoordinator, sn: str) -> None:
+        """Initialize the workstate sensor."""
+        super().__init__(coordinator)
+        self.sn = sn
+        _LOGGER.debug("Creating SemsWorkStateSensor with id %s", self.sn)
+
+    @property
+    def name(self):
+        """Set the name of the WorkStatesensor."""
+        return f"Wallbox Workstate"
+
+    @property
+    def unique_id(self) -> str:
+        """Unique ID for workstate sensor."""
+        sn = self.coordinator.data.get(self.sn, {}).get("sn", self.sn)
+        return f"{sn}_workstate"
+        
+    @property
+    def native_value(self) -> str:
+        """Is car plugged in or not, Return the workstate of the device as human readable string."""
         data = self.coordinator.data.get(self.sn, {})
         workstate = data.get("workstate")
 
-        if workstate == "EVDetail_Status_Waiting_stat00":
-            return "Not Plugged-In"
+        if workstate == "EVDetail_Status_Waiting_Stat00":
+            return "Not Plugged in"
         if workstate == "EVDetail_Status_Waiting_Stat01":
             return "Connected"
         if workstate == "EVDetail_Status_Waiting_Stat02":
             return "Finished Charging"
         if workstate == "":
-            return "null"
+            return "--"
         return "Unknown"
         
     @property
