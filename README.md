@@ -1,9 +1,9 @@
 # GoodWe SEMS Wallbox — Home Assistant Integration
 
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/integration)
-[![Tests](https://github.com/pedrodivisez/goodwe-wallbox-sems-home-assistant/actions/workflows/tests.yml/badge.svg)](https://github.com/pedrodivisez/goodwe-wallbox-sems-home-assistant/actions/workflows/tests.yml)
-[![Validate](https://github.com/pedrodivisez/goodwe-wallbox-sems-home-assistant/actions/workflows/validate.yml/badge.svg)](https://github.com/pedrodivisez/goodwe-wallbox-sems-home-assistant/actions/workflows/validate.yml)
-[![GitHub release](https://img.shields.io/github/release/pedrodivisez/goodwe-wallbox-sems-home-assistant.svg)](https://github.com/pedrodivisez/goodwe-wallbox-sems-home-assistant/releases)
+[![Tests](https://github.com/prezervos/goodwe-wallbox-sems-home-assistant/actions/workflows/tests.yml/badge.svg)](https://github.com/prezervos/goodwe-wallbox-sems-home-assistant/actions/workflows/tests.yml)
+[![Validate](https://github.com/prezervos/goodwe-wallbox-sems-home-assistant/actions/workflows/validate.yml/badge.svg)](https://github.com/prezervos/goodwe-wallbox-sems-home-assistant/actions/workflows/validate.yml)
+[![GitHub release](https://img.shields.io/github/release/prezervos/goodwe-wallbox-sems-home-assistant.svg)](https://github.com/prezervos/goodwe-wallbox-sems-home-assistant/releases)
 
 Home Assistant custom integration for the **GoodWe EV Charger (Wallbox)** via the [SEMS Portal](https://www.semsportal.com) cloud API.
 
@@ -39,7 +39,7 @@ All entities are automatically translated — Czech (`cs`) and English (`en`) ar
 ### Via HACS (recommended)
 
 1. Open HACS → Integrations → ⋮ → **Custom repositories**
-2. Add `https://github.com/pedrodivisez/goodwe-wallbox-sems-home-assistant` as **Integration**
+2. Add `https://github.com/prezervos/goodwe-wallbox-sems-home-assistant` as **Integration**
 3. Search for **GoodWe SEMS Wallbox** and download it
 4. Restart Home Assistant
 
