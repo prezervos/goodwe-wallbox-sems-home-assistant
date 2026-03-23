@@ -187,25 +187,25 @@ class TestSemsSensor:
     def test_state_charging(self):
         coord = _make_coordinator()
         sensor = SemsSensor(coord, SAMPLE_SN)
-        assert sensor.state == "Charging"
+        assert sensor.state == "charging"
 
     def test_state_standby(self):
         d = {**SAMPLE_DATA, "status": "EVDetail_Status_Title_Waiting"}
         coord = _make_coordinator(d)
         sensor = SemsSensor(coord, SAMPLE_SN)
-        assert sensor.state == "Standby"
+        assert sensor.state == "standby"
 
     def test_state_offline(self):
         d = {**SAMPLE_DATA, "status": "EVDetail_Status_Title_Offline"}
         coord = _make_coordinator(d)
         sensor = SemsSensor(coord, SAMPLE_SN)
-        assert sensor.state == "Offline"
+        assert sensor.state == "offline"
 
     def test_state_unknown(self):
         d = {**SAMPLE_DATA, "status": "EVDetail_Status_SomethingElse"}
         coord = _make_coordinator(d)
         sensor = SemsSensor(coord, SAMPLE_SN)
-        assert sensor.state == "Unknown"
+        assert sensor.state == "unknown"
 
     def test_icon_charging(self):
         coord = _make_coordinator()
@@ -281,27 +281,27 @@ class TestSemsWorkStateSensor:
 
     def test_not_plugged_in(self):
         s = self._sensor("EVDetail_Status_Waiting_Stat00")
-        assert s.native_value == "Not Plugged in"
+        assert s.native_value == "not_plugged_in"
         assert s.icon == "mdi:power-plug-off-outline"
 
     def test_connected(self):
         s = self._sensor("EVDetail_Status_Waiting_Stat01")
-        assert s.native_value == "Connected"
+        assert s.native_value == "connected"
         assert s.icon == "mdi:power-plug"
 
     def test_finished_charging(self):
         s = self._sensor("EVDetail_Status_Waiting_Stat02")
-        assert s.native_value == "Finished Charging"
+        assert s.native_value == "finished_charging"
         assert s.icon == "mdi:battery-check"
 
     def test_charging_dash(self):
         s = self._sensor("")
-        assert s.native_value == "--"
+        assert s.native_value == "dash"
         assert s.icon == "mdi:progress-clock"
 
     def test_unknown(self):
         s = self._sensor("SOMETHING_ELSE")
-        assert s.native_value == "Unknown"
+        assert s.native_value == "unknown"
         assert s.icon == "mdi:help-circle-outline"
 
     def test_unique_id(self):
