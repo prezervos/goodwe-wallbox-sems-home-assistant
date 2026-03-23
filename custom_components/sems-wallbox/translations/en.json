@@ -31,20 +31,20 @@
             "status": {
                 "name": "Status",
                 "state": {
-                    "Charging": "Charging",
-                    "Standby": "Standby",
-                    "Offline": "Offline",
-                    "Unknown": "Unknown"
+                    "charging": "Charging",
+                    "standby": "Standby",
+                    "offline": "Offline",
+                    "unknown": "Unknown"
                 }
             },
             "workstate": {
                 "name": "Vehicle state",
                 "state": {
-                    "Not Plugged in": "Not plugged in",
-                    "Connected": "Connected",
-                    "Finished Charging": "Finished charging",
-                    "--": "--",
-                    "Unknown": "Unknown"
+                    "not_plugged_in": "Not plugged in",
+                    "connected": "Connected",
+                    "finished_charging": "Finished charging",
+                    "dash": "--",
+                    "unknown": "Unknown"
                 }
             },
             "power": {
@@ -61,9 +61,9 @@
             "charge_mode": {
                 "name": "Charge mode",
                 "state": {
-                    "Fast": "Fast",
-                    "PV priority": "PV priority",
-                    "PV & battery": "PV & battery"
+                    "fast": "Fast",
+                    "pv_priority": "PV priority",
+                    "pv_and_battery": "PV & battery"
                 }
             }
         },

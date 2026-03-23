@@ -31,20 +31,20 @@
             "status": {
                 "name": "Stav",
                 "state": {
-                    "Charging": "Nabíjení",
-                    "Standby": "Pohotovost",
-                    "Offline": "Offline",
-                    "Unknown": "Neznámý"
+                    "charging": "Nabíjení",
+                    "standby": "Pohotovost",
+                    "offline": "Offline",
+                    "unknown": "Neznámý"
                 }
             },
             "workstate": {
                 "name": "Stav vozidla",
                 "state": {
-                    "Not Plugged in": "Nepřipojeno",
-                    "Connected": "Připojeno",
-                    "Finished Charging": "Nabíjení dokončeno",
-                    "--": "--",
-                    "Unknown": "Neznámý"
+                    "not_plugged_in": "Nepřipojeno",
+                    "connected": "Připojeno",
+                    "finished_charging": "Nabíjení dokončeno",
+                    "dash": "--",
+                    "unknown": "Neznámý"
                 }
             },
             "power": {
@@ -61,9 +61,9 @@
             "charge_mode": {
                 "name": "Režim nabíjení",
                 "state": {
-                    "Fast": "Rychle",
-                    "PV priority": "PV Priorita",
-                    "PV & battery": "PV a baterie"
+                    "fast": "Rychle",
+                    "pv_priority": "PV Priorita",
+                    "pv_and_battery": "PV a baterie"
                 }
             }
         },

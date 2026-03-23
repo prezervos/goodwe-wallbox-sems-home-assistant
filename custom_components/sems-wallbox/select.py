@@ -15,9 +15,9 @@ from .coordinator import SemsUpdateCoordinator
 _LOGGER = logging.getLogger(__name__)
 
 _MODE_TO_OPTION: dict[int, str] = {
-    0: "Fast",
-    1: "PV priority",
-    2: "PV & battery",
+    0: "fast",
+    1: "pv_priority",
+    2: "pv_and_battery",
 }
 
 _OPTION_TO_MODE: dict[str, int] = {value: key for key, value in _MODE_TO_OPTION.items()}

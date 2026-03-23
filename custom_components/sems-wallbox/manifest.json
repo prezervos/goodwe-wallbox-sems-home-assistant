@@ -1,12 +1,12 @@
 {
   "domain": "sems-wallbox",
   "name": "GoodWe SEMS Wallbox",
-  "config_flow": true,
-  "documentation": "https://github.com/pedrodivisez/goodwe-wallbox-sems-home-assistant",
-  "issue_tracker": "https://github.com/pedrodivisez/goodwe-wallbox-sems-home-assistant/issues",
-  "iot_class": "cloud_polling",
-  "requirements": [],
-  "dependencies": [],
   "codeowners": ["@pedrodivisez"],
+  "config_flow": true,
+  "dependencies": [],
+  "documentation": "https://github.com/pedrodivisez/goodwe-wallbox-sems-home-assistant",
+  "iot_class": "cloud_polling",
+  "issue_tracker": "https://github.com/pedrodivisez/goodwe-wallbox-sems-home-assistant/issues",
+  "requirements": [],
   "version": "1.1.0"
 }

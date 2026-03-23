@@ -8,8 +8,11 @@ import logging
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME, Platform
 from homeassistant.core import HomeAssistant
+import homeassistant.helpers.config_validation as cv
 
 from .const import DOMAIN
+
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 from .sems_api import SemsApi
 from .coordinator import SemsUpdateCoordinator
 
