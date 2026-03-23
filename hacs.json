@@ -1,6 +1,4 @@
 {
-  "render_readme": true,
-  "content_in_root": false,
-  "iot_class": "Cloud Poll",
-  "homeassistant": "2021.12.1"
+  "name": "GoodWe SEMS Wallbox",
+  "render_readme": true
 }

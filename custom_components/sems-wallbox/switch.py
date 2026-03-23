@@ -1,9 +1,4 @@
-"""
-Support for switch controlling an output of a GoodWe SEMS wallbox.
-
-For more details about this platform, please refer to the documentation at
-https://github.com/TimSoethout/goodwe-sems-home-assistant
-"""
+"""Support for switch controlling an output of a GoodWe SEMS wallbox."""
 
 from __future__ import annotations
 
@@ -22,10 +17,10 @@ _LOGGER = logging.getLogger(__name__)
 
 SWITCH_VERSION = "0.3.3"
 
-# Jak dlouho po příkazu ON ignorujeme „Waiting/power=0“ a držíme optimistický ON (v sekundách)
+# How long after an ON command to ignore "Waiting/power=0" and keep optimistic ON (seconds)
 GRACE_ON_SECONDS = 130
 
-# Volitelné – jak dlouho po příkazu OFF tolerujeme, že API může ještě krátce hlásit power>0
+# How long after an OFF command to tolerate API still briefly showing power>0
 GRACE_OFF_SECONDS = 130
 
 
@@ -60,6 +55,7 @@ class SemsSwitch(CoordinatorEntity, SwitchEntity):
 
     _attr_should_poll = False
     _attr_has_entity_name = True
+    _attr_translation_key = "start_charging"
 
     def __init__(
         self,
@@ -68,13 +64,14 @@ class SemsSwitch(CoordinatorEntity, SwitchEntity):
         api,
         current_is_on: bool,
     ) -> None:
+        """Initialize the switch."""
         super().__init__(coordinator)
         self.coordinator = coordinator
         self.api = api
         self.sn = sn
         self._attr_is_on = current_is_on
 
-        # pro grace period
+        # Grace period tracking
         self._last_command_ts: float | None = None
         self._last_command_target: bool | None = None
 
@@ -85,26 +82,22 @@ class SemsSwitch(CoordinatorEntity, SwitchEntity):
             self._attr_is_on,
         )
 
-    # ---------- základní vlastnosti ----------
-
-    @property
-    def name(self) -> str:
-        """Return the name of the switch."""
-        return "Start charging"
-
     @property
     def device_class(self):
+        """Return the device class."""
         return SwitchDeviceClass.SWITCH
 
     @property
     def unique_id(self) -> str:
+        """Return unique id."""
         return f"{self.coordinator.data[self.sn]['sn']}-switch-start-charging"
 
     @property
     def device_info(self):
+        """Return device info."""
         return {
             "identifiers": {(DOMAIN, self.sn)},
-            "name": self.name,
+            "name": (self.coordinator.data.get(self.sn, {}) or {}).get("name") or f"GoodWe Wallbox {self.sn}",
             "manufacturer": "GoodWe",
         }
 
@@ -113,21 +106,17 @@ class SemsSwitch(CoordinatorEntity, SwitchEntity):
         """Return if entity is available."""
         return self.coordinator.last_update_success
 
-    # ---------- helper pro vyhodnocení stavu z API + grace ----------
-
     def _compute_is_on_from_data(self, data: dict) -> bool:
-        """Spočítá finální is_on z API + zohlední grace period po posledním příkazu."""
+        """Compute is_on from API data, respecting the grace period after commands."""
         status = data.get("status")
         power = float(data.get("power", 0) or 0)
-
         api_is_on = status == "EVDetail_Status_Title_Charging" or power > 0
 
         now = self.hass.loop.time()
         target = self._last_command_target
         ts = self._last_command_ts
 
-        # Pokud jsme nedávno poslali ON a API pořád tvrdí "Waiting/power=0",
-        # tak nějakou dobu držíme optimistický ON.
+        # Within ON grace: keep optimistic ON even if API still shows Waiting/power=0
         if (
             target is True
             and ts is not None
@@ -136,7 +125,7 @@ class SemsSwitch(CoordinatorEntity, SwitchEntity):
         ):
             _LOGGER.debug(
                 "SemsSwitch %s: within ON grace (%.1fs < %.1fs), "
-                "API status=%s, power=%s -> držím is_on=True",
+                "API status=%s, power=%s -> holding is_on=True",
                 self.sn,
                 now - ts,
                 GRACE_ON_SECONDS,
@@ -145,8 +134,7 @@ class SemsSwitch(CoordinatorEntity, SwitchEntity):
             )
             return True
 
-        # Pokud jsme nedávno poslali OFF a API ještě krátce ukazuje power>0,
-        # můžeme krátce držet OFF (typicky kratší doba než pro ON).
+        # Within OFF grace: keep optimistic OFF even if API briefly shows power>0
         if (
             target is False
             and ts is not None
@@ -155,7 +143,7 @@ class SemsSwitch(CoordinatorEntity, SwitchEntity):
         ):
             _LOGGER.debug(
                 "SemsSwitch %s: within OFF grace (%.1fs < %.1fs), "
-                "API status=%s, power=%s -> držím is_on=False",
+                "API status=%s, power=%s -> holding is_on=False",
                 self.sn,
                 now - ts,
                 GRACE_OFF_SECONDS,
@@ -164,9 +152,8 @@ class SemsSwitch(CoordinatorEntity, SwitchEntity):
             )
             return False
 
-        # Mimo grace period nebo stav už sedí – přebíráme přímo z API
+        # Outside grace period or state already matches command
         if target is not None and api_is_on == target:
-            # Stav z API už odpovídá poslednímu příkazu, můžeme grace „vyčistit“
             self._last_command_target = None
             self._last_command_ts = None
 
@@ -179,43 +166,39 @@ class SemsSwitch(CoordinatorEntity, SwitchEntity):
         )
         return api_is_on
 
-    # ---------- ovládání switche ----------
-
     async def async_turn_off(self, **kwargs):
+        """Turn off charging."""
         _LOGGER.debug("Wallbox %s set to Off (optimistic UI + OFF grace)", self.sn)
 
-        # 1) uložíme info o příkazu pro grace logiku
         self._last_command_target = False
         self._last_command_ts = self.hass.loop.time()
 
-        # 2) OPTIMISTICKY přepneme UI hned
+        # Optimistic state update
         self._attr_is_on = False
         self.async_write_ha_state()
 
-        # 3) naplánujeme refresh z API (NEčekáme na něj)
+        # Schedule refresh (non-blocking)
         self.hass.async_create_task(self.coordinator.async_request_refresh())
 
-        # 4) pošleme příkaz na SEMS API
+        # Send command to SEMS API
         await self.hass.async_add_executor_job(self.api.change_status, self.sn, 2)
 
     async def async_turn_on(self, **kwargs):
+        """Turn on charging."""
         _LOGGER.debug("Wallbox %s set to On (optimistic UI + ON grace)", self.sn)
 
-        # 1) uložíme info o příkazu pro grace logiku
         self._last_command_target = True
         self._last_command_ts = self.hass.loop.time()
 
-        # 2) OPTIMISTICKY přepneme UI hned
+        # Optimistic state update
         self._attr_is_on = True
         self.async_write_ha_state()
 
-        # 3) naplánujeme refresh z API (NEčekáme na něj)
+        # Schedule refresh (non-blocking)
         self.hass.async_create_task(self.coordinator.async_request_refresh())
 
-        # 4) pošleme příkaz na SEMS API
+        # Send command to SEMS API
         await self.hass.async_add_executor_job(self.api.change_status, self.sn, 1)
-
-    # ---------- napojení na coordinator ----------
 
     async def async_added_to_hass(self):
         """When entity is added to hass."""
@@ -225,13 +208,13 @@ class SemsSwitch(CoordinatorEntity, SwitchEntity):
     @callback
     def _handle_coordinator_update(self) -> None:
         """Handle updated data from the coordinator."""
-        data = self.coordinator.data[self.sn]
+        data = self.coordinator.data.get(self.sn, {}) or {}
         self._attr_is_on = self._compute_is_on_from_data(data)
         self.async_write_ha_state()
 
     async def async_update(self) -> None:
-        """Manual update (např. z UI)."""
+        """Manual update from HA."""
         await self.coordinator.async_request_refresh()
-        data = self.coordinator.data[self.sn]
+        data = self.coordinator.data.get(self.sn, {}) or {}
         self._attr_is_on = self._compute_is_on_from_data(data)
         self.async_write_ha_state()

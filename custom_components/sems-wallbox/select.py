@@ -1,3 +1,5 @@
+"""Support for select entity controlling GoodWe SEMS Wallbox charge mode."""
+
 import logging
 
 from homeassistant.components.select import SelectEntity, SelectEntityDescription
@@ -41,7 +43,6 @@ async def async_setup_entry(
 
     for sn, inverter in coordinator.data.items():
         active_mode = inverter["chargeMode"]
-        current_charge_power = inverter["max_charge_power"]
         entities.append(
             InverterOperationModeEntity(
                 coordinator,
@@ -50,7 +51,6 @@ async def async_setup_entry(
                 OPERATION_MODE,
                 list(_MODE_TO_OPTION.values()),
                 _MODE_TO_OPTION.get(active_mode),
-                current_charge_power,
             )
         )
 
@@ -58,7 +58,7 @@ async def async_setup_entry(
 
 
 class InverterOperationModeEntity(CoordinatorEntity, SelectEntity):
-    """Entity representing the inverter operation mode."""
+    """Entity representing the wallbox charge mode."""
 
     _attr_should_poll = False
     _attr_has_entity_name = True
@@ -71,8 +71,8 @@ class InverterOperationModeEntity(CoordinatorEntity, SelectEntity):
         description: SelectEntityDescription,
         supported_options: list[str],
         current_mode: str,
-        current_charge_power: int,
     ) -> None:
+        """Initialize the select entity."""
         super().__init__(coordinator)
         self.coordinator = coordinator
         self.api = api
@@ -81,23 +81,21 @@ class InverterOperationModeEntity(CoordinatorEntity, SelectEntity):
         self._attr_unique_id = f"{self.sn}-select-charge-mode"
         self._attr_options = supported_options
         self._attr_current_option = str(current_mode)
-        self._current_charge_power = current_charge_power
-
         _LOGGER.debug("Creating SelectEntity for Wallbox %s", self.sn)
 
     @property
-    def name(self) -> str:
-        """Return the name of the sensor."""
-        inverter = self.coordinator.data[self.sn]
-        return f"Wallbox {inverter['model']}"
-
-    @property
     def device_info(self):
+        """Return device info."""
+        data = self.coordinator.data.get(self.sn, {}) or {}
         return {
             "identifiers": {(DOMAIN, self.sn)},
-            "name": self.name,
+            "name": data.get("name") or f"GoodWe Wallbox {self.sn}",
             "manufacturer": "GoodWe",
         }
+
+    async def async_added_to_hass(self) -> None:
+        """When entity is added to hass."""
+        await super().async_added_to_hass()
 
     async def async_select_option(self, option: str) -> None:
         """Change the selected option."""
@@ -112,42 +110,38 @@ class InverterOperationModeEntity(CoordinatorEntity, SelectEntity):
         mode = _OPTION_TO_MODE[option]
 
         _LOGGER.debug(
-            "Setting operation mode for wallbox %s to %s (mode=%s, power=%s)",
+            "Setting operation mode for wallbox %s to %s (mode=%s)",
             self.sn,
             option,
             mode,
-            self._current_charge_power,
         )
 
-        # Optimistický update v UI
+        # Optimistic UI update
         self._attr_current_option = option
         self.async_write_ha_state()
 
-        # Volání SEMS API v executor threadu
+        # Call SEMS API — do NOT pass charge_power when changing mode;
+        # sending power with non-Fast modes causes the API to revert to Fast
         await self.hass.async_add_executor_job(
             self.api.set_charge_mode,
             self.sn,
             mode,
-            self._current_charge_power,
         )
 
-        # Jen naplánovat refresh – nečekat na něj přímo, aby UI neblokovalo
+        # Schedule refresh (non-blocking)
         self.hass.async_create_task(self.coordinator.async_request_refresh())
 
     @callback
     def _handle_coordinator_update(self) -> None:
         """Handle updated data from the coordinator."""
-        inverter = self.coordinator.data[self.sn]
-        mode = inverter["chargeMode"]
-        charge_power = inverter["max_charge_power"]
+        inverter = self.coordinator.data.get(self.sn, {}) or {}
+        mode = inverter.get("chargeMode")
         _LOGGER.debug(
-            "Coordinator update for wallbox %s: chargeMode=%s, max_charge_power=%s",
+            "Coordinator update for wallbox %s: chargeMode=%s",
             self.sn,
             mode,
-            charge_power,
         )
 
-        # Přemapování na option + aktualizace uloženého výkonu
         if mode in _MODE_TO_OPTION:
             self._attr_current_option = _MODE_TO_OPTION[mode]
         else:
@@ -157,7 +151,6 @@ class InverterOperationModeEntity(CoordinatorEntity, SelectEntity):
                 self.sn,
             )
 
-        self._current_charge_power = charge_power
         self.async_write_ha_state()
 
     async def async_update(self) -> None:

@@ -1,0 +1,81 @@
+{
+    "title": "GoodWe SEMS API pro Wallbox",
+    "config": {
+        "abort": {
+            "already_configured": "Zařízení je již nakonfigurováno"
+        },
+        "error": {
+            "cannot_connect": "Nepodařilo se připojit k SEMS portálu",
+            "invalid_auth": "Neplatné přihlašovací údaje",
+            "unknown": "Neočekávaná chyba"
+        },
+        "step": {
+            "user": {
+                "title": "Připojení k SEMS portálu",
+                "description": "Zadejte přihlašovací údaje k portálu semsportal.com a sériové číslo vašeho wallboxu GoodWe.",
+                "data": {
+                    "wallbox_serial_No": "Sériové číslo wallboxu",
+                    "username": "Uživatelské jméno (e-mail)",
+                    "password": "Heslo",
+                    "scan_interval": "Interval aktualizace (sekundy)"
+                },
+                "data_description": {
+                    "wallbox_serial_No": "Najdete v aplikaci SEMS nebo na štítku zařízení",
+                    "scan_interval": "Jak často se data stahují ze SEMS portálu (doporučeno 60)"
+                }
+            }
+        }
+    },
+    "entity": {
+        "sensor": {
+            "status": {
+                "name": "Stav",
+                "state": {
+                    "Charging": "Nabíjení",
+                    "Standby": "Pohotovost",
+                    "Offline": "Offline",
+                    "Unknown": "Neznámý"
+                }
+            },
+            "workstate": {
+                "name": "Stav vozidla",
+                "state": {
+                    "Not Plugged in": "Nepřipojeno",
+                    "Connected": "Připojeno",
+                    "Finished Charging": "Nabíjení dokončeno",
+                    "--": "--",
+                    "Unknown": "Neznámý"
+                }
+            },
+            "power": {
+                "name": "Výkon nabíjení"
+            },
+            "energy": {
+                "name": "Nabito celkem"
+            },
+            "current": {
+                "name": "Nabíjecí proud"
+            }
+        },
+        "select": {
+            "charge_mode": {
+                "name": "Režim nabíjení",
+                "state": {
+                    "Fast": "Rychle",
+                    "PV priority": "PV Priorita",
+                    "PV & battery": "PV a baterie"
+                }
+            }
+        },
+        "number": {
+            "charge_power": {
+                "name": "Limit výkonu"
+            }
+        },
+        "switch": {
+            "start_charging": {
+                "name": "Nabíjení"
+            }
+        }
+    }
+}
