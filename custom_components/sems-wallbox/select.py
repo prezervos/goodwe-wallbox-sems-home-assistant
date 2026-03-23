@@ -153,7 +153,15 @@ class InverterOperationModeEntity(CoordinatorEntity, SelectEntity):
             charge_power,
         )
 
-        # Schedule refresh (non-blocking)
+        # Optimistically propagate the new chargeMode to coordinator data so
+        # dependent entities (e.g. the charge power number slider) update their
+        # available state immediately instead of waiting for the next poll.
+        current_device = self.coordinator.data.get(self.sn, {}) or {}
+        self.coordinator.async_set_updated_data(
+            {**self.coordinator.data, self.sn: {**current_device, "chargeMode": mode}}
+        )
+
+        # Schedule a full refresh to sync any other changes from the API
         self.hass.async_create_task(self.coordinator.async_request_refresh())
 
     @callback

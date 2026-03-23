@@ -50,6 +50,11 @@ class _FakeCoordinator:
     def __init__(self, data):
         self.data = data
         self.last_update_success = True
+        self._set_updated_data_calls = []
+
+    def async_set_updated_data(self, new_data):
+        self.data = new_data
+        self._set_updated_data_calls.append(new_data)
 
     async def async_request_refresh(self):
         pass
@@ -184,6 +189,24 @@ class TestSelectOption:
         await entity.async_select_option("fast")
         assert entity._attr_current_option == "fast"
         entity.async_write_ha_state.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_coordinator_data_updated_immediately_on_to_fast(self):
+        """chargeMode in coordinator.data must be updated immediately when switching to Fast,
+        so dependent entities (number slider) become available without waiting for a poll."""
+        entity = _make_entity(chargeMode=1)
+        await entity.async_select_option("fast")
+        assert entity.coordinator.data[SAMPLE_SN]["chargeMode"] == 0
+        assert len(entity.coordinator._set_updated_data_calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_coordinator_data_updated_immediately_on_to_pv(self):
+        """chargeMode in coordinator.data must be updated immediately when switching to PV,
+        so the number slider becomes unavailable right away."""
+        entity = _make_entity(chargeMode=0)
+        await entity.async_select_option("pv_priority")
+        assert entity.coordinator.data[SAMPLE_SN]["chargeMode"] == 1
+        assert len(entity.coordinator._set_updated_data_calls) == 1
 
     @pytest.mark.asyncio
     async def test_unknown_option_is_ignored(self):
