@@ -79,12 +79,20 @@ SAMPLE_DATA = {
     "sn": SAMPLE_SN,
     "chargeMode": 0,
     "set_charge_power": 7.4,
+    "min_charge_power": 4.2,
+    "max_charge_power": 11.0,
     "name": "My Wallbox",
 }
 
 
-def _make_entity(chargeMode=0, set_charge_power=7.4):
-    data = {**SAMPLE_DATA, "chargeMode": chargeMode, "set_charge_power": set_charge_power}
+def _make_entity(chargeMode=0, set_charge_power=7.4, min_charge_power=4.2, max_charge_power=11.0):
+    data = {
+        **SAMPLE_DATA,
+        "chargeMode": chargeMode,
+        "set_charge_power": set_charge_power,
+        "min_charge_power": min_charge_power,
+        "max_charge_power": max_charge_power,
+    }
     coordinator = _FakeCoordinator({SAMPLE_SN: data})
     api = MagicMock()
     api.set_charge_mode = MagicMock()
@@ -140,6 +148,20 @@ class TestSelectOption:
         entity = _make_entity(chargeMode=1, set_charge_power=6.0)
         await entity.async_select_option("fast")
         entity.api.set_charge_mode.assert_called_once_with(SAMPLE_SN, 0, 6.0)
+
+    @pytest.mark.asyncio
+    async def test_switch_to_fast_falls_back_to_min_when_power_none(self):
+        """When set_charge_power is None, fall back to min_charge_power."""
+        entity = _make_entity(chargeMode=1, set_charge_power=None, min_charge_power=4.2)
+        await entity.async_select_option("fast")
+        entity.api.set_charge_mode.assert_called_once_with(SAMPLE_SN, 0, 4.2)
+
+    @pytest.mark.asyncio
+    async def test_switch_to_fast_clamps_out_of_range_power_to_min(self):
+        """When set_charge_power is out of range, clamp it to min."""
+        entity = _make_entity(chargeMode=1, set_charge_power=1.0, min_charge_power=4.2, max_charge_power=11.0)
+        await entity.async_select_option("fast")
+        entity.api.set_charge_mode.assert_called_once_with(SAMPLE_SN, 0, 4.2)
 
     @pytest.mark.asyncio
     async def test_switch_to_pv_priority_no_charge_power(self):

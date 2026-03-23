@@ -82,15 +82,28 @@ class SemsNumber(CoordinatorEntity, NumberEntity):
         """Return the step value."""
         return 0.1
 
-    @property
-    def native_min_value(self):
-        """Return the minimum value."""
-        return 4.2
+    _DEFAULT_MIN = 4.2
+    _DEFAULT_MAX = 11.0
 
     @property
-    def native_max_value(self):
-        """Return the maximum value."""
-        return 11
+    def native_min_value(self) -> float:
+        """Return the minimum value, read from API data when available."""
+        data = self.coordinator.data.get(self.sn, {}) or {}
+        v = data.get("min_charge_power")
+        try:
+            return float(v) if v is not None else self._DEFAULT_MIN
+        except (TypeError, ValueError):
+            return self._DEFAULT_MIN
+
+    @property
+    def native_max_value(self) -> float:
+        """Return the maximum value, read from API data when available."""
+        data = self.coordinator.data.get(self.sn, {}) or {}
+        v = data.get("max_charge_power")
+        try:
+            return float(v) if v is not None else self._DEFAULT_MAX
+        except (TypeError, ValueError):
+            return self._DEFAULT_MAX
 
     @property
     def unique_id(self) -> str:

@@ -127,7 +127,24 @@ class InverterOperationModeEntity(CoordinatorEntity, SelectEntity):
         charge_power = None
         if mode == 0:
             data = self.coordinator.data.get(self.sn, {}) or {}
-            charge_power = data.get("set_charge_power")
+            raw = data.get("set_charge_power")
+            try:
+                cp = float(raw) if raw is not None else None
+            except (TypeError, ValueError):
+                cp = None
+
+            # Clamp to valid range; fall back to min if unknown/invalid
+            _min = 4.2
+            _max = 11.0
+            try:
+                _min = float(data.get("min_charge_power") or _min)
+                _max = float(data.get("max_charge_power") or _max)
+            except (TypeError, ValueError):
+                pass
+
+            if cp is None or not (_min <= cp <= _max):
+                cp = _min
+            charge_power = cp
 
         await self.hass.async_add_executor_job(
             self.api.set_charge_mode,
