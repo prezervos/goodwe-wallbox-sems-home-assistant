@@ -238,3 +238,86 @@ class TestCoordinatorUpdate:
         entity.coordinator.data[SAMPLE_SN]["chargeMode"] = 2
         entity._handle_coordinator_update()
         assert entity._attr_current_option == "pv_and_battery"
+
+
+# ---------------------------------------------------------------------------
+# Tests: pending mode grace period (blink prevention)
+# ---------------------------------------------------------------------------
+
+class TestPendingMode:
+    @pytest.mark.asyncio
+    async def test_pending_mode_set_after_select(self):
+        """_pending_mode is set after async_select_option."""
+        entity = _make_entity(chargeMode=0)
+        await entity.async_select_option("pv_priority")
+        assert entity._pending_mode == 1
+
+    @pytest.mark.asyncio
+    async def test_poll_with_old_mode_does_not_revert_state(self):
+        """When a poll returns the old chargeMode during a pending transition,
+        the select entity must not revert its current_option."""
+        entity = _make_entity(chargeMode=0)
+        await entity.async_select_option("pv_priority")  # _pending_mode = 1
+
+        # Simulate a regular poll that still returns old chargeMode=0
+        entity.coordinator.data[SAMPLE_SN]["chargeMode"] = 0
+        entity.coordinator._set_updated_data_calls.clear()
+        entity._handle_coordinator_update()
+
+        # Entity must still show pv_priority (not reverted to fast)
+        assert entity._attr_current_option == "pv_priority"
+
+    @pytest.mark.asyncio
+    async def test_poll_with_old_mode_restores_coordinator_data(self):
+        """When the poll returns the old mode, coordinator.data must be patched
+        back to the pending chargeMode so other entities (e.g. number) also
+        see the correct state."""
+        entity = _make_entity(chargeMode=0)
+        await entity.async_select_option("pv_priority")  # _pending_mode = 1
+
+        entity.coordinator.data[SAMPLE_SN]["chargeMode"] = 0
+        entity.coordinator._set_updated_data_calls.clear()
+        entity._handle_coordinator_update()
+
+        # coordinator.data must be restored to chargeMode=1
+        assert entity.coordinator.data[SAMPLE_SN]["chargeMode"] == 1
+        # async_set_updated_data must have been called to notify other entities
+        assert len(entity.coordinator._set_updated_data_calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_poll_confirming_pending_mode_clears_pending(self):
+        """When the poll returns the expected chargeMode, _pending_mode is cleared."""
+        entity = _make_entity(chargeMode=0)
+        await entity.async_select_option("pv_priority")  # _pending_mode = 1
+
+        entity.coordinator.data[SAMPLE_SN]["chargeMode"] = 1
+        entity._handle_coordinator_update()
+
+        assert entity._pending_mode is None
+        assert entity._attr_current_option == "pv_priority"
+
+    @pytest.mark.asyncio
+    async def test_pending_mode_timeout_clears_pending(self):
+        """When _pending_mode_set_at is long in the past, the grace period expires
+        and the next poll result is accepted normally."""
+        entity = _make_entity(chargeMode=0)
+        await entity.async_select_option("pv_priority")  # _pending_mode = 1
+
+        # Backdate the timestamp so timeout logic fires
+        entity._pending_mode_set_at = 0.0  # very old
+
+        entity.coordinator.data[SAMPLE_SN]["chargeMode"] = 0
+        entity._handle_coordinator_update()
+
+        # Grace period expired — pending cleared, option updated from poll data
+        assert entity._pending_mode is None
+        assert entity._attr_current_option == "fast"
+
+    def test_restoring_flag_prevents_reentrant_processing(self):
+        """When _restoring=True, _handle_coordinator_update returns immediately."""
+        entity = _make_entity(chargeMode=0)
+        entity._restoring = True
+        entity.coordinator.data[SAMPLE_SN]["chargeMode"] = 1
+        entity._handle_coordinator_update()
+        # async_write_ha_state must NOT have been called (early return)
+        entity.async_write_ha_state.assert_not_called()
