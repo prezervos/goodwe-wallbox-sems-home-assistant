@@ -43,6 +43,7 @@ async def async_setup_entry(
     entities: list[SensorEntity] = []
     for sn in sns:
         entities.append(SemsSensor(coordinator, sn))
+        entities.append(SemsWorkStateSensor(coordinator, sn))
         entities.append(SemsStatisticsSensor(coordinator, sn))
         entities.append(SemsPowerSensor(coordinator, sn))
 
@@ -99,6 +100,18 @@ class SemsSensor(CoordinatorEntity, SensorEntity):
         return attributes
 
     @property
+    def icon(self) -> str:
+        """Return dynamic icon based on status."""
+        state = self.state  # använder befintlig property 'state'
+        if state == "Charging":
+            return "mdi:battery-charging-100"
+        if state == "Standby":
+            return "mdi:ev-station"
+        if state == "Offline":
+            return "mdi:power-plug-off"
+        return "mdi:help-circle-outline"
+        
+    @property
     def available(self) -> bool:
         """Return if entity is available."""
         return self.coordinator.last_update_success
@@ -108,7 +121,83 @@ class SemsSensor(CoordinatorEntity, SensorEntity):
         data = self.coordinator.data.get(self.sn, {}) or {}
         return {
             "identifiers": {(DOMAIN, self.sn)},
-            "name": self.name,
+            "manufacturer": "GoodWe",
+            "model": data.get("model", "unknown"),
+            "sw_version": data.get("fireware", "unknown"),
+        }
+
+    async def async_added_to_hass(self) -> None:
+        """When entity is added to hass."""
+        await super().async_added_to_hass()
+
+    async def async_update(self) -> None:
+        """Update the entity via the coordinator."""
+        await self.coordinator.async_request_refresh()
+        
+
+class SemsWorkStateSensor(CoordinatorEntity, SensorEntity):
+    """Workstate of Wallbox (Not Plugged in / Connected / Finished Charging / -- (charging) / Unknown)."""
+
+    _attr_device_class = SensorDeviceClass.ENUM
+    _attr_options = ["Not Plugged in", "Connected", "Finished Charging", "--", "Unknown"]
+    _attr_should_poll = False
+
+    def __init__(self, coordinator: SemsUpdateCoordinator, sn: str) -> None:
+        """Initialize the workstate sensor."""
+        super().__init__(coordinator)
+        self.sn = sn
+        _LOGGER.debug("Creating SemsWorkStateSensor with id %s", self.sn)
+
+    @property
+    def name(self):
+        """Set the name of the WorkStatesensor."""
+        return f"Wallbox Workstate"
+
+    @property
+    def unique_id(self) -> str:
+        """Unique ID for workstate sensor."""
+        sn = self.coordinator.data.get(self.sn, {}).get("sn", self.sn)
+        return f"{sn}_workstate"
+        
+    @property
+    def native_value(self) -> str:
+        """Is car plugged in or not, Return the workstate of the device as human readable string."""
+        data = self.coordinator.data.get(self.sn, {})
+        workstate = data.get("workstate")
+
+        if workstate == "EVDetail_Status_Waiting_Stat00":
+            return "Not Plugged in"
+        if workstate == "EVDetail_Status_Waiting_Stat01":
+            return "Connected"
+        if workstate == "EVDetail_Status_Waiting_Stat02":
+            return "Finished Charging"
+        if workstate == "":
+            return "--"
+        return "Unknown"
+
+    @property
+    def icon(self) -> str:
+        state = self.native_value
+        if state == "Not Plugged in":
+            return "mdi:power-plug-off-outline"
+        if state == "Connected":
+            return "mdi:power-plug"
+        if state == "Finished Charging":
+            return "mdi:battery-check"
+        if state == "--":
+            return "mdi:progress-clock"
+        return "mdi:help-circle-outline"
+        
+    @property
+    def available(self) -> bool:
+        """Return if entity is available."""
+        return self.coordinator.last_update_success
+
+    @property
+    def device_info(self) -> dict[str, Any]:
+        data = self.coordinator.data.get(self.sn, {}) or {}
+        return {
+            "identifiers": {(DOMAIN, self.sn)},
             "manufacturer": "GoodWe",
             "model": data.get("model", "unknown"),
             "sw_version": data.get("fireware", "unknown"),
