@@ -122,7 +122,10 @@ if not hasattr(select_mod, "SelectEntity"):
     class SelectEntity:
         pass
     class SelectEntityDescription:
-        pass
+        def __init__(self, key=None, entity_category=None, translation_key=None, **kwargs):
+            self.key = key
+            self.entity_category = entity_category
+            self.translation_key = translation_key
     select_mod.SelectEntity = SelectEntity
     select_mod.SelectEntityDescription = SelectEntityDescription
 

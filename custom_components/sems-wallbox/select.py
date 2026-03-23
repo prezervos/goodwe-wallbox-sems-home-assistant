@@ -120,12 +120,20 @@ class InverterOperationModeEntity(CoordinatorEntity, SelectEntity):
         self._attr_current_option = option
         self.async_write_ha_state()
 
-        # Call SEMS API — do NOT pass charge_power when changing mode;
-        # sending power with non-Fast modes causes the API to revert to Fast
+        # When switching TO Fast mode (0) the API requires charge_power in the
+        # payload, otherwise it silently ignores the command.
+        # For PV modes (1, 2) we must NOT send charge_power — doing so causes
+        # the API to revert back to Fast mode.
+        charge_power = None
+        if mode == 0:
+            data = self.coordinator.data.get(self.sn, {}) or {}
+            charge_power = data.get("set_charge_power")
+
         await self.hass.async_add_executor_job(
             self.api.set_charge_mode,
             self.sn,
             mode,
+            charge_power,
         )
 
         # Schedule refresh (non-blocking)
