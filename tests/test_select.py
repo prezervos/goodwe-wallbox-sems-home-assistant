@@ -304,7 +304,7 @@ class TestPendingMode:
         await entity.async_select_option("pv_priority")  # _pending_mode = 1
 
         # Backdate the timestamp so timeout logic fires
-        entity._pending_mode_set_at = 0.0  # very old
+        entity._pending_mode_set_at = time.monotonic() - 100.0  # 100s in the past
 
         entity.coordinator.data[SAMPLE_SN]["chargeMode"] = 0
         entity._handle_coordinator_update()
