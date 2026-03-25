@@ -10,11 +10,11 @@ API_VERSION = "0.4.2"
 
 _LoginURL = "https://www.semsportal.com/api/v3/Common/CrossLogin"
 
-# v3/v4 endpointy pro čtení stavu wallboxu (pevně na www.semsportal.com)
+# v3/v4 endpoints for reading wallbox status
 _WallboxURL_V3 = "https://www.semsportal.com/api/v3/EvCharger/GetCurrentChargeinfo"
 _WallboxURL_V4 = "https://www.semsportal.com/api/v4/EvCharger/GetEvChargerMoreView"
 
-# jednoduchý přepínač – když bude nějaký problém s v4, přepni na False a jedeš zpátky přes v3
+# Toggle: set to True to prefer v4 endpoint (with automatic fallback to v3)
 _USE_V4_STATUS = False
 
 _SetChargeModeURL = "https://www.semsportal.com/api/v3/EvCharger/SetChargeMode"
@@ -44,19 +44,17 @@ class SemsApi:
             "v4" if _USE_V4_STATUS else "v3",
         )
 
-    # ---------------------------------------------------------------------
+    # ------------------------------------------------------------------
     # Token handling
-    # ---------------------------------------------------------------------
+    # ------------------------------------------------------------------
 
     def _fetch_login_token(self) -> dict | None:
         """Call CrossLogin and return token dict or None."""
         try:
             _LOGGER.debug("SEMS v%s - Getting API token", API_VERSION)
-
             login_data = json.dumps(
                 {"account": self._username, "pwd": self._password}
             )
-
             login_response = requests.post(
                 _LoginURL,
                 headers=_DefaultHeaders,
@@ -65,14 +63,10 @@ class SemsApi:
             )
             _LOGGER.debug("Login Response: %s", login_response)
             login_response.raise_for_status()
-
             json_response = login_response.json()
             _LOGGER.debug("Login JSON response %s", json_response)
 
-            if json_response.get("hasError") or json_response.get("code") not in (
-                0,
-                None,
-            ):
+            if json_response.get("hasError") or json_response.get("code") not in (0, None):
                 _LOGGER.error(
                     "SEMS login returned error: %s",
                     json_response.get("msg"),
@@ -88,12 +82,12 @@ class SemsApi:
             return None
 
     def _ensure_token(self, renew: bool = False) -> bool:
-        """Ensure we have a token in self._token."""
+        """Ensure we have a valid token in self._token."""
         if self._token is None or renew:
             _LOGGER.debug(
-                "SEMS v%s - API token not set (%s) or new token requested (%s), fetching",
+                "SEMS v%s - fetching new token (token_is_none=%s, renew=%s)",
                 API_VERSION,
-                self._token,
+                self._token is None,
                 renew,
             )
             token = self._fetch_login_token()
@@ -104,20 +98,18 @@ class SemsApi:
         return True
 
     def _build_headers(self) -> dict:
-        """Build headers for wallbox calls (do not touch token timestamp)."""
+        """Build request headers with current token."""
         if not self._ensure_token():
             raise OutOfRetries("Could not obtain SEMS token")
-
-        # DŮLEŽITÉ: token posíláme TAK JAK PŘIŠEL z loginu
         return {
             "Content-Type": "application/json",
             "Accept": "application/json",
             "token": json.dumps(self._token),
         }
 
-    # ---------------------------------------------------------------------
+    # ------------------------------------------------------------------
     # Public helpers
-    # ---------------------------------------------------------------------
+    # ------------------------------------------------------------------
 
     def test_authentication(self) -> bool:
         """Test if we can authenticate with the host."""
@@ -131,18 +123,12 @@ class SemsApi:
             _LOGGER.exception("SEMS Authentication exception: %s", exc)
             return False
 
-    # ---------------------------------------------------------------------
-    # Data fetch
-    # ---------------------------------------------------------------------
-
     def _resolve_status_url(self) -> str:
-        """Decide which URL to use for status (v4 preferred)."""
-        if _USE_V4_STATUS:
-            return _WallboxURL_V4
-        return _WallboxURL_V3
+        """Return the correct status URL based on toggle."""
+        return _WallboxURL_V4 if _USE_V4_STATUS else _WallboxURL_V3
 
     def getData(self, wallbox_sn, renewToken: bool = False, maxTokenRetries: int = 1):
-        """Get the latest data from the SEMS API and updates the state."""
+        """Get the latest data from the SEMS API."""
         _LOGGER.debug(
             "SEMS v%s - getData called for wallbox %s (renewToken=%s, retries=%s)",
             API_VERSION,
@@ -150,7 +136,6 @@ class SemsApi:
             renewToken,
             maxTokenRetries,
         )
-
         try:
             if maxTokenRetries < 0:
                 _LOGGER.info(
@@ -166,7 +151,6 @@ class SemsApi:
             wallbox_url = self._resolve_status_url()
             payload = json.dumps({"sn": wallbox_sn})
 
-            # --------- v4 request (s fallbackem na v3 při 404) ----------
             try:
                 _LOGGER.debug(
                     "SEMS v%s - Making Wallbox Status API Call, URL=%s, SN=%s",
@@ -180,7 +164,7 @@ class SemsApi:
                 response.raise_for_status()
                 json_response = response.json()
             except requests.exceptions.HTTPError as http_err:
-                # pokud v4 endpoint vrátí 404, zkusíme rovnou v3
+                # If v4 returns 404, fall back to v3
                 if (
                     _USE_V4_STATUS
                     and wallbox_url.endswith("GetEvChargerMoreView")
@@ -188,9 +172,8 @@ class SemsApi:
                     and http_err.response.status_code == 404
                 ):
                     _LOGGER.warning(
-                        "SEMS v%s - v4 endpoint 404 (%s), falling back to v3 for SN=%s",
+                        "SEMS v%s - v4 endpoint 404, falling back to v3 for SN=%s",
                         API_VERSION,
-                        http_err,
                         wallbox_sn,
                     )
                     v3_response = requests.post(
@@ -203,7 +186,6 @@ class SemsApi:
                     json_response = v3_response.json()
                 else:
                     raise
-            # ------------------------------------------------------------
 
             data = json_response.get("data")
             msg = str(json_response.get("msg", ""))
@@ -214,46 +196,7 @@ class SemsApi:
                 data is None,
             )
 
-            # -----------------------------
-            # V4: "成功" ale žádná data → log + fallback na v3
-            # -----------------------------
-            if (
-                _USE_V4_STATUS
-                and wallbox_url.endswith("GetEvChargerMoreView")
-                and data is None
-            ):
-                _LOGGER.debug(
-                    "SEMS v%s - v4 full JSON had no 'data': %s",
-                    API_VERSION,
-                    json_response,
-                )
-
-                if "成功" in msg:
-                    _LOGGER.warning(
-                        "SEMS v%s - v4 endpoint returned success but no data, "
-                        "falling back to v3 once for SN=%s",
-                        API_VERSION,
-                        wallbox_sn,
-                    )
-
-                    v3_response = requests.post(
-                        _WallboxURL_V3,
-                        headers=headers,
-                        data=payload,
-                        timeout=_RequestTimeout,
-                    )
-                    v3_response.raise_for_status()
-                    json_v3 = v3_response.json()
-                    data = json_v3.get("data")
-                    msg = str(json_v3.get("msg", msg))
-                    _LOGGER.debug(
-                        "SEMS v%s - fallback v3 msg=%s, data_is_none=%s",
-                        API_VERSION,
-                        msg,
-                        data is None,
-                    )
-
-            # 2) expirace autorizace → zkusíme jednou obnovit token
+            # Handle authorization expiry → retry once with fresh token
             if data is None and "authorization has expired" in msg.lower():
                 _LOGGER.debug(
                     "SEMS - Authorization expired (%s), retrying with fresh token, remaining retries: %s",
@@ -265,11 +208,9 @@ class SemsApi:
                     wallbox_sn, renewToken=True, maxTokenRetries=maxTokenRetries - 1
                 )
 
-            # 3) Jiná chyba → coordinator to vyhodnotí jako fail
             if data is None:
                 _LOGGER.error(
-                    "Unable to fetch data from SEMS, message: %s",
-                    msg,
+                    "Unable to fetch data from SEMS, message: %s", msg
                 )
                 return None
 
@@ -281,9 +222,9 @@ class SemsApi:
             _LOGGER.error("Unable to fetch data from SEMS. %s", exc)
             return None
 
-    # ---------------------------------------------------------------------
+    # ------------------------------------------------------------------
     # Commands
-    # ---------------------------------------------------------------------
+    # ------------------------------------------------------------------
 
     def change_status(
         self,
@@ -292,7 +233,7 @@ class SemsApi:
         renewToken: bool = False,
         maxTokenRetries: int = 1,
     ):
-        """Start/stop charging."""
+        """Start or stop charging."""
         _LOGGER.debug(
             "SEMS v%s - change_status(%s, %s, renewToken=%s, retries=%s)",
             API_VERSION,
@@ -313,18 +254,16 @@ class SemsApi:
                 return
 
             headers = self._build_headers()
-
-            powerControlURL = _PowerControlURL
             _LOGGER.debug(
                 "Sending power control command (%s) for wallbox sn: %s status: %s",
-                powerControlURL,
+                _PowerControlURL,
                 inverterSn,
                 status,
             )
 
             data = {"sn": inverterSn, "status": str(status)}
             response = requests.post(
-                powerControlURL, headers=headers, json=data, timeout=_RequestTimeout
+                _PowerControlURL, headers=headers, json=data, timeout=_RequestTimeout
             )
 
             try:
@@ -396,11 +335,9 @@ class SemsApi:
                 return
 
             headers = self._build_headers()
-            setChargeModeURL = _SetChargeModeURL
-
             _LOGGER.debug(
                 "Sending SetChargeMode command (%s) for wallbox SN: %s mode: %s chargepower: %s",
-                setChargeModeURL,
+                _SetChargeModeURL,
                 wallboxSn,
                 mode,
                 chargePower,
@@ -412,7 +349,7 @@ class SemsApi:
                 data = {"sn": wallboxSn, "type": mode}
 
             response = requests.post(
-                setChargeModeURL, headers=headers, json=data, timeout=_RequestTimeout
+                _SetChargeModeURL, headers=headers, json=data, timeout=_RequestTimeout
             )
 
             try:

@@ -1,23 +1,81 @@
 {
+    "title": "GoodWe SEMS API for Wallbox",
     "config": {
         "abort": {
             "already_configured": "Device is already configured"
         },
         "error": {
-            "cannot_connect": "Failed to connect",
+            "cannot_connect": "Failed to connect to SEMS portal",
             "invalid_auth": "Invalid authentication",
             "unknown": "Unexpected error"
         },
         "step": {
             "user": {
+                "title": "Connect to SEMS portal",
+                "description": "Enter your semsportal.com credentials and the serial number of your GoodWe wallbox.",
                 "data": {
-                    "wallbox_serial_No": "Serial No of the wallbox",
+                    "wallbox_serial_No": "Wallbox serial number",
+                    "username": "Username (e-mail)",
                     "password": "Password",
-                    "username": "Username",
-                    "scan_interval": "Update Interval (seconds)"
+                    "scan_interval": "Update interval (seconds)"
+                },
+                "data_description": {
+                    "wallbox_serial_No": "Found in the SEMS app or on the device label",
+                    "scan_interval": "How often to fetch data from the SEMS portal (recommended: 60)"
                 }
             }
         }
     },
-    "title": "GoodWe SEMS API for Wallbox"
+    "entity": {
+        "sensor": {
+            "status": {
+                "name": "Status",
+                "state": {
+                    "charging": "Charging",
+                    "standby": "Standby",
+                    "offline": "Offline",
+                    "unknown": "Unknown"
+                }
+            },
+            "workstate": {
+                "name": "Vehicle state",
+                "state": {
+                    "not_plugged_in": "Not plugged in",
+                    "connected": "Connected",
+                    "finished_charging": "Finished charging",
+                    "dash": "--",
+                    "unknown": "Unknown"
+                }
+            },
+            "power": {
+                "name": "Charging power"
+            },
+            "energy": {
+                "name": "Total charged energy"
+            },
+            "current": {
+                "name": "Charging current"
+            }
+        },
+        "select": {
+            "charge_mode": {
+                "name": "Charge mode",
+                "state": {
+                    "fast": "Fast",
+                    "pv_priority": "PV priority",
+                    "pv_and_battery": "PV & battery"
+                }
+            }
+        },
+        "number": {
+            "charge_power": {
+                "name": "Charge power limit"
+            }
+        },
+        "switch": {
+            "start_charging": {
+                "name": "Charging"
+            }
+        }
+    }
 }

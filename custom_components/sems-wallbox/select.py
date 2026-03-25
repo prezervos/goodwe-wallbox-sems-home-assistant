@@ -1,4 +1,7 @@
+"""Support for select entity controlling GoodWe SEMS Wallbox charge mode."""
+
 import logging
+import time
 
 from homeassistant.components.select import SelectEntity, SelectEntityDescription
 from homeassistant.config_entries import ConfigEntry
@@ -12,10 +15,14 @@ from .coordinator import SemsUpdateCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
+# After requesting a mode change, ignore coordinator poll results that contradict
+# the pending mode for up to this many seconds (API can take ~10-15 s to apply).
+_PENDING_MODE_TIMEOUT = 60.0
+
 _MODE_TO_OPTION: dict[int, str] = {
-    0: "Fast",
-    1: "PV priority",
-    2: "PV & battery",
+    0: "fast",
+    1: "pv_priority",
+    2: "pv_and_battery",
 }
 
 _OPTION_TO_MODE: dict[str, int] = {value: key for key, value in _MODE_TO_OPTION.items()}
@@ -41,7 +48,6 @@ async def async_setup_entry(
 
     for sn, inverter in coordinator.data.items():
         active_mode = inverter["chargeMode"]
-        current_charge_power = inverter["max_charge_power"]
         entities.append(
             InverterOperationModeEntity(
                 coordinator,
@@ -50,7 +56,6 @@ async def async_setup_entry(
                 OPERATION_MODE,
                 list(_MODE_TO_OPTION.values()),
                 _MODE_TO_OPTION.get(active_mode),
-                current_charge_power,
             )
         )
 
@@ -58,7 +63,7 @@ async def async_setup_entry(
 
 
 class InverterOperationModeEntity(CoordinatorEntity, SelectEntity):
-    """Entity representing the inverter operation mode."""
+    """Entity representing the wallbox charge mode."""
 
     _attr_should_poll = False
     _attr_has_entity_name = True
@@ -71,8 +76,8 @@ class InverterOperationModeEntity(CoordinatorEntity, SelectEntity):
         description: SelectEntityDescription,
         supported_options: list[str],
         current_mode: str,
-        current_charge_power: int,
     ) -> None:
+        """Initialize the select entity."""
         super().__init__(coordinator)
         self.coordinator = coordinator
         self.api = api
@@ -81,23 +86,27 @@ class InverterOperationModeEntity(CoordinatorEntity, SelectEntity):
         self._attr_unique_id = f"{self.sn}-select-charge-mode"
         self._attr_options = supported_options
         self._attr_current_option = str(current_mode)
-        self._current_charge_power = current_charge_power
-
+        # Pending mode: set while we wait for the API to confirm a mode change.
+        # Prevents regular polls from reverting the optimistic UI state.
+        self._pending_mode: int | None = None
+        self._pending_mode_set_at: float = 0.0
+        # Guard against re-entrant async_set_updated_data calls.
+        self._restoring: bool = False
         _LOGGER.debug("Creating SelectEntity for Wallbox %s", self.sn)
 
     @property
-    def name(self) -> str:
-        """Return the name of the sensor."""
-        inverter = self.coordinator.data[self.sn]
-        return f"Wallbox {inverter['model']}"
-
-    @property
     def device_info(self):
+        """Return device info."""
+        data = self.coordinator.data.get(self.sn, {}) or {}
         return {
             "identifiers": {(DOMAIN, self.sn)},
-            "name": self.name,
+            "name": data.get("name") or f"GoodWe Wallbox {self.sn}",
             "manufacturer": "GoodWe",
         }
+
+    async def async_added_to_hass(self) -> None:
+        """When entity is added to hass."""
+        await super().async_added_to_hass()
 
     async def async_select_option(self, option: str) -> None:
         """Change the selected option."""
@@ -112,42 +121,117 @@ class InverterOperationModeEntity(CoordinatorEntity, SelectEntity):
         mode = _OPTION_TO_MODE[option]
 
         _LOGGER.debug(
-            "Setting operation mode for wallbox %s to %s (mode=%s, power=%s)",
+            "Setting operation mode for wallbox %s to %s (mode=%s)",
             self.sn,
             option,
             mode,
-            self._current_charge_power,
         )
 
-        # Optimistický update v UI
+        # Optimistic UI update for select entity
         self._attr_current_option = option
         self.async_write_ha_state()
 
-        # Volání SEMS API v executor threadu
+        # When switching TO Fast mode (0) the API requires charge_power in the
+        # payload, otherwise it silently ignores the command.
+        # For PV modes (1, 2) we must NOT send charge_power — doing so causes
+        # the API to revert back to Fast mode.
+        charge_power = None
+        if mode == 0:
+            data = self.coordinator.data.get(self.sn, {}) or {}
+            raw = data.get("set_charge_power")
+            try:
+                cp = float(raw) if raw is not None else None
+            except (TypeError, ValueError):
+                cp = None
+
+            # Clamp to valid range; fall back to min if unknown/invalid
+            _min = 4.2
+            _max = 11.0
+            try:
+                _min = float(data.get("min_charge_power") or _min)
+                _max = float(data.get("max_charge_power") or _max)
+            except (TypeError, ValueError):
+                pass
+
+            if cp is None or not (_min <= cp <= _max):
+                cp = _min
+            charge_power = cp
+
+        # Immediately propagate new chargeMode into coordinator.data so that
+        # dependent entities (number slider) react before the API call finishes.
+        current_device = self.coordinator.data.get(self.sn, {}) or {}
+        self.coordinator.async_set_updated_data(
+            {**self.coordinator.data, self.sn: {**current_device, "chargeMode": mode}}
+        )
+        # Set pending AFTER async_set_updated_data so the synchronous
+        # _handle_coordinator_update call inside it doesn't clear the flag.
+        self._pending_mode = mode
+        self._pending_mode_set_at = time.monotonic()
+
         await self.hass.async_add_executor_job(
             self.api.set_charge_mode,
-            self.sn,
-            mode,
-            self._current_charge_power,
-        )
-
-        # Jen naplánovat refresh – nečekat na něj přímo, aby UI neblokovalo
-        self.hass.async_create_task(self.coordinator.async_request_refresh())
-
-    @callback
-    def _handle_coordinator_update(self) -> None:
-        """Handle updated data from the coordinator."""
-        inverter = self.coordinator.data[self.sn]
-        mode = inverter["chargeMode"]
-        charge_power = inverter["max_charge_power"]
-        _LOGGER.debug(
-            "Coordinator update for wallbox %s: chargeMode=%s, max_charge_power=%s",
             self.sn,
             mode,
             charge_power,
         )
 
-        # Přemapování na option + aktualizace uloženého výkonu
+        # Schedule a full refresh to confirm state from the API.
+        self.hass.async_create_task(self.coordinator.async_request_refresh())
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Handle updated data from the coordinator."""
+        # Guard: skip processing when we ourselves triggered async_set_updated_data
+        # to restore the pending mode (prevents re-entrant recursion).
+        if self._restoring:
+            return
+
+        inverter = self.coordinator.data.get(self.sn, {}) or {}
+        mode = inverter.get("chargeMode")
+        _LOGGER.debug(
+            "Coordinator update for wallbox %s: chargeMode=%s (pending=%s)",
+            self.sn,
+            mode,
+            self._pending_mode,
+        )
+
+        if self._pending_mode is not None:
+            # Safety valve: give up waiting after timeout
+            if time.monotonic() - self._pending_mode_set_at > _PENDING_MODE_TIMEOUT:
+                _LOGGER.warning(
+                    "Pending mode %s for wallbox %s timed out, accepting chargeMode=%s from API",
+                    self._pending_mode,
+                    self.sn,
+                    mode,
+                )
+                self._pending_mode = None
+            elif mode == self._pending_mode:
+                # API confirmed the change — stop guarding
+                _LOGGER.debug(
+                    "Pending mode %s confirmed by API for wallbox %s",
+                    self._pending_mode,
+                    self.sn,
+                )
+                self._pending_mode = None
+            else:
+                # Poll returned the old mode — API hasn't applied the change yet.
+                # Restore the pending chargeMode in coordinator.data so that ALL
+                # dependent entities (number slider, etc.) keep the correct state.
+                _LOGGER.debug(
+                    "Ignoring poll chargeMode=%s for wallbox %s while pending mode=%s",
+                    mode,
+                    self.sn,
+                    self._pending_mode,
+                )
+                self._restoring = True
+                current = dict(self.coordinator.data.get(self.sn, {}))
+                current["chargeMode"] = self._pending_mode
+                self.coordinator.async_set_updated_data(
+                    {**self.coordinator.data, self.sn: current}
+                )
+                self._restoring = False
+                return
+
         if mode in _MODE_TO_OPTION:
             self._attr_current_option = _MODE_TO_OPTION[mode]
         else:
@@ -157,7 +241,6 @@ class InverterOperationModeEntity(CoordinatorEntity, SelectEntity):
                 self.sn,
             )
 
-        self._current_charge_power = charge_power
         self.async_write_ha_state()
 
     async def async_update(self) -> None:

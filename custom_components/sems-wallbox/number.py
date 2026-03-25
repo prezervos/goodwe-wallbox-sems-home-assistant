@@ -1,6 +1,4 @@
-"""
-Support for number entity controlling GoodWe SEMS Wallbox charge power.
-"""
+"""Support for number entity controlling GoodWe SEMS Wallbox charge power."""
 
 from __future__ import annotations
 
@@ -11,7 +9,6 @@ from homeassistant.components.number import (
     NumberEntity,
 )
 from homeassistant.config_entries import ConfigEntry
-    # type: ignore[import]
 from homeassistant.const import UnitOfPower
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -54,8 +51,10 @@ class SemsNumber(CoordinatorEntity, NumberEntity):
 
     _attr_should_poll = False
     _attr_has_entity_name = True
+    _attr_translation_key = "charge_power"
 
     def __init__(self, coordinator: SemsUpdateCoordinator, sn: str, api, value: float):
+        """Initialize the number entity."""
         super().__init__(coordinator)
         self.coordinator = coordinator
         self.api = api
@@ -69,40 +68,54 @@ class SemsNumber(CoordinatorEntity, NumberEntity):
         )
 
     @property
-    def name(self) -> str:
-        """Return the name of the number entity."""
-        return "Wallbox set charge power"
-
-    @property
     def device_class(self):
+        """Return the device class."""
         return NumberDeviceClass.POWER
 
     @property
     def native_unit_of_measurement(self):
+        """Return the unit of measurement."""
         return UnitOfPower.KILO_WATT
 
     @property
     def native_step(self):
+        """Return the step value."""
         return 0.1
 
-    @property
-    def native_min_value(self):
-        return 4.2
+    _DEFAULT_MIN = 4.2
+    _DEFAULT_MAX = 11.0
 
     @property
-    def native_max_value(self):
-        return 11
+    def native_min_value(self) -> float:
+        """Return the minimum value, read from API data when available."""
+        data = self.coordinator.data.get(self.sn, {}) or {}
+        v = data.get("min_charge_power")
+        try:
+            return float(v) if v is not None else self._DEFAULT_MIN
+        except (TypeError, ValueError):
+            return self._DEFAULT_MIN
+
+    @property
+    def native_max_value(self) -> float:
+        """Return the maximum value, read from API data when available."""
+        data = self.coordinator.data.get(self.sn, {}) or {}
+        v = data.get("max_charge_power")
+        try:
+            return float(v) if v is not None else self._DEFAULT_MAX
+        except (TypeError, ValueError):
+            return self._DEFAULT_MAX
 
     @property
     def unique_id(self) -> str:
-        # stejné chování, jen f-string
+        """Return unique id."""
         return f"{self.coordinator.data[self.sn]['sn']}_number_set_charge_power"
 
     @property
     def device_info(self):
+        """Return device info."""
         return {
             "identifiers": {(DOMAIN, self.sn)},
-            "name": self.name,
+            "name": (self.coordinator.data.get(self.sn, {}) or {}).get("name") or f"GoodWe Wallbox {self.sn}",
             "manufacturer": "GoodWe",
         }
 
@@ -114,10 +127,18 @@ class SemsNumber(CoordinatorEntity, NumberEntity):
         )
         _LOGGER.debug("SemsNumber added to hass for wallbox %s", self.sn)
 
+    @property
+    def available(self) -> bool:
+        """Only available when chargeMode is Fast (0); disabled in PV modes."""
+        if not self.coordinator.last_update_success:
+            return False
+        data = self.coordinator.data.get(self.sn, {}) or {}
+        return data.get("chargeMode", 0) == 0
+
     @callback
     def _handle_coordinator_update(self) -> None:
         """Handle updated data from the coordinator."""
-        data = self.coordinator.data[self.sn]
+        data = self.coordinator.data.get(self.sn, {}) or {}
         set_charge_power = data.get("set_charge_power")
         if set_charge_power is not None:
             try:
@@ -129,56 +150,36 @@ class SemsNumber(CoordinatorEntity, NumberEntity):
                     set_charge_power,
                 )
         _LOGGER.debug(
-            "SemsNumber coordinator update SN=%s → native_value=%s",
+            "SemsNumber coordinator update SN=%s -> native_value=%s, available=%s",
             self.sn,
             self._attr_native_value,
+            self.available,
         )
         self.async_write_ha_state()
 
     async def async_update(self) -> None:
-        """Manual update from HA (e.g. z UI)."""
+        """Manual update from HA."""
         await self.coordinator.async_request_refresh()
-        data = self.coordinator.data[self.sn]
-        set_charge_power = data.get("set_charge_power")
-        if set_charge_power is not None:
-            try:
-                self._attr_native_value = float(set_charge_power)
-            except (TypeError, ValueError):
-                _LOGGER.warning(
-                    "SemsNumber %s: invalid set_charge_power value %r from API (async_update)",
-                    self.sn,
-                    set_charge_power,
-                )
-        _LOGGER.debug(
-            "Updating SemsNumber for Wallbox %s state to %s (async_update)",
-            self.sn,
-            self._attr_native_value,
-        )
-        self.async_write_ha_state()
 
     async def async_set_native_value(self, value: float) -> None:
-        """Handle change from UI slider."""
-        data = self.coordinator.data.get(self.sn, {})
-        active_mode = data.get("chargeMode", 0)
-
+        """Handle change from UI slider (only reachable in Fast mode)."""
         _LOGGER.debug(
-            "Setting set_charge_power for SN=%s to %s (active_mode=%s)",
+            "Setting set_charge_power for SN=%s to %s",
             self.sn,
             value,
-            active_mode,
         )
 
-        # 1) Optimisticky nastavíme hodnotu v UI
+        # 1) Optimistic UI update
         self._attr_native_value = float(value)
         self.async_write_ha_state()
 
-        # 2) Zavoláme SEMS API v executor jobu
+        # 2) Call SEMS API — always Fast mode (0), since entity is unavailable otherwise
         await self.hass.async_add_executor_job(
             self.api.set_charge_mode,
             self.sn,
-            0 if value > 4.2 else active_mode,
+            0,
             value,
         )
 
-        # 3) Naplánujeme refresh z API (NEčekáme na něj, aby slider nevisel)
+        # 3) Schedule refresh (non-blocking)
         self.hass.async_create_task(self.coordinator.async_request_refresh())
