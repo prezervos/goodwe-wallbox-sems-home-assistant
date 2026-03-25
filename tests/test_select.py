@@ -56,7 +56,7 @@ class _FakeCoordinator:
         self.data = new_data
         self._set_updated_data_calls.append(new_data)
 
-    async def async_request_refresh(self):
+    def async_request_refresh(self):
         pass
 
 

@@ -55,7 +55,7 @@ class _FakeCoordinator:
         self.data = data
         self.last_update_success = True
 
-    async def async_request_refresh(self):
+    def async_request_refresh(self):
         pass
 
 
