@@ -31,7 +31,7 @@ class SemsUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._api = api
         self._station_id: str = entry.data[CONF_STATION_ID]
 
-        # 🔧 DŮLEŽITÉ: nejdřív options, pak data, pak default
+        # Options take precedence over data, then fall back to default
         interval_seconds = entry.options.get(
             CONF_SCAN_INTERVAL,
             entry.data.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL),
