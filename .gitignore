@@ -1,6 +1,41 @@
-*.pyc
-.idea
-.vscode
-example.json
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
 
+# Pytest
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+
+# IDE / editor
+.vscode/settings.json
+.idea/
+*.swp
+*.swo
+
+# OS
 .DS_Store
+Thumbs.db
+
+# Secrets / local config — never commit credentials
+secrets.yaml
+*.env
+.env
+local_config.py
+
+# Home Assistant local test instance data
+home-assistant.log
+home-assistant_v2.db
+home-assistant_v2.db-shm
+home-assistant_v2.db-wal

@@ -1,9 +1,4 @@
-"""
-Support for wallbox sensors from GoodWe SEMS API.
-
-For more details about this platform, please refer to the documentation at
-https://github.com/TimSoethout/goodwe-sems-home-assistant
-"""
+"""Support for wallbox sensors from GoodWe SEMS API."""
 
 from __future__ import annotations
 
@@ -16,7 +11,7 @@ from homeassistant.components.sensor import (
     SensorEntity,
     SensorStateClass,
 )
-from homeassistant.const import UnitOfEnergy, UnitOfPower
+from homeassistant.const import UnitOfEnergy, UnitOfPower, UnitOfElectricCurrent
 from homeassistant.core import HomeAssistant
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -37,7 +32,6 @@ async def async_setup_entry(
     runtime: dict[str, Any] = hass.data[DOMAIN][config_entry.entry_id]
     coordinator: SemsUpdateCoordinator = runtime["coordinator"]
 
-    # V tuto chvíli už má coordinator data (první refresh proběhl v __init__.py)
     sns = list(coordinator.data.keys())
 
     entities: list[SensorEntity] = []
@@ -46,28 +40,25 @@ async def async_setup_entry(
         entities.append(SemsWorkStateSensor(coordinator, sn))
         entities.append(SemsStatisticsSensor(coordinator, sn))
         entities.append(SemsPowerSensor(coordinator, sn))
+        entities.append(SemsCurrentSensor(coordinator, sn))
 
     async_add_entities(entities)
 
 
 class SemsSensor(CoordinatorEntity, SensorEntity):
-    """Hlavní stav wallboxu (Charging / Standby / Offline / Unknown)."""
+    """Main wallbox status sensor (Charging / Standby / Offline / Unknown)."""
 
     _attr_device_class = SensorDeviceClass.ENUM
-    _attr_options = ["Charging", "Standby", "Offline", "Unknown"]
+    _attr_options = ["charging", "standby", "offline", "unknown"]
     _attr_should_poll = False
+    _attr_has_entity_name = True
+    _attr_translation_key = "status"
 
     def __init__(self, coordinator: SemsUpdateCoordinator, sn: str) -> None:
         """Initialize the status sensor."""
         super().__init__(coordinator)
         self.sn = sn
         _LOGGER.debug("Creating SemsSensor with id %s", self.sn)
-
-    @property
-    def name(self) -> str:
-        """Return the name of the sensor."""
-        model = self.coordinator.data.get(self.sn, {}).get("model", "Wallbox")
-        return f"Wallbox {model}"
 
     @property
     def unique_id(self) -> str:
@@ -79,14 +70,13 @@ class SemsSensor(CoordinatorEntity, SensorEntity):
         """Return the state of the device as human readable string."""
         data = self.coordinator.data.get(self.sn, {})
         status = data.get("status")
-
         if status == "EVDetail_Status_Title_Charging":
-            return "Charging"
+            return "charging"
         if status == "EVDetail_Status_Title_Waiting":
-            return "Standby"
+            return "standby"
         if status == "EVDetail_Status_Title_Offline":
-            return "Offline"
-        return "Unknown"
+            return "offline"
+        return "unknown"
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
@@ -102,15 +92,15 @@ class SemsSensor(CoordinatorEntity, SensorEntity):
     @property
     def icon(self) -> str:
         """Return dynamic icon based on status."""
-        state = self.state  # använder befintlig property 'state'
-        if state == "Charging":
+        state = self.state
+        if state == "charging":
             return "mdi:battery-charging-100"
-        if state == "Standby":
+        if state == "standby":
             return "mdi:ev-station"
-        if state == "Offline":
+        if state == "offline":
             return "mdi:power-plug-off"
         return "mdi:help-circle-outline"
-        
+
     @property
     def available(self) -> bool:
         """Return if entity is available."""
@@ -121,6 +111,7 @@ class SemsSensor(CoordinatorEntity, SensorEntity):
         data = self.coordinator.data.get(self.sn, {}) or {}
         return {
             "identifiers": {(DOMAIN, self.sn)},
+            "name": data.get("name") or f"GoodWe Wallbox {self.sn}",
             "manufacturer": "GoodWe",
             "model": data.get("model", "unknown"),
             "sw_version": data.get("fireware", "unknown"),
@@ -133,14 +124,16 @@ class SemsSensor(CoordinatorEntity, SensorEntity):
     async def async_update(self) -> None:
         """Update the entity via the coordinator."""
         await self.coordinator.async_request_refresh()
-        
+
 
 class SemsWorkStateSensor(CoordinatorEntity, SensorEntity):
-    """Workstate of Wallbox (Not Plugged in / Connected / Finished Charging / -- (charging) / Unknown)."""
+    """Workstate sensor for the wallbox EV plug state."""
 
     _attr_device_class = SensorDeviceClass.ENUM
-    _attr_options = ["Not Plugged in", "Connected", "Finished Charging", "--", "Unknown"]
+    _attr_options = ["not_plugged_in", "connected", "finished_charging", "dash", "unknown"]
     _attr_should_poll = False
+    _attr_has_entity_name = True
+    _attr_translation_key = "workstate"
 
     def __init__(self, coordinator: SemsUpdateCoordinator, sn: str) -> None:
         """Initialize the workstate sensor."""
@@ -149,45 +142,41 @@ class SemsWorkStateSensor(CoordinatorEntity, SensorEntity):
         _LOGGER.debug("Creating SemsWorkStateSensor with id %s", self.sn)
 
     @property
-    def name(self):
-        """Set the name of the WorkStatesensor."""
-        return f"Wallbox Workstate"
-
-    @property
     def unique_id(self) -> str:
         """Unique ID for workstate sensor."""
         sn = self.coordinator.data.get(self.sn, {}).get("sn", self.sn)
         return f"{sn}_workstate"
-        
+
     @property
     def native_value(self) -> str:
-        """Is car plugged in or not, Return the workstate of the device as human readable string."""
+        """Return the workstate of the device as a human-readable string."""
         data = self.coordinator.data.get(self.sn, {})
         workstate = data.get("workstate")
 
         if workstate == "EVDetail_Status_Waiting_Stat00":
-            return "Not Plugged in"
+            return "not_plugged_in"
         if workstate == "EVDetail_Status_Waiting_Stat01":
-            return "Connected"
+            return "connected"
         if workstate == "EVDetail_Status_Waiting_Stat02":
-            return "Finished Charging"
+            return "finished_charging"
         if workstate == "":
-            return "--"
-        return "Unknown"
+            return "dash"
+        return "unknown"
 
     @property
     def icon(self) -> str:
+        """Return a dynamic icon based on workstate."""
         state = self.native_value
-        if state == "Not Plugged in":
+        if state == "not_plugged_in":
             return "mdi:power-plug-off-outline"
-        if state == "Connected":
+        if state == "connected":
             return "mdi:power-plug"
-        if state == "Finished Charging":
+        if state == "finished_charging":
             return "mdi:battery-check"
-        if state == "--":
+        if state == "dash":
             return "mdi:progress-clock"
         return "mdi:help-circle-outline"
-        
+
     @property
     def available(self) -> bool:
         """Return if entity is available."""
@@ -198,6 +187,7 @@ class SemsWorkStateSensor(CoordinatorEntity, SensorEntity):
         data = self.coordinator.data.get(self.sn, {}) or {}
         return {
             "identifiers": {(DOMAIN, self.sn)},
+            "name": data.get("name") or f"GoodWe Wallbox {self.sn}",
             "manufacturer": "GoodWe",
             "model": data.get("model", "unknown"),
             "sw_version": data.get("fireware", "unknown"),
@@ -217,17 +207,15 @@ class SemsPowerSensor(CoordinatorEntity, SensorEntity):
 
     _attr_device_class = SensorDeviceClass.POWER
     _attr_should_poll = False
+    _attr_has_entity_name = True
+    _attr_translation_key = "power"
     _attr_native_unit_of_measurement = UnitOfPower.KILO_WATT
 
     def __init__(self, coordinator: SemsUpdateCoordinator, sn: str) -> None:
+        """Initialize the power sensor."""
         super().__init__(coordinator)
         self.sn = sn
         _LOGGER.debug("Creating SemsPowerSensor with id %s", self.sn)
-
-    @property
-    def name(self) -> str:
-        """Return the name of the sensor."""
-        return "Wallbox power"
 
     @property
     def unique_id(self) -> str:
@@ -247,6 +235,7 @@ class SemsPowerSensor(CoordinatorEntity, SensorEntity):
 
     @property
     def available(self) -> bool:
+        """Return if entity is available."""
         return self.coordinator.last_update_success
 
     @property
@@ -254,15 +243,18 @@ class SemsPowerSensor(CoordinatorEntity, SensorEntity):
         data = self.coordinator.data.get(self.sn, {}) or {}
         return {
             "identifiers": {(DOMAIN, self.sn)},
+            "name": data.get("name") or f"GoodWe Wallbox {self.sn}",
             "manufacturer": "GoodWe",
             "model": data.get("model", "unknown"),
             "sw_version": data.get("fireware", "unknown"),
         }
 
     async def async_added_to_hass(self) -> None:
+        """When entity is added to hass."""
         await super().async_added_to_hass()
 
     async def async_update(self) -> None:
+        """Update the entity via the coordinator."""
         await self.coordinator.async_request_refresh()
 
 
@@ -272,9 +264,12 @@ class SemsStatisticsSensor(CoordinatorEntity, SensorEntity):
     _attr_device_class = SensorDeviceClass.ENERGY
     _attr_state_class = SensorStateClass.TOTAL_INCREASING
     _attr_should_poll = False
+    _attr_has_entity_name = True
+    _attr_translation_key = "energy"
     _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
 
     def __init__(self, coordinator: SemsUpdateCoordinator, sn: str) -> None:
+        """Initialize the statistics sensor."""
         super().__init__(coordinator)
         self.sn = sn
         _LOGGER.debug("Creating SemsStatisticsSensor with id %s", self.sn)
@@ -284,8 +279,6 @@ class SemsStatisticsSensor(CoordinatorEntity, SensorEntity):
         """Return the value reported by the sensor (kWh)."""
         data = self.coordinator.data.get(self.sn, {}) or {}
         raw = data.get("chargeEnergy", 0)
-
-        # API vrací string – ošetříme to defensivně.
         try:
             return Decimal(str(raw))
         except Exception:  # noqa: BLE001
@@ -296,15 +289,12 @@ class SemsStatisticsSensor(CoordinatorEntity, SensorEntity):
 
     @property
     def available(self) -> bool:
+        """Return if entity is available."""
         return self.coordinator.last_update_success
 
     @property
-    def name(self) -> str:
-        """Return the name of the sensor."""
-        return "Wallbox Energy"
-
-    @property
     def unique_id(self) -> str:
+        """Unique ID for energy sensor."""
         sn = self.coordinator.data.get(self.sn, {}).get("sn", self.sn)
         return f"{sn}-energy"
 
@@ -313,13 +303,72 @@ class SemsStatisticsSensor(CoordinatorEntity, SensorEntity):
         data = self.coordinator.data.get(self.sn, {}) or {}
         return {
             "identifiers": {(DOMAIN, self.sn)},
+            "name": data.get("name") or f"GoodWe Wallbox {self.sn}",
             "manufacturer": "GoodWe",
             "model": data.get("model", "unknown"),
             "sw_version": data.get("fireware", "unknown"),
         }
 
     async def async_added_to_hass(self) -> None:
+        """When entity is added to hass."""
         await super().async_added_to_hass()
 
     async def async_update(self) -> None:
+        """Update the entity via the coordinator."""
+        await self.coordinator.async_request_refresh()
+
+
+class SemsCurrentSensor(CoordinatorEntity, SensorEntity):
+    """Instantaneous charging current sensor in A."""
+
+    _attr_device_class = SensorDeviceClass.CURRENT
+    _attr_should_poll = False
+    _attr_has_entity_name = True
+    _attr_translation_key = "current"
+    _attr_native_unit_of_measurement = UnitOfElectricCurrent.AMPERE
+
+    def __init__(self, coordinator: SemsUpdateCoordinator, sn: str) -> None:
+        """Initialize the current sensor."""
+        super().__init__(coordinator)
+        self.sn = sn
+        _LOGGER.debug("Creating SemsCurrentSensor with id %s", self.sn)
+
+    @property
+    def unique_id(self) -> str:
+        """Unique ID for current sensor."""
+        sn = self.coordinator.data.get(self.sn, {}).get("sn", self.sn)
+        return f"{sn}_current"
+
+    @property
+    def native_value(self) -> float:
+        """Return the charging current in A."""
+        data = self.coordinator.data.get(self.sn, {}) or {}
+        try:
+            current = float(data.get("current", 0) or 0)
+        except (TypeError, ValueError):
+            current = 0.0
+        return max(0.0, current)
+
+    @property
+    def available(self) -> bool:
+        """Return if entity is available."""
+        return self.coordinator.last_update_success
+
+    @property
+    def device_info(self) -> dict[str, Any]:
+        data = self.coordinator.data.get(self.sn, {}) or {}
+        return {
+            "identifiers": {(DOMAIN, self.sn)},
+            "name": data.get("name") or f"GoodWe Wallbox {self.sn}",
+            "manufacturer": "GoodWe",
+            "model": data.get("model", "unknown"),
+            "sw_version": data.get("fireware", "unknown"),
+        }
+
+    async def async_added_to_hass(self) -> None:
+        """When entity is added to hass."""
+        await super().async_added_to_hass()
+
+    async def async_update(self) -> None:
+        """Update the entity via the coordinator."""
         await self.coordinator.async_request_refresh()
