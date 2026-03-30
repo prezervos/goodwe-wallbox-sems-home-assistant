@@ -192,6 +192,7 @@ class SemsNumber(CoordinatorEntity, NumberEntity):
         # trigger _handle_coordinator_update on the select entity, which could
         # see the optimistically-written chargeMode and prematurely clear
         # _pending_mode — causing the very revert we are trying to prevent.
+        old_value = self._attr_native_value  # save before optimistic write for failure revert
         self._attr_native_value = float(value)
         device = self.coordinator.data.get(self.sn)
         if device is not None:
@@ -199,12 +200,27 @@ class SemsNumber(CoordinatorEntity, NumberEntity):
         self.async_write_ha_state()
 
         # 2) Call SEMS API — always Fast mode (0), since entity is unavailable otherwise
-        await self.hass.async_add_executor_job(
+        ok = await self.hass.async_add_executor_job(
             self.api.set_charge_mode,
             self.sn,
             0,
             value,
         )
+
+        if not ok:
+            # API call failed — revert optimistic value and coordinator.data
+            # so the slider goes back to whatever the device actually has.
+            _LOGGER.warning(
+                "set_charge_mode failed for %s (power=%s), reverting optimistic value",
+                self.sn,
+                value,
+            )
+            if old_value is not None:
+                self._attr_native_value = old_value
+                device = self.coordinator.data.get(self.sn)
+                if device is not None:
+                    device["set_charge_power"] = old_value
+            self.async_write_ha_state()
 
         # 3) Schedule refresh (non-blocking)
         self.hass.async_create_task(self.coordinator.async_request_refresh())

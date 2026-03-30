@@ -128,6 +128,7 @@ class InverterOperationModeEntity(CoordinatorEntity, SelectEntity):
         )
 
         # Optimistic UI update for select entity
+        old_option = self._attr_current_option  # save before optimistic write for failure revert
         self._attr_current_option = option
         self.async_write_ha_state()
 
@@ -174,12 +175,27 @@ class InverterOperationModeEntity(CoordinatorEntity, SelectEntity):
         self._pending_mode = mode
         self._pending_mode_set_at = time.monotonic()
 
-        await self.hass.async_add_executor_job(
+        ok = await self.hass.async_add_executor_job(
             self.api.set_charge_mode,
             self.sn,
             mode,
             charge_power,
         )
+
+        if not ok:
+            # API call failed (timeout, network error, auth failure).
+            # Cancel the pending guard and revert the optimistic UI state so
+            # the select shows whatever the coordinator last reported.
+            _LOGGER.warning(
+                "set_charge_mode failed for %s (mode=%s), reverting optimistic UI state",
+                self.sn,
+                mode,
+            )
+            self._pending_mode = None
+            self._attr_current_option = old_option
+            self.async_write_ha_state()
+            self.hass.async_create_task(self.coordinator.async_request_refresh())
+            return
 
         # Superseded-call guard: discard this call's result if a newer
         # dispatch has taken over.  Two cases:

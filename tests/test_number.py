@@ -229,6 +229,7 @@ class TestSetNativeValue:
             data_at_api_call_time.append(
                 entity.coordinator.data[SAMPLE_SN].get("set_charge_power")
             )
+            return True
 
         entity.api.set_charge_mode = capture_api
 
@@ -289,6 +290,28 @@ class TestSetNativeValue:
         await entity.async_set_native_value(10.3)
         _, _, power_arg = entity.api.set_charge_mode.call_args[0]
         assert power_arg == 10.3
+
+    @pytest.mark.asyncio
+    async def test_slider_reverts_value_on_api_failure(self):
+        """If set_charge_mode returns False the slider must revert to the value
+        currently in coordinator.data and async_write_ha_state must be called
+        so the UI reflects the revert immediately."""
+        entity = _make_entity(chargeMode=0, set_charge_power=7.4)
+        entity.api.set_charge_mode = MagicMock(return_value=False)
+        await entity.async_set_native_value(9.0)
+        assert entity._attr_native_value == 7.4
+        assert entity.coordinator.data[SAMPLE_SN]["set_charge_power"] == 7.4
+        # write_ha_state must be called to push the reverted value to the UI
+        entity.async_write_ha_state.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_slider_still_schedules_refresh_on_api_failure(self):
+        """A coordinator refresh must be scheduled even when the API call fails,
+        so the UI reconciles with the actual device state."""
+        entity = _make_entity(chargeMode=0, set_charge_power=7.4)
+        entity.api.set_charge_mode = MagicMock(return_value=False)
+        await entity.async_set_native_value(9.0)
+        entity.hass.async_create_task.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
