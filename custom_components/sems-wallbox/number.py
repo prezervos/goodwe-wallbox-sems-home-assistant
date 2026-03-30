@@ -210,17 +210,21 @@ class SemsNumber(CoordinatorEntity, NumberEntity):
         if not ok:
             # API call failed — revert optimistic value and coordinator.data
             # so the slider goes back to whatever the device actually has.
+            # But only revert if still in Fast mode (entity available): if the mode
+            # has already switched to PV while this call was in flight, we must NOT
+            # overwrite the preserved PV power value — the user set 11 kW and we
+            # should remember it for the next switch back to Fast.
             _LOGGER.warning(
                 "set_charge_mode failed for %s (power=%s), reverting optimistic value",
                 self.sn,
                 value,
             )
-            if old_value is not None:
+            if old_value is not None and self.available:
                 self._attr_native_value = old_value
                 device = self.coordinator.data.get(self.sn)
                 if device is not None:
                     device["set_charge_power"] = old_value
-            self.async_write_ha_state()
+                self.async_write_ha_state()
 
         # 3) Schedule refresh (non-blocking)
         self.hass.async_create_task(self.coordinator.async_request_refresh())

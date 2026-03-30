@@ -313,6 +313,35 @@ class TestSetNativeValue:
         await entity.async_set_native_value(9.0)
         entity.hass.async_create_task.assert_called_once()
 
+    @pytest.mark.asyncio
+    async def test_slider_does_not_revert_when_pv_mode_during_timeout(self):
+        """If an API call times out while the mode has already switched to PV
+        (entity becomes unavailable), the revert must NOT overwrite the preserved
+        PV power value.  The user set 11 kW; we must remember that for the next
+        switch back to Fast — not silently revert to the old 7.4 kW.
+
+        Real-world scenario (from log):
+          15:27:30 Slider moved to 11 kW → API call starts (30 s timeout)
+          15:27:33 PV mode selected → confirmed by poll, slider hidden (unavailable)
+          15:28:00 Set-Fast-11 API call finally times out → revert must be skipped
+        """
+        entity = _make_entity(chargeMode=0, set_charge_power=7.4)
+
+        def side_effect(sn, mode, power):
+            # Simulate: while waiting for the API, PV mode was confirmed by poll →
+            # coordinator.data now shows chargeMode=1, slider is unavailable.
+            entity.coordinator.data[SAMPLE_SN]["chargeMode"] = 1
+            return False  # timeout
+
+        entity.api.set_charge_mode = side_effect
+
+        await entity.async_set_native_value(11.0)
+
+        # native_value must stay at 11.0 (not reverted to 7.4)
+        assert entity._attr_native_value == 11.0
+        # coordinator.data must also keep 11.0 so select.py uses it on next Fast switch
+        assert entity.coordinator.data[SAMPLE_SN]["set_charge_power"] == 11.0
+
 
 # ---------------------------------------------------------------------------
 # Tests: _handle_coordinator_update
