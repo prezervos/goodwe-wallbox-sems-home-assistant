@@ -181,6 +181,19 @@ class InverterOperationModeEntity(CoordinatorEntity, SelectEntity):
             charge_power,
         )
 
+        # Superseded-call guard: if another async_select_option dispatch started
+        # while we were awaiting the API (user changed mode again), _pending_mode
+        # will no longer equal `mode`.  Our result is stale — skip any further
+        # writes to avoid clobbering the newer request.
+        if self._pending_mode is not None and self._pending_mode != mode:
+            _LOGGER.debug(
+                "Mode call for %s (mode=%s) superseded by pending mode=%s, discarding result",
+                self.sn,
+                mode,
+                self._pending_mode,
+            )
+            return
+
         # Race-condition guard for Fast mode: if the user moved the power slider
         # while this API call was in flight, number.py will have written the new
         # value into coordinator.data optimistically.  Re-send with the latest

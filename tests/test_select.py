@@ -255,6 +255,33 @@ class TestSelectOption:
         await entity.async_select_option("fast")
         entity.api.set_charge_mode.assert_called_once_with(SAMPLE_SN, 0, 6.0)
 
+    @pytest.mark.asyncio
+    async def test_superseded_fast_call_does_not_refires_when_pv_pending(self):
+        """If the user switches Fast then immediately PV, the Fast call's result
+        must be discarded (no re-fire, no refresh) because _pending_mode is now 1."""
+        entity = _make_entity(chargeMode=1, set_charge_power=6.0)
+
+        calls = []
+
+        def side_effect(sn, mode, power):
+            calls.append((sn, mode, power))
+            # Simulate: slider moved to 11 AND user then clicked PV
+            # while this Fast API call was in flight.
+            if len(calls) == 1:
+                entity.coordinator.data[SAMPLE_SN]["set_charge_power"] = 11.0
+                # Newer PV dispatch overwrites _pending_mode
+                entity._pending_mode = 1
+
+        entity.api.set_charge_mode = side_effect
+
+        await entity.async_select_option("fast")
+
+        # Only the original Fast call — no re-fire because _pending_mode=1 != mode=0
+        assert len(calls) == 1
+        assert calls[0] == (SAMPLE_SN, 0, 6.0)
+        # No refresh scheduled either
+        entity.hass.async_create_task.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # Tests: coordinator update
