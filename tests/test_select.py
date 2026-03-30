@@ -323,10 +323,12 @@ class TestSelectOption:
     async def test_mode_switch_reverts_on_api_failure(self):
         """If set_charge_mode returns False the select entity must revert
         _attr_current_option to whatever coordinator.data currently holds,
-        clear _pending_mode, and schedule a coordinator refresh."""
+        clear _pending_mode, and schedule a coordinator refresh.
+        HomeAssistantError is raised so HA shows a toast notification."""
         entity = _make_entity(chargeMode=0, set_charge_power=6.0)  # currently Fast
         entity.api.set_charge_mode = MagicMock(return_value=False)
-        await entity.async_select_option("pv_priority")
+        with pytest.raises(Exception):  # HomeAssistantError
+            await entity.async_select_option("pv_priority")
         # _attr_current_option must be reverted to "fast" (chargeMode=0 in coordinator)
         assert entity._attr_current_option == "fast"
         # _pending_mode must be cleared so poll-based guard works correctly
@@ -340,7 +342,8 @@ class TestSelectOption:
         reflects the correct option without waiting for the next poll."""
         entity = _make_entity(chargeMode=0, set_charge_power=6.0)
         entity.api.set_charge_mode = MagicMock(return_value=False)
-        await entity.async_select_option("pv_priority")
+        with pytest.raises(Exception):  # HomeAssistantError
+            await entity.async_select_option("pv_priority")
         entity.async_write_ha_state.assert_called()
 
 

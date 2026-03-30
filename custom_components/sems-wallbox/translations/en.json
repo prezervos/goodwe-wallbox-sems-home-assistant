@@ -1,5 +1,13 @@
 {
     "title": "GoodWe SEMS API for Wallbox",
+    "exceptions": {
+        "set_charge_mode_failed": {
+            "message": "Failed to set charge mode to {option}. The previous mode has been restored."
+        },
+        "set_charge_power_failed": {
+            "message": "Failed to set charge power to {value} kW. The previous value has been restored."
+        }
+    },
     "config": {
         "abort": {
             "already_configured": "Device is already configured"

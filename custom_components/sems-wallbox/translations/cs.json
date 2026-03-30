@@ -1,5 +1,13 @@
 {
     "title": "GoodWe SEMS API pro Wallbox",
+    "exceptions": {
+        "set_charge_mode_failed": {
+            "message": "Nepodařilo se nastavit režim nabíjení na {option}. Předchozí režim byl obnoven."
+        },
+        "set_charge_power_failed": {
+            "message": "Nepodařilo se nastavit výkon nabíjení na {value} kW. Předchozí hodnota byla obnovena."
+        }
+    },
     "config": {
         "abort": {
             "already_configured": "Zařízení je již nakonfigurováno"
