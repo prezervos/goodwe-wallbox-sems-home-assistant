@@ -7,6 +7,7 @@ from homeassistant.components.select import SelectEntity, SelectEntityDescriptio
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
@@ -128,6 +129,7 @@ class InverterOperationModeEntity(CoordinatorEntity, SelectEntity):
         )
 
         # Optimistic UI update for select entity
+        old_option = self._attr_current_option  # save before optimistic write for failure revert
         self._attr_current_option = option
         self.async_write_ha_state()
 
@@ -157,23 +159,96 @@ class InverterOperationModeEntity(CoordinatorEntity, SelectEntity):
                 cp = _min
             charge_power = cp
 
-        # Immediately propagate new chargeMode into coordinator.data so that
-        # dependent entities (number slider) react before the API call finishes.
+        # Immediately propagate new chargeMode (and the actual charge_power
+        # we are about to send) into coordinator.data so that:
+        #   a) dependent entities (number slider) react before the API call finishes.
+        #   b) the clamped / resolved charge_power is visible, so a later write
+        #      by number.py can be distinguished from a clamping artefact.
         current_device = self.coordinator.data.get(self.sn, {}) or {}
+        updated_device = {**current_device, "chargeMode": mode}
+        if mode == 0:
+            updated_device["set_charge_power"] = charge_power
         self.coordinator.async_set_updated_data(
-            {**self.coordinator.data, self.sn: {**current_device, "chargeMode": mode}}
+            {**self.coordinator.data, self.sn: updated_device}
         )
         # Set pending AFTER async_set_updated_data so the synchronous
         # _handle_coordinator_update call inside it doesn't clear the flag.
         self._pending_mode = mode
         self._pending_mode_set_at = time.monotonic()
 
-        await self.hass.async_add_executor_job(
+        ok = await self.hass.async_add_executor_job(
             self.api.set_charge_mode,
             self.sn,
             mode,
             charge_power,
         )
+
+        if not ok:
+            # API call failed (timeout, network error, auth failure).
+            # Cancel the pending guard and revert the optimistic UI state so
+            # the select shows whatever the coordinator last reported.
+            _LOGGER.warning(
+                "set_charge_mode failed for %s (mode=%s), reverting optimistic UI state",
+                self.sn,
+                mode,
+            )
+            self._pending_mode = None
+            self._attr_current_option = old_option
+            self.async_write_ha_state()
+            self.hass.async_create_task(self.coordinator.async_request_refresh())
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key=f"set_charge_mode_failed_{option}",
+            )
+
+        # Superseded-call guard: discard this call's result if a newer
+        # dispatch has taken over.  Two cases:
+        #
+        #   a) _pending_mode is set to a *different* mode: a newer dispatch
+        #      started while we were awaiting the API and hasn't finished yet.
+        #
+        #   b) coordinator.data["chargeMode"] != mode: a poll (or optimistic
+        #      update from a newer dispatch) has already confirmed a different
+        #      mode.  This catches the case where _pending_mode was already
+        #      cleared by a poll confirmation BEFORE a long (e.g. 30 s
+        #      timed-out) call finally returned.
+        current_device_supersede = self.coordinator.data.get(self.sn, {}) or {}
+        current_chargemode = current_device_supersede.get("chargeMode")
+        if (self._pending_mode is not None and self._pending_mode != mode) or current_chargemode != mode:
+            _LOGGER.debug(
+                "Mode call for %s (mode=%s) superseded (pending=%s, current chargeMode=%s), discarding result",
+                self.sn,
+                mode,
+                self._pending_mode,
+                current_chargemode,
+            )
+            return
+
+        # Race-condition guard for Fast mode: if the user moved the power slider
+        # while this API call was in flight, number.py will have written the new
+        # value into coordinator.data optimistically.  Re-send with the latest
+        # power so the SEMS API ends up with the value the user actually wants
+        # (last write wins — both calls use the same set_charge_mode endpoint).
+        if mode == 0:
+            current_data = self.coordinator.data.get(self.sn, {}) or {}
+            latest_raw = current_data.get("set_charge_power")
+            try:
+                latest_power = float(latest_raw) if latest_raw is not None else None
+            except (TypeError, ValueError):
+                latest_power = None
+            if latest_power is not None and latest_power != charge_power:
+                _LOGGER.debug(
+                    "Power changed during mode switch for %s (%.2f → %.2f kW), re-sending",
+                    self.sn,
+                    charge_power,
+                    latest_power,
+                )
+                await self.hass.async_add_executor_job(
+                    self.api.set_charge_mode,
+                    self.sn,
+                    0,
+                    latest_power,
+                )
 
         # Schedule a full refresh to confirm state from the API.
         self.hass.async_create_task(self.coordinator.async_request_refresh())

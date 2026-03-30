@@ -1,5 +1,19 @@
 {
     "title": "GoodWe SEMS API pro Wallbox",
+    "exceptions": {
+        "set_charge_mode_failed_fast": {
+            "message": "Přepnutí do režimu Rychlé nabíjení se nezdařilo (vypršel časový limit nebo chyba sítě). Předchozí režim byl obnoven."
+        },
+        "set_charge_mode_failed_pv_priority": {
+            "message": "Přepnutí do režimu PV Priorita se nezdařilo (vypršel časový limit nebo chyba sítě). Předchozí režim byl obnoven."
+        },
+        "set_charge_mode_failed_pv_and_battery": {
+            "message": "Přepnutí do režimu PV a baterie se nezdařilo (vypršel časový limit nebo chyba sítě). Předchozí režim byl obnoven."
+        },
+        "set_charge_power_failed": {
+            "message": "Nepodařilo se nastavit výkon nabíjení na {value} kW. Předchozí hodnota byla obnovena."
+        }
+    },
     "config": {
         "abort": {
             "already_configured": "Zařízení je již nakonfigurováno"

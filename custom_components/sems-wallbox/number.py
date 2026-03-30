@@ -11,6 +11,7 @@ from homeassistant.components.number import (
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import UnitOfPower
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
@@ -19,7 +20,7 @@ from .coordinator import SemsUpdateCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
-NUMBER_VERSION = "0.3.1"
+NUMBER_VERSION = "0.3.2"
 
 
 async def async_setup_entry(
@@ -140,15 +141,30 @@ class SemsNumber(CoordinatorEntity, NumberEntity):
         """Handle updated data from the coordinator."""
         data = self.coordinator.data.get(self.sn, {}) or {}
         set_charge_power = data.get("set_charge_power")
-        if set_charge_power is not None:
-            try:
-                self._attr_native_value = float(set_charge_power)
-            except (TypeError, ValueError):
-                _LOGGER.warning(
-                    "SemsNumber %s: invalid set_charge_power value %r from API",
-                    self.sn,
-                    set_charge_power,
-                )
+        charge_mode = data.get("chargeMode")
+
+        if charge_mode == 0:
+            # Fast mode — accept the value the API reports.
+            if set_charge_power is not None:
+                try:
+                    self._attr_native_value = float(set_charge_power)
+                except (TypeError, ValueError):
+                    _LOGGER.warning(
+                        "SemsNumber %s: invalid set_charge_power value %r from API",
+                        self.sn,
+                        set_charge_power,
+                    )
+        else:
+            # PV mode — the device may report a stale / default set_charge_power.
+            # Preserve the last user-set value so that switching back to Fast
+            # restores it correctly.  Patch coordinator.data directly (no listeners
+            # triggered) so select.py also reads the preserved value when it builds
+            # the API payload for the next Fast-mode switch.
+            if self._attr_native_value is not None:
+                device = self.coordinator.data.get(self.sn)
+                if device is not None:
+                    device["set_charge_power"] = self._attr_native_value
+
         _LOGGER.debug(
             "SemsNumber coordinator update SN=%s -> native_value=%s, available=%s",
             self.sn,
@@ -169,17 +185,53 @@ class SemsNumber(CoordinatorEntity, NumberEntity):
             value,
         )
 
-        # 1) Optimistic UI update
+        # 1) Optimistic UI update — also write the new power directly into
+        # coordinator.data (without going through async_set_updated_data) so
+        # that an in-flight select.py mode-switch call can detect it after its
+        # own API call finishes and re-send with the correct power.
+        # We deliberately avoid async_set_updated_data here: calling it would
+        # trigger _handle_coordinator_update on the select entity, which could
+        # see the optimistically-written chargeMode and prematurely clear
+        # _pending_mode — causing the very revert we are trying to prevent.
+        old_value = self._attr_native_value  # save before optimistic write for failure revert
         self._attr_native_value = float(value)
+        device = self.coordinator.data.get(self.sn)
+        if device is not None:
+            device["set_charge_power"] = float(value)
         self.async_write_ha_state()
 
         # 2) Call SEMS API — always Fast mode (0), since entity is unavailable otherwise
-        await self.hass.async_add_executor_job(
+        ok = await self.hass.async_add_executor_job(
             self.api.set_charge_mode,
             self.sn,
             0,
             value,
         )
+
+        if not ok:
+            # API call failed — revert optimistic value and coordinator.data
+            # so the slider goes back to whatever the device actually has.
+            # But only revert if still in Fast mode (entity available): if the mode
+            # has already switched to PV while this call was in flight, we must NOT
+            # overwrite the preserved PV power value — the user set 11 kW and we
+            # should remember it for the next switch back to Fast.
+            _LOGGER.warning(
+                "set_charge_mode failed for %s (power=%s), reverting optimistic value",
+                self.sn,
+                value,
+            )
+            if old_value is not None and self.available:
+                self._attr_native_value = old_value
+                device = self.coordinator.data.get(self.sn)
+                if device is not None:
+                    device["set_charge_power"] = old_value
+                self.async_write_ha_state()
+            self.hass.async_create_task(self.coordinator.async_request_refresh())
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="set_charge_power_failed",
+                translation_placeholders={"value": str(value)},
+            )
 
         # 3) Schedule refresh (non-blocking)
         self.hass.async_create_task(self.coordinator.async_request_refresh())

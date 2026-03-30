@@ -332,7 +332,7 @@ class SemsApi:
 
             if not self._ensure_token(renew=renewToken):
                 _LOGGER.error("SEMS - Could not ensure token before set_charge_mode")
-                return
+                return False
 
             headers = self._build_headers()
             _LOGGER.debug(
@@ -386,11 +386,12 @@ class SemsApi:
                     response.status_code,
                     response.text,
                 )
-                return
+                return False
 
-            return
+            return True
         except Exception as exc:  # noqa: BLE001
             _LOGGER.error("Unable to execute SetChargeMode command. %s", exc)
+            return False
 
 
 class OutOfRetries(exceptions.HomeAssistantError):

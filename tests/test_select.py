@@ -216,6 +216,136 @@ class TestSelectOption:
         await entity.async_select_option("invalid_option")
         entity.api.set_charge_mode.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_switch_to_fast_writes_charge_power_into_coordinator_data(self):
+        """When switching to Fast, the (possibly clamped) charge_power must be
+        written into coordinator.data immediately alongside chargeMode=0, so that
+        a later write by number.py can be unambiguously detected as a slider move."""
+        entity = _make_entity(chargeMode=1, set_charge_power=6.0)
+        await entity.async_select_option("fast")
+        assert entity.coordinator.data[SAMPLE_SN]["set_charge_power"] == 6.0
+
+    @pytest.mark.asyncio
+    async def test_switch_to_fast_resends_if_power_changed_during_api_call(self):
+        """If number.py updates set_charge_power in coordinator.data while the
+        mode-switch API call is in flight (slider moved by user), select must
+        re-fire set_charge_mode with the new power so the last write wins."""
+        entity = _make_entity(chargeMode=1, set_charge_power=6.0)
+
+        calls = []
+
+        def side_effect(sn, mode, power):
+            calls.append((sn, mode, power))
+            # Simulate number.py's optimistic write during the first API call
+            if len(calls) == 1:
+                entity.coordinator.data[SAMPLE_SN]["set_charge_power"] = 11.0
+            return True
+
+        entity.api.set_charge_mode = side_effect
+
+        await entity.async_select_option("fast")
+
+        assert len(calls) == 2
+        assert calls[0] == (SAMPLE_SN, 0, 6.0)
+        assert calls[1] == (SAMPLE_SN, 0, 11.0)
+
+    @pytest.mark.asyncio
+    async def test_switch_to_fast_no_resend_if_power_unchanged_during_api_call(self):
+        """If set_charge_power did not change during the API call, no re-fire."""
+        entity = _make_entity(chargeMode=1, set_charge_power=6.0)
+        await entity.async_select_option("fast")
+        entity.api.set_charge_mode.assert_called_once_with(SAMPLE_SN, 0, 6.0)
+
+    @pytest.mark.asyncio
+    async def test_superseded_fast_call_does_not_refires_when_pv_pending(self):
+        """If the user switches Fast then immediately PV, the Fast call's result
+        must be discarded (no re-fire, no refresh) because _pending_mode is now 1."""
+        entity = _make_entity(chargeMode=1, set_charge_power=6.0)
+
+        calls = []
+
+        def side_effect(sn, mode, power):
+            calls.append((sn, mode, power))
+            # Simulate: slider moved to 11 AND user then clicked PV
+            # while this Fast API call was in flight.
+            if len(calls) == 1:
+                entity.coordinator.data[SAMPLE_SN]["set_charge_power"] = 11.0
+                # Newer PV dispatch overwrites _pending_mode
+                entity._pending_mode = 1
+            return True
+
+        entity.api.set_charge_mode = side_effect
+
+        await entity.async_select_option("fast")
+
+        # Only the original Fast call — no re-fire because _pending_mode=1 != mode=0
+        assert len(calls) == 1
+        assert calls[0] == (SAMPLE_SN, 0, 6.0)
+        # No refresh scheduled either
+        entity.hass.async_create_task.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_superseded_fast_call_discarded_when_pv_already_confirmed_by_poll(self):
+        """The superseded guard must also fire when _pending_mode was already
+        cleared by a poll confirming PV *before* a timed-out Fast call returned.
+
+        Real-world scenario (from log):
+          14:55:33 Fast call starts (30 s timeout)
+          14:55:49 PV call starts, _pending_mode=1
+          14:56:00 Poll confirms PV → _pending_mode cleared to None
+          14:56:03 Fast call FINALLY returns after timeout
+                   _pending_mode is None → old guard didn't fire
+                   coordinator.data["chargeMode"] = 1 → new guard fires ✓
+        """
+        entity = _make_entity(chargeMode=1, set_charge_power=6.0)
+
+        calls = []
+
+        def side_effect(sn, mode, power):
+            calls.append((sn, mode, power))
+            if len(calls) == 1:
+                # Simulate: PV dispatch ran AND poll confirmed it while we waited.
+                # _pending_mode is now None (poll cleared it), but chargeMode=1.
+                entity._pending_mode = None
+                entity.coordinator.data[SAMPLE_SN]["chargeMode"] = 1
+                entity.coordinator.data[SAMPLE_SN]["set_charge_power"] = 11.0
+            return True
+
+        entity.api.set_charge_mode = side_effect
+
+        await entity.async_select_option("fast")
+
+        # Only the original Fast call — no re-fire because chargeMode is now 1
+        assert len(calls) == 1
+        entity.hass.async_create_task.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_mode_switch_reverts_on_api_failure(self):
+        """If set_charge_mode returns False the select entity must revert
+        _attr_current_option to whatever coordinator.data currently holds,
+        clear _pending_mode, and schedule a coordinator refresh.
+        HomeAssistantError is raised so HA shows a toast notification."""
+        entity = _make_entity(chargeMode=0, set_charge_power=6.0)  # currently Fast
+        entity.api.set_charge_mode = MagicMock(return_value=False)
+        with pytest.raises(Exception):  # HomeAssistantError
+            await entity.async_select_option("pv_priority")
+        # _attr_current_option must be reverted to "fast" (chargeMode=0 in coordinator)
+        assert entity._attr_current_option == "fast"
+        # _pending_mode must be cleared so poll-based guard works correctly
+        assert entity._pending_mode is None
+        # A refresh must be scheduled so the UI catches up with the real device
+        entity.hass.async_create_task.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_mode_switch_revert_calls_write_ha_state_on_failure(self):
+        """async_write_ha_state must be called after reverting so the UI
+        reflects the correct option without waiting for the next poll."""
+        entity = _make_entity(chargeMode=0, set_charge_power=6.0)
+        entity.api.set_charge_mode = MagicMock(return_value=False)
+        with pytest.raises(Exception):  # HomeAssistantError
+            await entity.async_select_option("pv_priority")
+        entity.async_write_ha_state.assert_called()
+
 
 # ---------------------------------------------------------------------------
 # Tests: coordinator update

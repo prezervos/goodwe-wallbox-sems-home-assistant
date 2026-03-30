@@ -15,7 +15,7 @@ from .coordinator import SemsUpdateCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
-SWITCH_VERSION = "0.3.3"
+SWITCH_VERSION = "0.3.4"
 
 # How long after an ON command to ignore "Waiting/power=0" and keep optimistic ON (seconds)
 GRACE_ON_SECONDS = 130
