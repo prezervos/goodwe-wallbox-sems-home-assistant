@@ -216,6 +216,45 @@ class TestSelectOption:
         await entity.async_select_option("invalid_option")
         entity.api.set_charge_mode.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_switch_to_fast_writes_charge_power_into_coordinator_data(self):
+        """When switching to Fast, the (possibly clamped) charge_power must be
+        written into coordinator.data immediately alongside chargeMode=0, so that
+        a later write by number.py can be unambiguously detected as a slider move."""
+        entity = _make_entity(chargeMode=1, set_charge_power=6.0)
+        await entity.async_select_option("fast")
+        assert entity.coordinator.data[SAMPLE_SN]["set_charge_power"] == 6.0
+
+    @pytest.mark.asyncio
+    async def test_switch_to_fast_resends_if_power_changed_during_api_call(self):
+        """If number.py updates set_charge_power in coordinator.data while the
+        mode-switch API call is in flight (slider moved by user), select must
+        re-fire set_charge_mode with the new power so the last write wins."""
+        entity = _make_entity(chargeMode=1, set_charge_power=6.0)
+
+        calls = []
+
+        def side_effect(sn, mode, power):
+            calls.append((sn, mode, power))
+            # Simulate number.py's optimistic write during the first API call
+            if len(calls) == 1:
+                entity.coordinator.data[SAMPLE_SN]["set_charge_power"] = 11.0
+
+        entity.api.set_charge_mode = side_effect
+
+        await entity.async_select_option("fast")
+
+        assert len(calls) == 2
+        assert calls[0] == (SAMPLE_SN, 0, 6.0)
+        assert calls[1] == (SAMPLE_SN, 0, 11.0)
+
+    @pytest.mark.asyncio
+    async def test_switch_to_fast_no_resend_if_power_unchanged_during_api_call(self):
+        """If set_charge_power did not change during the API call, no re-fire."""
+        entity = _make_entity(chargeMode=1, set_charge_power=6.0)
+        await entity.async_select_option("fast")
+        entity.api.set_charge_mode.assert_called_once_with(SAMPLE_SN, 0, 6.0)
+
 
 # ---------------------------------------------------------------------------
 # Tests: coordinator update

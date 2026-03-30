@@ -157,11 +157,17 @@ class InverterOperationModeEntity(CoordinatorEntity, SelectEntity):
                 cp = _min
             charge_power = cp
 
-        # Immediately propagate new chargeMode into coordinator.data so that
-        # dependent entities (number slider) react before the API call finishes.
+        # Immediately propagate new chargeMode (and the actual charge_power
+        # we are about to send) into coordinator.data so that:
+        #   a) dependent entities (number slider) react before the API call finishes.
+        #   b) the clamped / resolved charge_power is visible, so a later write
+        #      by number.py can be distinguished from a clamping artefact.
         current_device = self.coordinator.data.get(self.sn, {}) or {}
+        updated_device = {**current_device, "chargeMode": mode}
+        if mode == 0:
+            updated_device["set_charge_power"] = charge_power
         self.coordinator.async_set_updated_data(
-            {**self.coordinator.data, self.sn: {**current_device, "chargeMode": mode}}
+            {**self.coordinator.data, self.sn: updated_device}
         )
         # Set pending AFTER async_set_updated_data so the synchronous
         # _handle_coordinator_update call inside it doesn't clear the flag.
@@ -174,6 +180,32 @@ class InverterOperationModeEntity(CoordinatorEntity, SelectEntity):
             mode,
             charge_power,
         )
+
+        # Race-condition guard for Fast mode: if the user moved the power slider
+        # while this API call was in flight, number.py will have written the new
+        # value into coordinator.data optimistically.  Re-send with the latest
+        # power so the SEMS API ends up with the value the user actually wants
+        # (last write wins — both calls use the same set_charge_mode endpoint).
+        if mode == 0:
+            current_data = self.coordinator.data.get(self.sn, {}) or {}
+            latest_raw = current_data.get("set_charge_power")
+            try:
+                latest_power = float(latest_raw) if latest_raw is not None else None
+            except (TypeError, ValueError):
+                latest_power = None
+            if latest_power is not None and latest_power != charge_power:
+                _LOGGER.debug(
+                    "Power changed during mode switch for %s (%.2f → %.2f kW), re-sending",
+                    self.sn,
+                    charge_power,
+                    latest_power,
+                )
+                await self.hass.async_add_executor_job(
+                    self.api.set_charge_mode,
+                    self.sn,
+                    0,
+                    latest_power,
+                )
 
         # Schedule a full refresh to confirm state from the API.
         self.hass.async_create_task(self.coordinator.async_request_refresh())

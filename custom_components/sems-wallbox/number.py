@@ -19,7 +19,7 @@ from .coordinator import SemsUpdateCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
-NUMBER_VERSION = "0.3.1"
+NUMBER_VERSION = "0.3.2"
 
 
 async def async_setup_entry(
@@ -169,8 +169,15 @@ class SemsNumber(CoordinatorEntity, NumberEntity):
             value,
         )
 
-        # 1) Optimistic UI update
+        # 1) Optimistic UI update — also propagate the new value into
+        # coordinator.data so that an in-flight select.py mode-switch call
+        # can detect it after its own API call finishes and re-send with the
+        # correct power (last-write-wins via a single atomic API call).
         self._attr_native_value = float(value)
+        current_device = self.coordinator.data.get(self.sn, {}) or {}
+        self.coordinator.async_set_updated_data(
+            {**self.coordinator.data, self.sn: {**current_device, "set_charge_power": float(value)}}
+        )
         self.async_write_ha_state()
 
         # 2) Call SEMS API — always Fast mode (0), since entity is unavailable otherwise

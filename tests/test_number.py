@@ -216,6 +216,30 @@ class TestSetNativeValue:
         entity.api.set_charge_mode.assert_called_once_with(SAMPLE_SN, 0, 9.0)
 
     @pytest.mark.asyncio
+    async def test_slider_updates_coordinator_data_before_api_call(self):
+        """async_set_native_value must write set_charge_power into coordinator.data
+        before awaiting the API, so that an in-flight select.py mode-switch call
+        can detect the change and re-send with the correct power."""
+        entity = _make_entity(chargeMode=0, set_charge_power=7.4)
+
+        data_at_api_call_time: list[float] = []
+
+        def capture_api(sn, mode, value):
+            # Read coordinator.data at the moment the API is called
+            data_at_api_call_time.append(
+                entity.coordinator.data[SAMPLE_SN].get("set_charge_power")
+            )
+
+        entity.api.set_charge_mode = capture_api
+
+        await entity.async_set_native_value(9.0)
+
+        # coordinator.data must already hold 9.0 when the API was called
+        assert data_at_api_call_time == [9.0]
+        # And still correct after the call
+        assert entity.coordinator.data[SAMPLE_SN]["set_charge_power"] == 9.0
+
+    @pytest.mark.asyncio
     async def test_slider_optimistic_update_before_api(self):
         """native_value must be updated optimistically before the API call."""
         call_order: list[str] = []
