@@ -225,6 +225,22 @@ class SemsNumber(CoordinatorEntity, NumberEntity):
                 if device is not None:
                     device["set_charge_power"] = old_value
                 self.async_write_ha_state()
+            try:
+                from homeassistant.components.persistent_notification import (  # noqa: PLC0415
+                    async_create as _pn_create,
+                )
+                _pn_create(
+                    self.hass,
+                    message=(
+                        f"Setting charge power for wallbox **{self.sn}** to "
+                        f"**{value} kW** failed (timeout or network error). "
+                        "The previous value has been restored."
+                    ),
+                    title="Wallbox: failed to set charge power",
+                    notification_id=f"sems_wallbox_{self.sn}_set_power_failed",
+                )
+            except Exception:  # noqa: BLE001
+                pass
 
         # 3) Schedule refresh (non-blocking)
         self.hass.async_create_task(self.coordinator.async_request_refresh())

@@ -195,6 +195,22 @@ class InverterOperationModeEntity(CoordinatorEntity, SelectEntity):
             self._attr_current_option = old_option
             self.async_write_ha_state()
             self.hass.async_create_task(self.coordinator.async_request_refresh())
+            try:
+                from homeassistant.components.persistent_notification import (  # noqa: PLC0415
+                    async_create as _pn_create,
+                )
+                _pn_create(
+                    self.hass,
+                    message=(
+                        f"Setting charge mode for wallbox **{self.sn}** to "
+                        f"**{option}** failed (timeout or network error). "
+                        "The previous mode has been restored."
+                    ),
+                    title="Wallbox: failed to set charge mode",
+                    notification_id=f"sems_wallbox_{self.sn}_set_mode_failed",
+                )
+            except Exception:  # noqa: BLE001
+                pass
             return
 
         # Superseded-call guard: discard this call's result if a newer
