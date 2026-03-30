@@ -1,8 +1,14 @@
 {
   "title": "GoodWe SEMS Wallbox API",
   "exceptions": {
-    "set_charge_mode_failed": {
-      "message": "Failed to set charge mode to {option}. The previous mode has been restored."
+    "set_charge_mode_failed_fast": {
+      "message": "Switching to Fast charging mode failed (timeout or network error). The previous mode has been restored."
+    },
+    "set_charge_mode_failed_pv_priority": {
+      "message": "Switching to PV Priority mode failed (timeout or network error). The previous mode has been restored."
+    },
+    "set_charge_mode_failed_pv_and_battery": {
+      "message": "Switching to PV & Battery mode failed (timeout or network error). The previous mode has been restored."
     },
     "set_charge_power_failed": {
       "message": "Failed to set charge power to {value} kW. The previous value has been restored."

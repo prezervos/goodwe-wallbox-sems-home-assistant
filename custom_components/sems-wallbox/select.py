@@ -198,8 +198,7 @@ class InverterOperationModeEntity(CoordinatorEntity, SelectEntity):
             self.hass.async_create_task(self.coordinator.async_request_refresh())
             raise HomeAssistantError(
                 translation_domain=DOMAIN,
-                translation_key="set_charge_mode_failed",
-                translation_placeholders={"option": option},
+                translation_key=f"set_charge_mode_failed_{option}",
             )
 
         # Superseded-call guard: discard this call's result if a newer
