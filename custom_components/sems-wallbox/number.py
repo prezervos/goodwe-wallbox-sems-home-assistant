@@ -140,15 +140,30 @@ class SemsNumber(CoordinatorEntity, NumberEntity):
         """Handle updated data from the coordinator."""
         data = self.coordinator.data.get(self.sn, {}) or {}
         set_charge_power = data.get("set_charge_power")
-        if set_charge_power is not None:
-            try:
-                self._attr_native_value = float(set_charge_power)
-            except (TypeError, ValueError):
-                _LOGGER.warning(
-                    "SemsNumber %s: invalid set_charge_power value %r from API",
-                    self.sn,
-                    set_charge_power,
-                )
+        charge_mode = data.get("chargeMode")
+
+        if charge_mode == 0:
+            # Fast mode — accept the value the API reports.
+            if set_charge_power is not None:
+                try:
+                    self._attr_native_value = float(set_charge_power)
+                except (TypeError, ValueError):
+                    _LOGGER.warning(
+                        "SemsNumber %s: invalid set_charge_power value %r from API",
+                        self.sn,
+                        set_charge_power,
+                    )
+        else:
+            # PV mode — the device may report a stale / default set_charge_power.
+            # Preserve the last user-set value so that switching back to Fast
+            # restores it correctly.  Patch coordinator.data directly (no listeners
+            # triggered) so select.py also reads the preserved value when it builds
+            # the API payload for the next Fast-mode switch.
+            if self._attr_native_value is not None:
+                device = self.coordinator.data.get(self.sn)
+                if device is not None:
+                    device["set_charge_power"] = self._attr_native_value
+
         _LOGGER.debug(
             "SemsNumber coordinator update SN=%s -> native_value=%s, available=%s",
             self.sn,

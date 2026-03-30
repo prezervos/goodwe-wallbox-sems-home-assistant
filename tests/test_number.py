@@ -320,3 +320,24 @@ class TestCoordinatorUpdate:
         entity.coordinator.data[SAMPLE_SN]["chargeMode"] = 1
         entity._handle_coordinator_update()
         assert entity.available is False
+
+    def test_pv_mode_does_not_overwrite_native_value_with_stale_api_value(self):
+        """In PV mode the API may return a stale/default set_charge_power.
+        The entity must keep the last user-set value so switching back to Fast
+        restores it correctly."""
+        entity = _make_entity(chargeMode=0, set_charge_power=11.0)
+        # Simulate switch to PV mode: chargeMode changes, API returns old power
+        entity.coordinator.data[SAMPLE_SN]["chargeMode"] = 1
+        entity.coordinator.data[SAMPLE_SN]["set_charge_power"] = 5.6
+        entity._handle_coordinator_update()
+        assert entity._attr_native_value == 11.0
+
+    def test_pv_mode_preserves_value_in_coordinator_data_for_select(self):
+        """In PV mode, the locally-held value must also be written back into
+        coordinator.data so that select.py reads the right power when the user
+        switches back to Fast."""
+        entity = _make_entity(chargeMode=0, set_charge_power=11.0)
+        entity.coordinator.data[SAMPLE_SN]["chargeMode"] = 1
+        entity.coordinator.data[SAMPLE_SN]["set_charge_power"] = 5.6
+        entity._handle_coordinator_update()
+        assert entity.coordinator.data[SAMPLE_SN]["set_charge_power"] == 11.0
