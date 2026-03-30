@@ -282,6 +282,40 @@ class TestSelectOption:
         # No refresh scheduled either
         entity.hass.async_create_task.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_superseded_fast_call_discarded_when_pv_already_confirmed_by_poll(self):
+        """The superseded guard must also fire when _pending_mode was already
+        cleared by a poll confirming PV *before* a timed-out Fast call returned.
+
+        Real-world scenario (from log):
+          14:55:33 Fast call starts (30 s timeout)
+          14:55:49 PV call starts, _pending_mode=1
+          14:56:00 Poll confirms PV → _pending_mode cleared to None
+          14:56:03 Fast call FINALLY returns after timeout
+                   _pending_mode is None → old guard didn't fire
+                   coordinator.data["chargeMode"] = 1 → new guard fires ✓
+        """
+        entity = _make_entity(chargeMode=1, set_charge_power=6.0)
+
+        calls = []
+
+        def side_effect(sn, mode, power):
+            calls.append((sn, mode, power))
+            if len(calls) == 1:
+                # Simulate: PV dispatch ran AND poll confirmed it while we waited.
+                # _pending_mode is now None (poll cleared it), but chargeMode=1.
+                entity._pending_mode = None
+                entity.coordinator.data[SAMPLE_SN]["chargeMode"] = 1
+                entity.coordinator.data[SAMPLE_SN]["set_charge_power"] = 11.0
+
+        entity.api.set_charge_mode = side_effect
+
+        await entity.async_select_option("fast")
+
+        # Only the original Fast call — no re-fire because chargeMode is now 1
+        assert len(calls) == 1
+        entity.hass.async_create_task.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # Tests: coordinator update

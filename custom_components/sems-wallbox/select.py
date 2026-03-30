@@ -181,16 +181,26 @@ class InverterOperationModeEntity(CoordinatorEntity, SelectEntity):
             charge_power,
         )
 
-        # Superseded-call guard: if another async_select_option dispatch started
-        # while we were awaiting the API (user changed mode again), _pending_mode
-        # will no longer equal `mode`.  Our result is stale — skip any further
-        # writes to avoid clobbering the newer request.
-        if self._pending_mode is not None and self._pending_mode != mode:
+        # Superseded-call guard: discard this call's result if a newer
+        # dispatch has taken over.  Two cases:
+        #
+        #   a) _pending_mode is set to a *different* mode: a newer dispatch
+        #      started while we were awaiting the API and hasn't finished yet.
+        #
+        #   b) coordinator.data["chargeMode"] != mode: a poll (or optimistic
+        #      update from a newer dispatch) has already confirmed a different
+        #      mode.  This catches the case where _pending_mode was already
+        #      cleared by a poll confirmation BEFORE a long (e.g. 30 s
+        #      timed-out) call finally returned.
+        current_device_supersede = self.coordinator.data.get(self.sn, {}) or {}
+        current_chargemode = current_device_supersede.get("chargeMode")
+        if (self._pending_mode is not None and self._pending_mode != mode) or current_chargemode != mode:
             _LOGGER.debug(
-                "Mode call for %s (mode=%s) superseded by pending mode=%s, discarding result",
+                "Mode call for %s (mode=%s) superseded (pending=%s, current chargeMode=%s), discarding result",
                 self.sn,
                 mode,
                 self._pending_mode,
+                current_chargemode,
             )
             return
 
