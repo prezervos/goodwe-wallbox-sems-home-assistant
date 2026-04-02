@@ -8,10 +8,11 @@ import logging
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_SCAN_INTERVAL
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
-from .const import DOMAIN, CONF_STATION_ID, DEFAULT_SCAN_INTERVAL
+from .const import DOMAIN, CONF_STATION_ID, DEFAULT_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL_IDLE, DEFAULT_SCAN_INTERVAL_CHARGING, CONF_SCAN_INTERVAL_CHARGING
 from .sems_api import SemsApi, OutOfRetries
 
 _LOGGER = logging.getLogger(__name__)
@@ -32,23 +33,47 @@ class SemsUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._station_id: str = entry.data[CONF_STATION_ID]
 
         # Options take precedence over data, then fall back to default
-        interval_seconds = entry.options.get(
+        self._interval_idle = int(entry.options.get(
             CONF_SCAN_INTERVAL,
-            entry.data.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL),
-        )
+            entry.data.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL_IDLE),
+        ))
+        self._interval_charging = int(entry.options.get(
+            CONF_SCAN_INTERVAL_CHARGING,
+            DEFAULT_SCAN_INTERVAL_CHARGING,
+        ))
 
         _LOGGER.debug(
-            "SEMS coordinator init for station %s with scan_interval=%s s",
+            "SEMS coordinator init for station %s with idle_interval=%ss, charging_interval=%ss",
             self._station_id,
-            interval_seconds,
+            self._interval_idle,
+            self._interval_charging,
         )
+
+        self._pending_refresh_cancel = None
 
         super().__init__(
             hass,
             _LOGGER,
             name="SEMS API wallbox",
-            update_interval=timedelta(seconds=interval_seconds),
+            update_interval=timedelta(seconds=self._interval_idle),
         )
+
+    def schedule_delayed_refresh(self, delay: float = 5.0) -> None:
+        """Schedule a one-shot refresh after `delay` seconds.
+
+        Cancels any previously pending delayed refresh so rapid actions
+        (e.g. slider dragging) don't pile up.
+        """
+        if self._pending_refresh_cancel is not None:
+            self._pending_refresh_cancel()
+            self._pending_refresh_cancel = None
+
+        @callback
+        def _do_refresh(_now):
+            self._pending_refresh_cancel = None
+            self.hass.async_create_task(self.async_request_refresh())
+
+        self._pending_refresh_cancel = async_call_later(self.hass, delay, _do_refresh)
 
     async def _async_update_data(self) -> dict[str, Any]:
         """Fetch data from the SEMS API."""
@@ -81,4 +106,18 @@ class SemsUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             sn,
             result,
         )
+
+        # Dynamic polling: faster while actively charging (power > 0)
+        is_charging = float(result.get("power", 0) or 0) > 0
+        new_interval = timedelta(
+            seconds=self._interval_charging if is_charging else self._interval_idle
+        )
+        if new_interval != self.update_interval:
+            self.update_interval = new_interval
+            _LOGGER.debug(
+                "Coordinator polling interval -> %ss (charging=%s)",
+                int(new_interval.total_seconds()),
+                is_charging,
+            )
+
         return data

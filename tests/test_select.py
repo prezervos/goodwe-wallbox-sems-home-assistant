@@ -60,6 +60,9 @@ class _FakeCoordinator:
     def async_request_refresh(self):
         pass
 
+    def schedule_delayed_refresh(self, delay=5):
+        pass
+
 
 _coord_stub.SemsUpdateCoordinator = _FakeCoordinator
 sys.modules[f"{_pkg_name}.coordinator"] = _coord_stub

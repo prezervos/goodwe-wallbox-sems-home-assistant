@@ -35,6 +35,7 @@ secrets.yaml
 local_config.py
 
 # Home Assistant local test instance data
+*.log
 home-assistant.log
 home-assistant_v2.db
 home-assistant_v2.db-shm

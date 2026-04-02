@@ -4,17 +4,21 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+import voluptuous as vol
 from homeassistant import config_entries
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.const import CONF_PASSWORD, CONF_USERNAME, CONF_SCAN_INTERVAL
 
-from .const import DOMAIN, SEMS_CONFIG_SCHEMA, CONF_STATION_ID
-from .sems_api import SemsApi
-
-from homeassistant.const import (
-    CONF_PASSWORD,
-    CONF_USERNAME,
+from .const import (
+    DOMAIN,
+    SEMS_CONFIG_SCHEMA,
+    CONF_STATION_ID,
+    CONF_SCAN_INTERVAL_CHARGING,
+    DEFAULT_SCAN_INTERVAL_IDLE,
+    DEFAULT_SCAN_INTERVAL_CHARGING,
 )
+from .sems_api import SemsApi
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -49,6 +53,12 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     VERSION = 1
     CONNECTION_CLASS = config_entries.CONN_CLASS_CLOUD_POLL
 
+    @staticmethod
+    @callback
+    def async_get_options_flow(config_entry: config_entries.ConfigEntry) -> "OptionsFlowHandler":
+        """Return the options flow handler."""
+        return OptionsFlowHandler()
+
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> dict[str, Any]:
@@ -81,3 +91,35 @@ class CannotConnect(HomeAssistantError):
 
 class InvalidAuth(HomeAssistantError):
     """Error to indicate there is invalid auth."""
+
+
+class OptionsFlowHandler(config_entries.OptionsFlow):
+    """Handle options (polling intervals) for SEMS Wallbox."""
+
+    async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        """Manage the options."""
+        if user_input is not None:
+            return self.async_create_entry(title="", data=user_input)
+
+        current_idle = int(self.config_entry.options.get(
+            CONF_SCAN_INTERVAL,
+            self.config_entry.data.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL_IDLE),
+        ))
+        current_charging = int(self.config_entry.options.get(
+            CONF_SCAN_INTERVAL_CHARGING,
+            DEFAULT_SCAN_INTERVAL_CHARGING,
+        ))
+
+        return self.async_show_form(
+            step_id="init",
+            data_schema=vol.Schema({
+                vol.Required(CONF_SCAN_INTERVAL, default=current_idle): vol.All(
+                    int, vol.Range(min=10, max=300)
+                ),
+                vol.Required(CONF_SCAN_INTERVAL_CHARGING, default=current_charging): vol.All(
+                    int, vol.Range(min=5, max=120)
+                ),
+            }),
+        )

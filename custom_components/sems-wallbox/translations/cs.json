@@ -14,6 +14,22 @@
             "message": "Nepodařilo se nastavit výkon nabíjení na {value} kW. Předchozí hodnota byla obnovena."
         }
     },
+    "options": {
+        "step": {
+            "init": {
+                "title": "Intervaly dotazování",
+                "description": "Nastavte, jak často integrace dotazuje SEMS portál.",
+                "data": {
+                    "scan_interval": "Interval aktualizace v klidu (sekundy)",
+                    "scan_interval_charging": "Interval aktualizace při nabíjení (sekundy)"
+                },
+                "data_description": {
+                    "scan_interval": "Jak často se data stahují, když se nenabíjí (doporučeno: 60)",
+                    "scan_interval_charging": "Jak často se data stahují při aktivním nabíjení (doporučeno: 30)"
+                }
+            }
+        }
+    },
     "config": {
         "abort": {
             "already_configured": "Zařízení je již nakonfigurováno"

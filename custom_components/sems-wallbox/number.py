@@ -233,5 +233,5 @@ class SemsNumber(CoordinatorEntity, NumberEntity):
                 translation_placeholders={"value": str(value)},
             )
 
-        # 3) Schedule refresh (non-blocking)
-        self.hass.async_create_task(self.coordinator.async_request_refresh())
+        # 3) Schedule a delayed refresh (5 s) to confirm state from the API.
+        self.coordinator.schedule_delayed_refresh(5)

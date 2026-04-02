@@ -55,6 +55,9 @@ class _FakeCoordinator:
     def async_request_refresh(self):
         self._refresh_requested = True
 
+    def schedule_delayed_refresh(self, delay=5):
+        pass
+
 
 _coord_stub.SemsUpdateCoordinator = _FakeCoordinator
 sys.modules[f"{_pkg_name}.coordinator"] = _coord_stub
@@ -270,10 +273,11 @@ class TestSetNativeValue:
 
     @pytest.mark.asyncio
     async def test_slider_schedules_refresh_after_api(self):
-        """async_create_task must be called to schedule a coordinator refresh."""
+        """schedule_delayed_refresh must be called to schedule a coordinator refresh."""
         entity = _make_entity(chargeMode=0)
+        entity.coordinator.schedule_delayed_refresh = MagicMock()
         await entity.async_set_native_value(9.0)
-        entity.hass.async_create_task.assert_called_once()
+        entity.coordinator.schedule_delayed_refresh.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_slider_sends_mode_0_not_mode_1(self):

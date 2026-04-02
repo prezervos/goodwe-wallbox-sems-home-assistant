@@ -177,11 +177,12 @@ class SemsSwitch(CoordinatorEntity, SwitchEntity):
         self._attr_is_on = False
         self.async_write_ha_state()
 
-        # Schedule refresh (non-blocking)
+        # Optimistic immediate refresh, then a confirmed one 5 s after the command
         self.hass.async_create_task(self.coordinator.async_request_refresh())
 
         # Send command to SEMS API
         await self.hass.async_add_executor_job(self.api.change_status, self.sn, 2)
+        self.coordinator.schedule_delayed_refresh(5)
 
     async def async_turn_on(self, **kwargs):
         """Turn on charging."""
@@ -194,11 +195,12 @@ class SemsSwitch(CoordinatorEntity, SwitchEntity):
         self._attr_is_on = True
         self.async_write_ha_state()
 
-        # Schedule refresh (non-blocking)
+        # Optimistic immediate refresh, then a confirmed one 5 s after the command
         self.hass.async_create_task(self.coordinator.async_request_refresh())
 
         # Send command to SEMS API
         await self.hass.async_add_executor_job(self.api.change_status, self.sn, 1)
+        self.coordinator.schedule_delayed_refresh(5)
 
     async def async_added_to_hass(self):
         """When entity is added to hass."""

@@ -14,6 +14,22 @@
             "message": "Failed to set charge power to {value} kW. The previous value has been restored."
         }
     },
+    "options": {
+        "step": {
+            "init": {
+                "title": "Polling intervals",
+                "description": "Configure how often the integration polls the SEMS portal.",
+                "data": {
+                    "scan_interval": "Idle update interval (seconds)",
+                    "scan_interval_charging": "Charging update interval (seconds)"
+                },
+                "data_description": {
+                    "scan_interval": "How often to poll when not charging (recommended: 60)",
+                    "scan_interval_charging": "How often to poll while actively charging (recommended: 30)"
+                }
+            }
+        }
+    },
     "config": {
         "abort": {
             "already_configured": "Device is already configured"

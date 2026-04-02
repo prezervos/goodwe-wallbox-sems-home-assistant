@@ -250,8 +250,8 @@ class InverterOperationModeEntity(CoordinatorEntity, SelectEntity):
                     latest_power,
                 )
 
-        # Schedule a full refresh to confirm state from the API.
-        self.hass.async_create_task(self.coordinator.async_request_refresh())
+        # Schedule a delayed refresh (5 s) to confirm state from the API.
+        self.coordinator.schedule_delayed_refresh(5)
 
     @callback
     def _handle_coordinator_update(self) -> None:
