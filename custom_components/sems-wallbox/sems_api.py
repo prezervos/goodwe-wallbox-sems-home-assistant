@@ -102,43 +102,38 @@ class SemsApi:
             return None
 
     def _fetch_web_token(self) -> dict | None:
-        """Exchange Android token for a semsPlusWeb token via cross-login.
+        """Login to semsplus.goodwe.com to obtain a semsPlusWeb token.
 
-        The EU gateway requires client=semsPlusWeb.  We sign the request
-        with the already-obtained Android token so no password is needed.
+        The EU gateway requires client=semsPlusWeb.  Password is sent as
+        base64(MD5(password)) — observed from browser traffic capture.
+        The request is signed with an empty uid/token x-signature.
         """
-        # Make sure we have the Android token to sign the cross-login with.
-        if not self._ensure_token():
-            _LOGGER.warning("SEMS web login: no Android token available")
-            return None
-        android = self._token  # type: ignore[assignment]
         try:
-            android_token_hdr = json.dumps(
-                {
-                    "uid": android.get("uid", ""),
-                    "timestamp": android.get("timestamp", 0),
-                    "token": android.get("token", ""),
-                    "client": "semsPlusAndroid",
-                    "version": "",
-                    "language": "en",
-                }
+            empty_token = json.dumps(
+                {"uid": "", "timestamp": 0, "token": "",
+                 "client": "semsPlusWeb", "version": "", "language": "en"}
             )
             ts = str(int(time.time() * 1000))
-            uid = android.get("uid", "")
-            tok = android.get("token", "")
-            digest = hashlib.sha256(f"{ts}@{uid}@{tok}".encode()).hexdigest()
+            digest = hashlib.sha256(f"{ts}@@".encode()).hexdigest()
             x_sig = base64.b64encode(f"{digest}@{ts}".encode()).decode()
             headers = {
                 "Content-Type": "application/json",
                 "Accept": "application/json",
-                "token": android_token_hdr,
-                "client": "semsPlusAndroid",
+                "token": empty_token,
+                "client": "semsPlusWeb",
                 "neutral": "0",
                 "currentlang": "en",
                 "x-signature": x_sig,
             }
+            pwd_md5_b64 = base64.b64encode(
+                hashlib.md5(self._password.encode()).hexdigest().encode()
+            ).decode()
             body = {
                 "account": self._username,
+                "pwd": pwd_md5_b64,
+                "agreement": 1,
+                "isLocal": False,
+                "isChinese": False,
             }
             _LOGGER.debug("SEMS web login: POST %s", _WebLoginURL)
             resp = requests.post(
