@@ -771,6 +771,87 @@ class SemsApi:
             _LOGGER.error("Unable to execute gen2 SetChargeMode command. %s", exc)
             return False
 
+    # ------------------------------------------------------------------
+    # EU gateway discovery (used during config flow)
+    # ------------------------------------------------------------------
+
+    _StationsPageURL = _EuGatewayBase + "/sems-plant/api/portal/stations/page"
+    _CentralizedPageURL = _EuGatewayBase + "/sems-plant/api/web/device/centralized/page"
+
+    def fetch_stations(self) -> list[dict]:
+        """Return list of plants/stations from the EU gateway.
+
+        Each dict contains at least 'id' and 'name' (best-effort — field names
+        are inferred; raw response is logged at DEBUG for diagnostics).
+        Returns an empty list on any error.
+        """
+        if not self._ensure_web_token():
+            _LOGGER.warning("SEMS fetch_stations: no web token")
+            return []
+        headers = self._build_web_headers()
+        try:
+            resp = requests.post(
+                self._StationsPageURL,
+                headers=headers,
+                json={"current": 1, "size": 50},
+                timeout=_RequestTimeout,
+            )
+            rj = resp.json()
+            _LOGGER.debug("SEMS fetch_stations raw: %s", rj)
+            data = rj.get("data") or {}
+            if isinstance(data, list):
+                records = data
+            else:
+                records = (
+                    data.get("records")
+                    or data.get("list")
+                    or data.get("data")
+                    or []
+                )
+            return records if isinstance(records, list) else []
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.error("SEMS fetch_stations failed: %s", exc)
+            return []
+
+    def fetch_ev_chargers(self, station_id: str | None = None) -> list[dict]:
+        """Return list of EV chargers from the EU gateway.
+
+        If *station_id* is provided the request is scoped to that plant.
+        Each dict contains at least 'sn' (and optionally 'name', 'model').
+        Raw response is logged at DEBUG for diagnostics.
+        Returns an empty list on any error.
+        """
+        if not self._ensure_web_token():
+            _LOGGER.warning("SEMS fetch_ev_chargers: no web token")
+            return []
+        headers = self._build_web_headers()
+        payload: dict = {"deviceTypeList": ["EV_CHARGER"], "current": 1, "size": 50}
+        if station_id:
+            payload["stationId"] = station_id
+        try:
+            resp = requests.post(
+                self._CentralizedPageURL,
+                headers=headers,
+                json=payload,
+                timeout=_RequestTimeout,
+            )
+            rj = resp.json()
+            _LOGGER.debug("SEMS fetch_ev_chargers raw: %s", rj)
+            data = rj.get("data") or {}
+            if isinstance(data, list):
+                records = data
+            else:
+                records = (
+                    data.get("records")
+                    or data.get("list")
+                    or data.get("data")
+                    or []
+                )
+            return records if isinstance(records, list) else []
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.error("SEMS fetch_ev_chargers failed: %s", exc)
+            return []
+
 
 class OutOfRetries(exceptions.HomeAssistantError):
     """Error to indicate too many error attempts."""

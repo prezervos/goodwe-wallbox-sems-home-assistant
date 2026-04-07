@@ -36,6 +36,8 @@ local_config.py
 
 # Home Assistant local test instance data
 *.log
+*.har
+*.js
 home-assistant.log
 home-assistant_v2.db
 home-assistant_v2.db-shm

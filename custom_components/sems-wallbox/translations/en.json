@@ -46,19 +46,37 @@
         "step": {
             "user": {
                 "title": "Connect to SEMS portal",
-                "description": "Enter your semsportal.com credentials and the serial number of your GoodWe wallbox.",
+                "description": "Enter your semsportal.com / SEMS Plus credentials. The wallbox will be detected automatically.",
                 "data": {
-                    "wallbox_serial_No": "Wallbox serial number",
                     "username": "Username (e-mail)",
-                    "password": "Password",
-                    "scan_interval": "Update interval (seconds)"
-                },
-                "data_description": {
-                    "wallbox_serial_No": "Found in the SEMS app or on the device label",
-                    "scan_interval": "How often to fetch data from the SEMS portal (recommended: 60)"
+                    "password": "Password"
+                }
+            },
+            "plant": {
+                "title": "Select plant / station",
+                "description": "Multiple plants were found in your account. Select the one that contains your wallbox.",
+                "data": {
+                    "plant_id": "Plant / station"
+                }
+            },
+            "charger": {
+                "title": "Select wallbox",
+                "description": "Multiple EV chargers were found. Select your wallbox.",
+                "data": {
+                    "wallbox_serial_No": "Wallbox"
+                }
+            },
+            "charger_manual": {
+                "title": "Enter wallbox serial number",
+                "description": "The wallbox could not be detected automatically. Enter the serial number manually (found in the SEMS app or on the device label).",
+                "data": {
+                    "wallbox_serial_No": "Wallbox serial number"
                 }
             }
         }
+    },
+    "error": {
+        "no_chargers_found": "No EV chargers were found in the selected plant. Enter the serial number manually."
     },
     "entity": {
         "sensor": {

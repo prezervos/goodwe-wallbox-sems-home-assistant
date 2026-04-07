@@ -46,19 +46,37 @@
         "step": {
             "user": {
                 "title": "Připojení k SEMS portálu",
-                "description": "Zadejte přihlašovací údaje k portálu semsportal.com a sériové číslo vašeho wallboxu GoodWe.",
+                "description": "Zadejte přihlašovací údaje semsportal.com / SEMS Plus. Wallbox bude detekován automaticky.",
                 "data": {
-                    "wallbox_serial_No": "Sériové číslo wallboxu",
                     "username": "Uživatelské jméno (e-mail)",
-                    "password": "Heslo",
-                    "scan_interval": "Interval aktualizace (sekundy)"
-                },
-                "data_description": {
-                    "wallbox_serial_No": "Najdete v aplikaci SEMS nebo na štítku zařízení",
-                    "scan_interval": "Jak často se data stahují ze SEMS portálu (doporučeno 60)"
+                    "password": "Heslo"
+                }
+            },
+            "plant": {
+                "title": "Vyberte plant / stanici",
+                "description": "V účtu bylo nalezeno více plantů. Vyberte ten, který obsahuje váš wallbox.",
+                "data": {
+                    "plant_id": "Plant / stanice"
+                }
+            },
+            "charger": {
+                "title": "Vyberte wallbox",
+                "description": "Bylo nalezeno více nabíječek EV. Vyberte váš wallbox.",
+                "data": {
+                    "wallbox_serial_No": "Wallbox"
+                }
+            },
+            "charger_manual": {
+                "title": "Zadejte sériové číslo wallboxu",
+                "description": "Wallbox se nepodařilo detekovat automaticky. Zadejte sériové číslo ručně (najdete v aplikaci SEMS nebo na štítku zařízení).",
+                "data": {
+                    "wallbox_serial_No": "Sériové číslo wallboxu"
                 }
             }
         }
+    },
+    "error": {
+        "no_chargers_found": "V daném plantu nebyly nalezeny žádné nabíječky EV. Zadejte sériové číslo ručně."
     },
     "entity": {
         "sensor": {
