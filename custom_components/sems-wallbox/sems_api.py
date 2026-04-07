@@ -39,7 +39,7 @@ _EuGatewayControlItemsURL = _EuGatewayBase + "/sems-remote/api/ev-charger/contro
 _GetPowerStationListURLPart = "/v1/PowerStation/GetPowerStationIdByOwner"
 
 _RequestTimeout = 30   # seconds for status reads
-_SetModeTimeout = 15   # seconds for EU gateway set-mode (shorter to fail fast)
+_SetModeTimeout = 5    # seconds for EU gateway set-mode (short to fail fast to set-config)
 
 _DefaultHeaders = {
     "Content-Type": "application/json",
@@ -798,7 +798,7 @@ class SemsApi:
         payload: dict = {
             "sn": wallbox_sn,
             "plantId": plant_id,
-            "ratedMaxiChargePower": round(float(charge_power), 1),
+            "chargePowerSetted": round(float(charge_power), 1),
         }
         if self._product_model:
             payload["productModel"] = self._product_model
