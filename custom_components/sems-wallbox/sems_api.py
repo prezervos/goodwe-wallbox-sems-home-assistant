@@ -138,10 +138,13 @@ class SemsApi:
         tok = self._token.get("token", "") if self._token else ""
         digest = hashlib.sha256(f"{ts}@{uid}@{tok}".encode()).hexdigest()
         x_signature = base64.b64encode(f"{digest}@{ts}".encode()).decode()
+        # EU gateway requires client=semsPlusWeb; our semsportal.com login returns
+        # semsPlusAndroid, so we override it here. client is NOT part of x-signature.
+        web_token = {**self._token, "client": "semsPlusWeb"}
         return {
             "Content-Type": "application/json",
             "Accept": "application/json",
-            "token": json.dumps(self._token),
+            "token": json.dumps(web_token),
             "client": "semsPlusWeb",
             "neutral": "0",
             "currentlang": "en",
