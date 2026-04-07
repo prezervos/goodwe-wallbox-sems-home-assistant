@@ -27,14 +27,17 @@ _PowerControlURL = "https://www.semsportal.com/api/v3/EvCharger/Charging"
 # Gen2 / SEMS-Plus EU gateway base + endpoints
 # set-mode: sets both charge mode and power limit in one call (confirmed working: auth=token header,
 #   field=chargePowerSetted, success code=00000; R000013=power<4.2kW; R0305=remote_control_fail)
-_EuGatewayBase = "https://eu-gateway.semsportal.com/web/sems"
-_EuGatewaySetConfigURL = _EuGatewayBase + "/sems-remote/api/ev-charger/set-config"
-_EuGatewaySetModeURL = _EuGatewayBase + "/sems-remote/api/ev-charger/set-mode"
-# Status endpoints (observed from browser HAR capture)
-_EuGatewayDetailURL = _EuGatewayBase + "/sems-remote/api/ev-charger/detail"
-_EuGatewayGetWorkModeURL = _EuGatewayBase + "/sems-remote/api/v2/address/remote/get-work-mode"
-_EuGatewayGetLastChargeURL = _EuGatewayBase + "/sems-plant/api/v1/chargePile/getLastCharge"
-_EuGatewayControlItemsURL = _EuGatewayBase + "/sems-remote/api/ev-charger/control-item-content-list"
+# Fallback base for EU gateway (overridden at runtime from login response)
+_EuGatewayBase         = "https://eu-gateway.semsportal.com/web/sems"
+# Relative paths appended to the dynamic base via self._eu_url()
+_PATH_SET_CONFIG       = "sems-remote/api/ev-charger/set-config"
+_PATH_SET_MODE         = "sems-remote/api/ev-charger/set-mode"
+_PATH_DETAIL           = "sems-remote/api/ev-charger/detail"
+_PATH_GET_WORK_MODE    = "sems-remote/api/v2/address/remote/get-work-mode"
+_PATH_GET_LAST_CHARGE  = "sems-plant/api/v1/chargePile/getLastCharge"
+_PATH_CONTROL_ITEMS    = "sems-remote/api/ev-charger/control-item-content-list"
+_PATH_STATIONS_PAGE    = "sems-plant/api/portal/stations/page"
+_PATH_CENTRALIZED_PAGE = "sems-plant/api/web/device/centralized/page"
 # Used to auto-detect the plantId (power-station ID) associated with the wallbox
 _GetPowerStationListURLPart = "/v1/PowerStation/GetPowerStationIdByOwner"
 
@@ -60,6 +63,7 @@ class SemsApi:
         self._password = password
         self._token: dict | None = None
         self._web_token: dict | None = None  # semsPlusWeb token for EU gateway
+        self._web_api_base: str = _EuGatewayBase  # overridden from login response
         # Gen2: cached plant info (auto-detected or user-supplied)
         self._plant_id: str | None = None
         self._product_model: str | None = None
@@ -164,7 +168,15 @@ class SemsApi:
             if tok is None:
                 return False
             self._web_token = tok
+            # Update base URL from login response (handles regional gateways)
+            api = (tok.get("api") or "").rstrip("/")
+            if api:
+                self._web_api_base = api
         return True
+
+    def _eu_url(self, path: str) -> str:
+        """Build a full EU gateway URL from a relative path."""
+        return f"{self._web_api_base}/{path.lstrip('/')}"
 
     def _ensure_token(self, renew: bool = False) -> bool:
         """Ensure we have a valid token in self._token."""
@@ -532,7 +544,7 @@ class SemsApi:
         # --- set-mode (mode + chargePowerSetted), then set-config fallback ---
         ok, code = _post(
             "set-mode",
-            _EuGatewaySetModeURL,
+            self._eu_url(_PATH_SET_MODE),
             {"mode": mode, "chargePowerSetted": float(power)},
         )
         if ok:
@@ -553,7 +565,7 @@ class SemsApi:
         )
         ok, code = _post(
             "set-config",
-            _EuGatewaySetConfigURL,
+            self._eu_url(_PATH_SET_CONFIG),
             {"ratedMaxiChargePower": round(float(power), 1)},
         )
         if ok:
@@ -732,14 +744,15 @@ class SemsApi:
             if chargePower is not None:
                 payload["chargePowerSetted"] = float(chargePower)
 
+            _eu_set_mode_url = self._eu_url(_PATH_SET_MODE)
             _LOGGER.debug(
                 "SEMS gen2 set-mode (exclusive): POST %s payload=%s",
-                _EuGatewaySetModeURL, payload,
+                _eu_set_mode_url, payload,
             )
             try:
                 for attempt in range(1, _SetModeR0305Retries + 2):
                     resp = requests.post(
-                        _EuGatewaySetModeURL,
+                        _eu_set_mode_url,
                         headers=headers,
                         json=payload,
                         timeout=_SetModeTimeout,
@@ -817,11 +830,12 @@ class SemsApi:
             payload["productModel"] = self._product_model
 
         try:
+            _eu_detail_url = self._eu_url(_PATH_DETAIL)
             _LOGGER.debug(
-                "SEMS gen2 getData: POST %s payload=%s", _EuGatewayDetailURL, payload
+                "SEMS gen2 getData: POST %s payload=%s", _eu_detail_url, payload
             )
             resp = requests.post(
-                _EuGatewayDetailURL, headers=headers, json=payload, timeout=_RequestTimeout
+                _eu_detail_url, headers=headers, json=payload, timeout=_RequestTimeout
             )
             _LOGGER.info(
                 "SEMS gen2 getData: HTTP %s body=%s", resp.status_code, resp.text
@@ -837,7 +851,7 @@ class SemsApi:
                     return self.getData(wallbox_sn)
                 headers = self._build_web_headers()
                 resp = requests.post(
-                    _EuGatewayDetailURL, headers=headers, json=payload, timeout=_RequestTimeout
+                    _eu_detail_url, headers=headers, json=payload, timeout=_RequestTimeout
                 )
                 _LOGGER.info(
                     "SEMS gen2 getData retry: HTTP %s body=%s", resp.status_code, resp.text
@@ -904,9 +918,9 @@ class SemsApi:
     # EU gateway discovery (used during config flow)
     # ------------------------------------------------------------------
 
-    _StationsPageURL = _EuGatewayBase + "/sems-plant/api/portal/stations/page"
-    _CentralizedPageURL = _EuGatewayBase + "/sems-plant/api/web/device/centralized/page"
-    _ControlItemURL = _EuGatewayBase + "/sems-remote/api/ev-charger/control-item-content-list"
+    _StationsPageURL    = None  # unused — use self._eu_url(_PATH_STATIONS_PAGE)
+    _CentralizedPageURL = None  # unused — use self._eu_url(_PATH_CENTRALIZED_PAGE)
+    _ControlItemURL     = None  # unused — use self._eu_url(_PATH_CONTROL_ITEMS)
 
     def fetch_device_info(self, wallbox_sn: str) -> dict:
         """Fetch device metadata (productModel, ratedPower, etc.) from the EU gateway.
@@ -919,7 +933,7 @@ class SemsApi:
         headers = self._build_web_headers()
         try:
             resp = requests.get(
-                f"{self._ControlItemURL}/{wallbox_sn}",
+                f"{self._eu_url(_PATH_CONTROL_ITEMS)}/{wallbox_sn}",
                 headers=headers,
                 timeout=_RequestTimeout,
             )
@@ -945,7 +959,7 @@ class SemsApi:
         headers = self._build_web_headers()
         try:
             resp = requests.post(
-                self._StationsPageURL,
+                self._eu_url(_PATH_STATIONS_PAGE),
                 headers=headers,
                 json={"current": 1, "size": 50},
                 timeout=_RequestTimeout,
