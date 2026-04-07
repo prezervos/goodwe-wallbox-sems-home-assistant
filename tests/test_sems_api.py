@@ -276,5 +276,6 @@ class TestSetChargeMode:
         with patch("requests.post", return_value=resp) as mock_post:
             api.set_charge_mode("SN001", 0, chargePower=7.4)
 
-        call_kwargs = mock_post.call_args
-        assert call_kwargs[1]["json"] == {"sn": "SN001", "type": 0, "charge_power": 7.4}
+        # First call is the gen1 SetChargeMode; second call (if any) is the gen2 gateway
+        first_call = mock_post.call_args_list[0]
+        assert first_call[1]["json"] == {"sn": "SN001", "type": 0, "charge_power": 7.4}

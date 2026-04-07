@@ -21,11 +21,15 @@
                 "description": "Nastavte, jak často integrace dotazuje SEMS portál.",
                 "data": {
                     "scan_interval": "Interval aktualizace v klidu (sekundy)",
-                    "scan_interval_charging": "Interval aktualizace při nabíjení (sekundy)"
+                    "scan_interval_charging": "Interval aktualizace při nabíjení (sekundy)",
+                    "plant_id": "Plant ID (Gen2 / SEMS Plus)",
+                    "product_model": "Model zařízení (Gen2, např. GW7K-HCA-20)"
                 },
                 "data_description": {
                     "scan_interval": "Jak často se data stahují, když se nenabíjí (doporučeno: 60)",
-                    "scan_interval_charging": "Jak často se data stahují při aktivním nabíjení (doporučeno: 30)"
+                    "scan_interval_charging": "Jak často se data stahují při aktivním nabíjení (doporučeno: 30)",
+                    "plant_id": "Vyžadováno pro Gen2 nabíječky (řada HCA) pro nastavení limitu výkonu. Otevřete portál SEMS Plus, přejděte na svůj závod a zkopírujte ID z URL.",
+                    "product_model": "Např. GW7K-HCA-20. Pro Gen1 nebo pokud nevíte, nechte prázdné."
                 }
             }
         }

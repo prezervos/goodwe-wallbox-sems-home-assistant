@@ -15,6 +15,8 @@ from .const import (
     SEMS_CONFIG_SCHEMA,
     CONF_STATION_ID,
     CONF_SCAN_INTERVAL_CHARGING,
+    CONF_PLANT_ID,
+    CONF_PRODUCT_MODEL,
     DEFAULT_SCAN_INTERVAL_IDLE,
     DEFAULT_SCAN_INTERVAL_CHARGING,
 )
@@ -112,6 +114,9 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
             DEFAULT_SCAN_INTERVAL_CHARGING,
         ))
 
+        current_plant_id = self.config_entry.options.get(CONF_PLANT_ID, "")
+        current_model = self.config_entry.options.get(CONF_PRODUCT_MODEL, "")
+
         return self.async_show_form(
             step_id="init",
             data_schema=vol.Schema({
@@ -121,5 +126,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                 vol.Required(CONF_SCAN_INTERVAL_CHARGING, default=current_charging): vol.All(
                     int, vol.Range(min=5, max=120)
                 ),
+                vol.Optional(CONF_PLANT_ID, default=current_plant_id): str,
+                vol.Optional(CONF_PRODUCT_MODEL, default=current_model): str,
             }),
         )

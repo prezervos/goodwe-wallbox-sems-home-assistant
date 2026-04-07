@@ -9,6 +9,8 @@ from datetime import timedelta
 
 CONF_STATION_ID = "wallbox_serial_No"
 CONF_SCAN_INTERVAL_CHARGING = "scan_interval_charging"
+CONF_PLANT_ID = "plant_id"         # Gen2: SEMS Plus plant/station ID
+CONF_PRODUCT_MODEL = "product_model"  # Gen2: device model string e.g. GW7K-HCA-20
 
 DEFAULT_SCAN_INTERVAL = 20  # timedelta(seconds=20)
 DEFAULT_SCAN_INTERVAL_IDLE = 60       # seconds, when not charging
