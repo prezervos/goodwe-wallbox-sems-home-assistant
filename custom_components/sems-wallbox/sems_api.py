@@ -24,19 +24,22 @@ _USE_V4_STATUS = False
 _SetChargeModeURL = "https://www.semsportal.com/api/v3/EvCharger/SetChargeMode"
 _PowerControlURL = "https://www.semsportal.com/api/v3/EvCharger/Charging"
 
-# Gen2 / SEMS-Plus EU gateway endpoints
+# Gen2 / SEMS-Plus EU gateway base + endpoints
 # set-mode: sets both charge mode and power limit in one call (confirmed working: auth=token header,
 #   field=chargePowerSetted, success code=00000; R000013=power<4.2kW; R0305=remote_control_fail)
-_EuGatewaySetConfigURL = (
-    "https://eu-gateway.semsportal.com/web/sems/sems-remote/api/ev-charger/set-config"
-)
-_EuGatewaySetModeURL = (
-    "https://eu-gateway.semsportal.com/web/sems/sems-remote/api/ev-charger/set-mode"
-)
+_EuGatewayBase = "https://eu-gateway.semsportal.com/web/sems"
+_EuGatewaySetConfigURL = _EuGatewayBase + "/sems-remote/api/ev-charger/set-config"
+_EuGatewaySetModeURL = _EuGatewayBase + "/sems-remote/api/ev-charger/set-mode"
+# Status endpoints (observed from browser HAR capture)
+_EuGatewayDetailURL = _EuGatewayBase + "/sems-remote/api/ev-charger/detail"
+_EuGatewayGetWorkModeURL = _EuGatewayBase + "/sems-remote/api/v2/address/remote/get-work-mode"
+_EuGatewayGetLastChargeURL = _EuGatewayBase + "/sems-plant/api/v1/chargePile/getLastCharge"
+_EuGatewayControlItemsURL = _EuGatewayBase + "/sems-remote/api/ev-charger/control-item-content-list"
 # Used to auto-detect the plantId (power-station ID) associated with the wallbox
 _GetPowerStationListURLPart = "/v1/PowerStation/GetPowerStationIdByOwner"
 
-_RequestTimeout = 30  # seconds
+_RequestTimeout = 30   # seconds for status reads
+_SetModeTimeout = 15   # seconds for EU gateway set-mode (shorter to fail fast)
 
 _DefaultHeaders = {
     "Content-Type": "application/json",
@@ -525,7 +528,7 @@ class SemsApi:
                 _LOGGER.debug("SEMS gen2 %s call failed: %s", label, exc)
                 return False, ""
 
-        # --- Attempt 1: set-mode (mode + chargePowerSetted) ---
+        # --- set-mode (mode + chargePowerSetted), then set-config fallback ---
         ok, code = _post(
             "set-mode",
             _EuGatewaySetModeURL,
@@ -538,26 +541,15 @@ class SemsApi:
             return True
         if code == "R000013":
             _LOGGER.warning(
-                "SEMS gen2 set-mode rejected: power %.1f kW is below the 4.2 kW minimum (sn=%s)",
-                power,
-                wallbox_sn,
+                "SEMS gen2 set-mode rejected: power %.1f kW is below minimum (sn=%s)",
+                power, wallbox_sn,
             )
-            # Power validation failed — no point trying set-config with the same power value
             return False
-        if code == "R0305":
-            _LOGGER.warning(
-                "SEMS gen2 set-mode: remote_control_fail (sn=%s) — "
-                "wallbox may be offline; will still try set-config fallback",
-                wallbox_sn,
-            )
-        elif code:
-            _LOGGER.warning(
-                "SEMS gen2 set-mode non-success code=%s (sn=%s) — trying set-config fallback",
-                code,
-                wallbox_sn,
-            )
 
-        # --- Attempt 2: set-config (ratedMaxiChargePower) — Gen2 / HCA series fallback ---
+        # Fallback: set-config (ratedMaxiChargePower) — works for HCA series
+        _LOGGER.debug(
+            "SEMS gen2 set-mode code=%s, trying set-config fallback (sn=%s)", code, wallbox_sn
+        )
         ok, code = _post(
             "set-config",
             _EuGatewaySetConfigURL,
@@ -571,9 +563,7 @@ class SemsApi:
         _LOGGER.warning(
             "SEMS gen2 both set-mode and set-config failed for sn=%s power=%s "
             "(last code=%s) — check plant_id/product_model in integration options",
-            wallbox_sn,
-            power,
-            code,
+            wallbox_sn, power, code,
         )
         return False
 
@@ -682,8 +672,103 @@ class SemsApi:
                 self.set_charge_power_gen2(wallboxSn, chargePower, mode=mode)
 
             return True
+        except OutOfRetries:
+            raise
         except Exception as exc:  # noqa: BLE001
             _LOGGER.error("Unable to execute SetChargeMode command. %s", exc)
+            return False
+
+    def set_charge_mode_gen2(
+        self,
+        wallboxSn,
+        mode,
+        chargePower=None,
+        renewToken: bool = False,
+        maxTokenRetries: int = 1,
+    ):
+        """Set charge mode/power exclusively via EU gateway (Gen2 / HCA series).
+
+        Skips the legacy semsportal.com SetChargeMode call entirely — this avoids
+        the wallbox being "busy" when the EU gateway set-mode arrives.
+        Only EU gateway set-mode is attempted (no set-config fallback) so we can
+        cleanly test whether the old API was causing the 30s timeout.
+        """
+        _LOGGER.debug(
+            "SEMS v%s - set_charge_mode_gen2(sn=%s, mode=%s, power=%s, renewToken=%s, retries=%s)",
+            API_VERSION,
+            wallboxSn,
+            mode,
+            chargePower,
+            renewToken,
+            maxTokenRetries,
+        )
+        try:
+            if maxTokenRetries < 0:
+                raise OutOfRetries
+
+            plant_id = self._ensure_plant_id()
+            if not plant_id:
+                _LOGGER.warning(
+                    "SEMS gen2: no plant_id — cannot use EU gateway, falling back to old API"
+                )
+                return self.set_charge_mode(
+                    wallboxSn, mode, chargePower=chargePower,
+                    renewToken=renewToken, maxTokenRetries=maxTokenRetries,
+                )
+
+            if not self._ensure_web_token(renew=renewToken):
+                _LOGGER.error("SEMS gen2: cannot obtain web token")
+                return False
+
+            headers = self._build_web_headers()
+            payload: dict = {
+                "sn": wallboxSn,
+                "plantId": plant_id,
+                "mode": mode,
+            }
+            if self._product_model:
+                payload["productModel"] = self._product_model
+            if chargePower is not None:
+                payload["chargePowerSetted"] = float(chargePower)
+
+            _LOGGER.debug(
+                "SEMS gen2 set-mode (exclusive): POST %s payload=%s",
+                _EuGatewaySetModeURL, payload,
+            )
+            try:
+                resp = requests.post(
+                    _EuGatewaySetModeURL,
+                    headers=headers,
+                    json=payload,
+                    timeout=_SetModeTimeout,
+                )
+                _LOGGER.debug(
+                    "SEMS gen2 set-mode: HTTP %s body=%s", resp.status_code, resp.text
+                )
+                rj = resp.json()
+                code = str(rj.get("code") or "")
+                if code in ("00000", "0") or rj.get("data") is True:
+                    _LOGGER.info(
+                        "SEMS gen2 set-mode succeeded (sn=%s, mode=%s, power=%s)",
+                        wallboxSn, mode, chargePower,
+                    )
+                    return True
+                _LOGGER.warning(
+                    "SEMS gen2 set-mode non-success code=%s body=%s",
+                    code, resp.text[:300],
+                )
+                return False
+            except requests.exceptions.Timeout:
+                _LOGGER.warning(
+                    "SEMS gen2 set-mode timed out after %ss (sn=%s) — "
+                    "try increasing _SetModeTimeout or check device connectivity",
+                    _SetModeTimeout, wallboxSn,
+                )
+                return False
+        except OutOfRetries:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.error("Unable to execute gen2 SetChargeMode command. %s", exc)
             return False
 
 

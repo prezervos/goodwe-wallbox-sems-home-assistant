@@ -104,7 +104,7 @@ def _make_entity(
     }
     coordinator = _FakeCoordinator({SAMPLE_SN: data})
     api = MagicMock()
-    api.set_charge_mode = MagicMock()
+    api.set_charge_mode_gen2 = MagicMock()
 
     entity = SemsNumber(coordinator, SAMPLE_SN, api, set_charge_power)
 
@@ -206,7 +206,7 @@ class TestMinMax:
 class TestSetNativeValue:
     @pytest.mark.asyncio
     async def test_slider_sends_fast_mode_with_value(self):
-        """Moving the slider must always send set_charge_mode(sn, 0, value).
+        """Moving the slider must always send set_charge_mode_gen2(sn, 0, value).
 
         Sending mode=0 (Fast) together with the new power prevents a race
         condition where an in-flight mode-switch call (which also sends
@@ -216,7 +216,7 @@ class TestSetNativeValue:
         """
         entity = _make_entity(chargeMode=0, set_charge_power=7.4)
         await entity.async_set_native_value(9.0)
-        entity.api.set_charge_mode.assert_called_once_with(SAMPLE_SN, 0, 9.0)
+        entity.api.set_charge_mode_gen2.assert_called_once_with(SAMPLE_SN, 0, 9.0)
 
     @pytest.mark.asyncio
     async def test_slider_updates_coordinator_data_before_api_call(self):
@@ -234,7 +234,7 @@ class TestSetNativeValue:
             )
             return True
 
-        entity.api.set_charge_mode = capture_api
+        entity.api.set_charge_mode_gen2 = capture_api
 
         await entity.async_set_native_value(9.0)
 
@@ -257,13 +257,13 @@ class TestSetNativeValue:
 
         entity.async_write_ha_state = capture_write
 
-        original_set_charge_mode = entity.api.set_charge_mode
+        original_set_charge_mode_gen2 = entity.api.set_charge_mode_gen2
 
         def capture_api(sn, mode, value):
             call_order.append(("api_call", value))
-            return original_set_charge_mode(sn, mode, value)
+            return original_set_charge_mode_gen2(sn, mode, value)
 
-        entity.api.set_charge_mode = capture_api
+        entity.api.set_charge_mode_gen2 = capture_api
 
         await entity.async_set_native_value(9.0)
 
@@ -284,7 +284,7 @@ class TestSetNativeValue:
         """Slider must always use mode=0, never another mode value."""
         entity = _make_entity(chargeMode=0)
         await entity.async_set_native_value(5.5)
-        _, mode_arg, _ = entity.api.set_charge_mode.call_args[0]
+        _, mode_arg, _ = entity.api.set_charge_mode_gen2.call_args[0]
         assert mode_arg == 0
 
     @pytest.mark.asyncio
@@ -292,17 +292,17 @@ class TestSetNativeValue:
         """The value passed to the API must equal the slider value."""
         entity = _make_entity(chargeMode=0)
         await entity.async_set_native_value(10.3)
-        _, _, power_arg = entity.api.set_charge_mode.call_args[0]
+        _, _, power_arg = entity.api.set_charge_mode_gen2.call_args[0]
         assert power_arg == 10.3
 
     @pytest.mark.asyncio
     async def test_slider_reverts_value_on_api_failure(self):
-        """If set_charge_mode returns False the slider must revert to the value
+        """If set_charge_mode_gen2 returns False the slider must revert to the value
         currently in coordinator.data and async_write_ha_state must be called
         so the UI reflects the revert immediately.  HomeAssistantError is raised
         so HA shows a toast notification to the user."""
         entity = _make_entity(chargeMode=0, set_charge_power=7.4)
-        entity.api.set_charge_mode = MagicMock(return_value=False)
+        entity.api.set_charge_mode_gen2 = MagicMock(return_value=False)
         with pytest.raises(Exception):  # HomeAssistantError
             await entity.async_set_native_value(9.0)
         assert entity._attr_native_value == 7.4
@@ -315,7 +315,7 @@ class TestSetNativeValue:
         """A coordinator refresh must be scheduled even when the API call fails,
         so the UI reconciles with the actual device state."""
         entity = _make_entity(chargeMode=0, set_charge_power=7.4)
-        entity.api.set_charge_mode = MagicMock(return_value=False)
+        entity.api.set_charge_mode_gen2 = MagicMock(return_value=False)
         with pytest.raises(Exception):  # HomeAssistantError
             await entity.async_set_native_value(9.0)
         entity.hass.async_create_task.assert_called_once()
@@ -340,7 +340,7 @@ class TestSetNativeValue:
             entity.coordinator.data[SAMPLE_SN]["chargeMode"] = 1
             return False  # timeout
 
-        entity.api.set_charge_mode = side_effect
+        entity.api.set_charge_mode_gen2 = side_effect
 
         with pytest.raises(Exception):  # HomeAssistantError
             await entity.async_set_native_value(11.0)

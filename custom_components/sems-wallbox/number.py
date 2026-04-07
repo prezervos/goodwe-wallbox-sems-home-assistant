@@ -202,7 +202,7 @@ class SemsNumber(CoordinatorEntity, NumberEntity):
 
         # 2) Call SEMS API — always Fast mode (0), since entity is unavailable otherwise
         ok = await self.hass.async_add_executor_job(
-            self.api.set_charge_mode,
+            self.api.set_charge_mode_gen2,
             self.sn,
             0,
             value,
