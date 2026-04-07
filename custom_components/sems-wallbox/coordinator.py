@@ -78,10 +78,17 @@ class SemsUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     async def _async_update_data(self) -> dict[str, Any]:
         """Fetch data from the SEMS API."""
         try:
-            result = await self._hass.async_add_executor_job(
-                self._api.getData,
-                self._station_id,
-            )
+            # Use EU gateway for Gen2 (plant_id configured), legacy API otherwise.
+            if self._api._plant_id:
+                result = await self._hass.async_add_executor_job(
+                    self._api.get_data_gen2,
+                    self._station_id,
+                )
+            else:
+                result = await self._hass.async_add_executor_job(
+                    self._api.getData,
+                    self._station_id,
+                )
         except OutOfRetries as err:
             raise UpdateFailed(
                 f"Too many retries talking to SEMS API: {err}"

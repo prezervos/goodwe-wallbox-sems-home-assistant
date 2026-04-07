@@ -553,7 +553,7 @@ class SemsApi:
         ok, code = _post(
             "set-config",
             _EuGatewaySetConfigURL,
-            {"ratedMaxiChargePower": int(power)},
+            {"ratedMaxiChargePower": round(float(power), 1)},
         )
         if ok:
             _LOGGER.info(
@@ -798,7 +798,7 @@ class SemsApi:
         payload: dict = {
             "sn": wallbox_sn,
             "plantId": plant_id,
-            "ratedMaxiChargePower": int(charge_power),
+            "ratedMaxiChargePower": round(float(charge_power), 1),
         }
         if self._product_model:
             payload["productModel"] = self._product_model
@@ -832,6 +832,108 @@ class SemsApi:
         except Exception as exc:  # noqa: BLE001
             _LOGGER.warning("SEMS gen2 set-config fallback failed: %s", exc)
             return False
+
+    def get_data_gen2(self, wallbox_sn: str) -> dict | None:
+        """Fetch device status from EU gateway ev-charger/detail (Gen2 / HCA series).
+
+        On any EU gateway failure the call transparently falls back to the
+        legacy getData() so the integration keeps working.
+        """
+        if not self._ensure_web_token():
+            _LOGGER.warning("SEMS gen2 getData: no web token, falling back to old API")
+            return self.getData(wallbox_sn)
+
+        plant_id = self._ensure_plant_id()
+        headers = self._build_web_headers()
+        payload: dict = {"sn": wallbox_sn}
+        if plant_id:
+            payload["plantId"] = plant_id
+        if self._product_model:
+            payload["productModel"] = self._product_model
+
+        try:
+            _LOGGER.debug(
+                "SEMS gen2 getData: POST %s payload=%s", _EuGatewayDetailURL, payload
+            )
+            resp = requests.post(
+                _EuGatewayDetailURL, headers=headers, json=payload, timeout=_RequestTimeout
+            )
+            _LOGGER.info(
+                "SEMS gen2 getData: HTTP %s body=%s", resp.status_code, resp.text
+            )
+            rj = resp.json()
+            code = str(rj.get("code") or "")
+            raw = rj.get("data")
+
+            if code == "C0602":
+                _LOGGER.debug("SEMS gen2 getData: C0602, renewing web token")
+                self._web_token = None
+                if not self._ensure_web_token(renew=True):
+                    return self.getData(wallbox_sn)
+                headers = self._build_web_headers()
+                resp = requests.post(
+                    _EuGatewayDetailURL, headers=headers, json=payload, timeout=_RequestTimeout
+                )
+                _LOGGER.info(
+                    "SEMS gen2 getData retry: HTTP %s body=%s", resp.status_code, resp.text
+                )
+                rj = resp.json()
+                code = str(rj.get("code") or "")
+                raw = rj.get("data")
+
+            if code not in ("00000", "0") or not raw:
+                _LOGGER.warning(
+                    "SEMS gen2 getData: unexpected code=%s, falling back to old API", code
+                )
+                return self.getData(wallbox_sn)
+
+            # Map EU gateway fields → internal dict format.
+            # Field names are inferred; all raw keys are logged above so we can
+            # expand this mapping as the response format becomes clear.
+            def _get(*keys, default=None):
+                for k in keys:
+                    v = raw.get(k)
+                    if v is not None:
+                        return v
+                return default
+
+            result: dict = {
+                "sn": wallbox_sn,
+                "name": _get("name", "deviceName", default="EV Charger"),
+                "status": _get("status", "statusCode", "chargeStatus", default="unknown"),
+                "workstate": _get("workstate", "workState", "carState", default="unknown"),
+                "model": _get("model", "deviceModel", "productModel", default=self._product_model or ""),
+                "fireware": _get("fireware", "firmware", "softwareVersion", default=""),
+                "last_fireware": _get("last_fireware", "lastFirmware", default=""),
+                "lastUpdate": _get("lastUpdate", "updateTime", "reportTime", default=""),
+                "chargeEnergy": _get("chargeEnergy", "chargedEnergy", "totalEnergy", default="0"),
+                "power": _get("power", "chargePower", "activePower", default="0"),
+                "current": _get("current", "chargeCurrent", default="0"),
+                "time": _get("time", "chargeTime", default="0"),
+                "startStatus": _get("startStatus", "isCharging", default=False),
+                "chargeMode": _get("chargeMode", "mode", "workMode", default=0),
+                "scheduleMode": _get("scheduleMode", default=0),
+                "schedule_hour": _get("schedule_hour", "scheduleHour", default=0),
+                "schedule_minute": _get("schedule_minute", "scheduleMinute", default=0),
+                "schedule_total_minute": _get("schedule_total_minute", "scheduleTotalMinute", default=0),
+                "set_charge_power": _get(
+                    "set_charge_power", "chargePowerSetted", "ratedMaxiChargePower",
+                    "chargePowerLimit", default=None,
+                ),
+                "max_charge_power": _get("max_charge_power", "maxChargePower", default=None),
+                "min_charge_power": _get("min_charge_power", "minChargePower", default=None),
+                "charge_from_grid": _get("charge_from_grid", "chargeFromGrid", default=1),
+                "isOpen": _get("isOpen", "isConnected", default=False),
+                "currentLimit": _get("currentLimit", "currentLimitValue", default=0.0),
+            }
+            _LOGGER.debug("SEMS gen2 getData mapped result: %s", result)
+            return result
+
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.warning(
+                "SEMS gen2 getData failed (%s), falling back to old API", exc
+            )
+            return self.getData(wallbox_sn)
 
     # ------------------------------------------------------------------
     # EU gateway discovery (used during config flow)
