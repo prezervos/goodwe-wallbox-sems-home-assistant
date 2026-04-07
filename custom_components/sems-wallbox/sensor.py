@@ -70,11 +70,12 @@ class SemsSensor(CoordinatorEntity, SensorEntity):
         """Return the state of the device as human readable string."""
         data = self.coordinator.data.get(self.sn, {})
         status = data.get("status")
-        if status == "EVDetail_Status_Title_Charging":
+        # Gen2 EU gateway values
+        if status in ("EVDetail_Status_Title_Charging", "charging"):
             return "charging"
-        if status == "EVDetail_Status_Title_Waiting":
+        if status in ("EVDetail_Status_Title_Waiting", "available", "standby"):
             return "standby"
-        if status == "EVDetail_Status_Title_Offline":
+        if status in ("EVDetail_Status_Title_Offline", "offline", "unavailable"):
             return "offline"
         return "unknown"
 
@@ -153,11 +154,19 @@ class SemsWorkStateSensor(CoordinatorEntity, SensorEntity):
         data = self.coordinator.data.get(self.sn, {})
         workstate = data.get("workstate")
 
+        # Old semsportal.com API values
         if workstate == "EVDetail_Status_Waiting_Stat00":
             return "not_plugged_in"
         if workstate == "EVDetail_Status_Waiting_Stat01":
             return "connected"
         if workstate == "EVDetail_Status_Waiting_Stat02":
+            return "finished_charging"
+        # Gen2 EU gateway values
+        if workstate in ("available_gun_no_insered", "available_gun_no_inserted"):
+            return "not_plugged_in"
+        if workstate in ("available_gun_insered", "available_gun_inserted", "prepare"):
+            return "connected"
+        if workstate in ("finishing", "finish", "suspended_evse", "suspended_ev"):
             return "finished_charging"
         if workstate == "":
             return "dash"
@@ -225,8 +234,15 @@ class SemsPowerSensor(CoordinatorEntity, SensorEntity):
 
     @property
     def native_value(self) -> float:
-        """Return the power in kW."""
+        """Return the actual charging power in kW.
+
+        When startStatus is False the device is not actively charging — the
+        API's chargePower field reflects the configured *limit*, not actual draw.
+        Return 0 in that case so HA statistics and energy dashboard are correct.
+        """
         data = self.coordinator.data.get(self.sn, {}) or {}
+        if not data.get("startStatus", False):
+            return 0.0
         try:
             power = float(data.get("power", 0) or 0)
         except (TypeError, ValueError):

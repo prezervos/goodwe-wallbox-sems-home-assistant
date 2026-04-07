@@ -90,14 +90,29 @@ CHARGING_DATA = {
     "sn": SAMPLE_SN,
     "status": "EVDetail_Status_Title_Charging",
     "power": 7.4,
-    "startStatus": 0,
+    "startStatus": True,
 }
 
 STANDBY_DATA = {
     "sn": SAMPLE_SN,
     "status": "EVDetail_Status_Title_Waiting",
     "power": 0.0,
-    "startStatus": 1,
+    "startStatus": False,
+}
+
+# Gen2 EU gateway equivalents
+CHARGING_DATA_GEN2 = {
+    "sn": SAMPLE_SN,
+    "status": "charging",
+    "power": 7.4,
+    "startStatus": True,
+}
+
+STANDBY_DATA_GEN2 = {
+    "sn": SAMPLE_SN,
+    "status": "available",
+    "power": 4.2,  # configured limit, not actual draw
+    "startStatus": False,
 }
 
 
@@ -127,13 +142,23 @@ class TestComputeIsOnNoGrace:
         sw = _make_switch(STANDBY_DATA)
         assert sw._compute_is_on_from_data(STANDBY_DATA) is False
 
-    def test_power_above_zero_is_on(self):
-        data = {**STANDBY_DATA, "power": 0.5}
+    def test_gen2_charging_returns_true(self):
+        sw = _make_switch(CHARGING_DATA_GEN2)
+        assert sw._compute_is_on_from_data(CHARGING_DATA_GEN2) is True
+
+    def test_gen2_standby_power_limit_returns_false(self):
+        # power=4.2 is the configured limit, not actual draw — must NOT be ON
+        sw = _make_switch(STANDBY_DATA_GEN2)
+        assert sw._compute_is_on_from_data(STANDBY_DATA_GEN2) is False
+
+    def test_no_start_status_falls_back_to_old_api(self):
+        # Gen1 data without startStatus — use status string
+        data = {"sn": SAMPLE_SN, "status": "EVDetail_Status_Title_Charging", "power": 7.4}
         sw = _make_switch(data)
         assert sw._compute_is_on_from_data(data) is True
 
-    def test_zero_power_not_charging_is_off(self):
-        data = {**STANDBY_DATA, "power": 0.0}
+    def test_no_start_status_standby_is_off(self):
+        data = {"sn": SAMPLE_SN, "status": "EVDetail_Status_Title_Waiting", "power": 0.0}
         sw = _make_switch(data)
         assert sw._compute_is_on_from_data(data) is False
 

@@ -68,9 +68,17 @@
             },
             "charger_manual": {
                 "title": "Zadejte sériové číslo wallboxu",
-                "description": "Wallbox se nepodařilo detekovat automaticky. Zadejte sériové číslo ručně (najdete v aplikaci SEMS nebo na štítku zařízení).",
+                "description": "Wallbox se nepodařilo detekovat automaticky. Zadejte sériové číslo ručně (najdete v aplikaci SEMS nebo na štítku zařízení). Pokud jste sdílený/visitor uživatel, zadejte také Plant ID (zkopírujte z URL portálu SEMS Plus).",
                 "data": {
-                    "wallbox_serial_No": "Sériové číslo wallboxu"
+                    "wallbox_serial_No": "Sériové číslo wallboxu",
+                    "plant_id": "Plant ID (volitelné, pro Gen2 / visitor účty)"
+                }
+            },
+            "model": {
+                "title": "Model produktu",
+                "description": "Model produktu se nepodařilo detekovat automaticky. Zadejte ho ručně — je vyžadován pro nastavení limitu nabíjecího výkonu u Gen2 nabíječek (řada HCA). Najdete ho v aplikaci SEMS, na štítku zařízení nebo v portálu SEMS Plus (např. GW11K-HCA). Nechte prázdné pro přeskočení — lze zadat i dodatečně v nastavení integrace.",
+                "data": {
+                    "product_model": "Model produktu (např. GW11K-HCA)"
                 }
             }
         }

@@ -171,7 +171,7 @@ SAMPLE_DATA = {
     "chargeMode": 0,
     "max_charge_power": 11,
     "set_charge_power": 7.4,
-    "startStatus": 0,
+    "startStatus": True,
 }
 
 
@@ -328,6 +328,21 @@ class TestSemsPowerSensor:
         coord = _make_coordinator()
         s = SemsPowerSensor(coord, SAMPLE_SN)
         assert s.native_value == pytest.approx(7.4)
+
+    def test_not_charging_returns_zero(self):
+        # startStatus=False means device is idle — chargePower is just the configured limit
+        d = {**SAMPLE_DATA, "startStatus": False, "power": 5.8}
+        coord = _make_coordinator(d)
+        s = SemsPowerSensor(coord, SAMPLE_SN)
+        assert s.native_value == 0.0
+
+    def test_no_start_status_defaults_to_zero(self):
+        # Missing startStatus treated as not charging
+        d = {k: v for k, v in SAMPLE_DATA.items() if k != "startStatus"}
+        d["power"] = 5.8
+        coord = _make_coordinator(d)
+        s = SemsPowerSensor(coord, SAMPLE_SN)
+        assert s.native_value == 0.0
 
     def test_negative_power_clamped_to_zero(self):
         d = {**SAMPLE_DATA, "power": -1.5}

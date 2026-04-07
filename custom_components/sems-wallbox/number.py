@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 
 from homeassistant.components.number import (
     NumberDeviceClass,
@@ -61,6 +62,9 @@ class SemsNumber(CoordinatorEntity, NumberEntity):
         self.api = api
         self.sn = sn
         self._attr_native_value = float(value) if value is not None else None
+        # Grace period tracking: ignore stale coordinator updates after a set
+        self._pending_value: float | None = None
+        self._pending_until: float = 0.0
         _LOGGER.debug(
             "Creating SemsNumber (v%s) for Wallbox %s, initial value=%s",
             NUMBER_VERSION,
@@ -144,16 +148,31 @@ class SemsNumber(CoordinatorEntity, NumberEntity):
         charge_mode = data.get("chargeMode")
 
         if charge_mode == 0:
-            # Fast mode — accept the value the API reports.
-            if set_charge_power is not None:
-                try:
-                    self._attr_native_value = float(set_charge_power)
-                except (TypeError, ValueError):
-                    _LOGGER.warning(
-                        "SemsNumber %s: invalid set_charge_power value %r from API",
-                        self.sn,
-                        set_charge_power,
-                    )
+            # Grace period: after a set, ignore stale API values until device catches up
+            now = time.monotonic()
+            if self._pending_value is not None and now < self._pending_until:
+                if set_charge_power is not None:
+                    try:
+                        if abs(float(set_charge_power) - self._pending_value) < 0.05:
+                            # API has caught up — clear grace and accept
+                            self._pending_value = None
+                            self._attr_native_value = float(set_charge_power)
+                        # else: still stale — keep _attr_native_value at pending value
+                    except (TypeError, ValueError):
+                        pass
+            else:
+                # Grace expired or no pending set — accept the API value
+                if self._pending_value is not None:
+                    self._pending_value = None
+                if set_charge_power is not None:
+                    try:
+                        self._attr_native_value = float(set_charge_power)
+                    except (TypeError, ValueError):
+                        _LOGGER.warning(
+                            "SemsNumber %s: invalid set_charge_power value %r from API",
+                            self.sn,
+                            set_charge_power,
+                        )
         else:
             # PV mode — the device may report a stale / default set_charge_power.
             # Preserve the last user-set value so that switching back to Fast
@@ -195,6 +214,10 @@ class SemsNumber(CoordinatorEntity, NumberEntity):
         # _pending_mode — causing the very revert we are trying to prevent.
         old_value = self._attr_native_value  # save before optimistic write for failure revert
         self._attr_native_value = float(value)
+        # Start grace period immediately so coordinator updates during the API
+        # call (which can take several seconds) don't revert the optimistic value.
+        self._pending_value = float(value)
+        self._pending_until = time.monotonic() + 120.0
         device = self.coordinator.data.get(self.sn)
         if device is not None:
             device["set_charge_power"] = float(value)
@@ -222,6 +245,8 @@ class SemsNumber(CoordinatorEntity, NumberEntity):
             )
             if old_value is not None and self.available:
                 self._attr_native_value = old_value
+                self._pending_value = None  # revert cancels grace
+                self._pending_until = 0.0
                 device = self.coordinator.data.get(self.sn)
                 if device is not None:
                     device["set_charge_power"] = old_value
@@ -233,5 +258,7 @@ class SemsNumber(CoordinatorEntity, NumberEntity):
                 translation_placeholders={"value": str(value)},
             )
 
-        # 3) Schedule a delayed refresh (5 s) to confirm state from the API.
-        self.coordinator.schedule_delayed_refresh(5)
+        # 3) Schedule a delayed refresh to confirm state from the API.
+        # set-mode can take up to 90s to return, then device needs more time to apply.
+        # Poll 60s after set-mode returns (total from user action up to ~150s).
+        self.coordinator.schedule_delayed_refresh(60)

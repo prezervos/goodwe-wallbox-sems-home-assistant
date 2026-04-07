@@ -48,7 +48,13 @@
       },
       "charger_manual": {
         "data": {
-          "wallbox_serial_No": "Wallbox serial number"
+          "wallbox_serial_No": "Wallbox serial number",
+          "plant_id": "Plant ID (optional)"
+        }
+      },
+      "model": {
+        "data": {
+          "product_model": "Product model"
         }
       }
     },

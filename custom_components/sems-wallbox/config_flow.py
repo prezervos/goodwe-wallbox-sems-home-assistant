@@ -46,6 +46,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._plant_options: dict[str, str] = {}   # {id: display_name}
         self._charger_sn_to_model: dict[str, str] = {}  # {sn: model}
         self._charger_manual_error: str | None = None
+        self._pending_sn: str = ""  # SN waiting for model confirmation
 
     @staticmethod
     @callback
@@ -102,25 +103,30 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             return await self.async_step_charger()
 
         if not self._plant_options:
-            # First visit — fetch from EU gateway
+            # First visit — fetch from EU gateway.
+            # Try centralized/page (EV_CHARGER) first — works for both owners and
+            # visitor/shared accounts.  Fall back to stations/page if needed.
             assert self._api is not None
-            stations = await self.hass.async_add_executor_job(self._api.fetch_stations)
-            _LOGGER.debug("SEMS config: discovered %d stations", len(stations))
-            for s in stations:
-                sid = (
-                    s.get("id")
-                    or s.get("stationId")
-                    or s.get("plantId")
-                    or s.get("powerStationId")
-                )
-                name = (
-                    s.get("name")
-                    or s.get("stationName")
-                    or s.get("plantName")
-                    or str(sid)
-                )
+            # Fetch all EV chargers across all plants (no stationId filter)
+            all_chargers = await self.hass.async_add_executor_job(
+                self._api.fetch_ev_chargers, None
+            )
+            _LOGGER.debug("SEMS config: discovered %d EV chargers (all plants)", len(all_chargers))
+            for c in all_chargers:
+                sid = c.get("stationId") or c.get("plantId")
+                name = c.get("stationName") or c.get("name") or str(sid)
                 if sid:
                     self._plant_options[str(sid)] = str(name)
+
+            if not self._plant_options:
+                # Fallback: try stations/page
+                stations = await self.hass.async_add_executor_job(self._api.fetch_stations)
+                _LOGGER.debug("SEMS config: discovered %d stations", len(stations))
+                for s in stations:
+                    sid = s.get("id") or s.get("stationId")
+                    name = s.get("name") or s.get("stationName") or str(sid)
+                    if sid:
+                        self._plant_options[str(sid)] = str(name)
 
         if len(self._plant_options) == 0:
             # EU gateway not available or no plants — skip to manual SN entry
@@ -153,7 +159,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
             sn = user_input[CONF_STATION_ID]
-            return self.async_create_entry(title=sn, data=self._build_entry_data(sn))
+            return await self._finish_or_model_step(sn)
 
         assert self._api is not None
         chargers = await self.hass.async_add_executor_job(
@@ -182,6 +188,9 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 label = f"{name} ({model})" if model else name
                 charger_options[sn] = label
                 self._charger_sn_to_model[sn] = model
+                # Capture plant_id from charger record if not yet set (visitor accounts)
+                if not self._plant_id:
+                    self._plant_id = c.get("stationId") or None
 
         if len(charger_options) == 0:
             _LOGGER.info("SEMS config: no EV chargers discovered, using manual entry")
@@ -191,7 +200,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if len(charger_options) == 1:
             sn = next(iter(charger_options))
             _LOGGER.debug("SEMS config: auto-selected charger %s", sn)
-            return self.async_create_entry(title=sn, data=self._build_entry_data(sn))
+            return await self._finish_or_model_step(sn)
 
         return self.async_show_form(
             step_id="charger",
@@ -216,12 +225,57 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
             sn = user_input[CONF_STATION_ID].strip()
-            return self.async_create_entry(title=sn, data=self._build_entry_data(sn))
+            plant_id = (user_input.get(CONF_PLANT_ID) or "").strip()
+            if plant_id:
+                self._plant_id = plant_id
+            return await self._finish_or_model_step(sn)
 
         return self.async_show_form(
             step_id="charger_manual",
-            data_schema=vol.Schema({vol.Required(CONF_STATION_ID): str}),
+            data_schema=vol.Schema({
+                vol.Required(CONF_STATION_ID): str,
+                vol.Optional(CONF_PLANT_ID, default=""): str,
+            }),
             errors=errors,
+        )
+
+    # ------------------------------------------------------------------
+    # Step 4: model entry (when not auto-discovered)
+    # ------------------------------------------------------------------
+
+    async def _finish_or_model_step(self, sn: str):
+        """Create entry directly when model is known, otherwise fetch it, then ask."""
+        self._pending_sn = sn
+        if not self._charger_sn_to_model.get(sn):
+            # Try to auto-discover the model via control-item-content-list
+            assert self._api is not None
+            info = await self.hass.async_add_executor_job(self._api.fetch_device_info, sn)
+            model = (info.get("productModel") or "").strip()
+            if model:
+                _LOGGER.debug("SEMS config: auto-discovered model %s for %s", model, sn)
+                self._charger_sn_to_model[sn] = model
+        if self._charger_sn_to_model.get(sn):
+            return self.async_create_entry(title=sn, data=self._build_entry_data(sn))
+        return await self.async_step_model()
+
+    async def async_step_model(
+        self, user_input: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        """Ask for product model when it could not be auto-discovered."""
+        if user_input is not None:
+            model = (user_input.get(CONF_PRODUCT_MODEL) or "").strip()
+            if model:
+                self._charger_sn_to_model[self._pending_sn] = model
+            return self.async_create_entry(
+                title=self._pending_sn, data=self._build_entry_data(self._pending_sn)
+            )
+
+        return self.async_show_form(
+            step_id="model",
+            data_schema=vol.Schema({
+                vol.Optional(CONF_PRODUCT_MODEL, default=""): str,
+            }),
+            errors={},
         )
 
     # ------------------------------------------------------------------

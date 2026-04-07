@@ -78,17 +78,13 @@ class SemsUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     async def _async_update_data(self) -> dict[str, Any]:
         """Fetch data from the SEMS API."""
         try:
-            # Use EU gateway for Gen2 (plant_id configured), legacy API otherwise.
-            if self._api._plant_id:
-                result = await self._hass.async_add_executor_job(
-                    self._api.get_data_gen2,
-                    self._station_id,
-                )
-            else:
-                result = await self._hass.async_add_executor_job(
-                    self._api.getData,
-                    self._station_id,
-                )
+            # Always try EU gateway first — get_data_gen2 falls back to getData()
+            # automatically on any EU gateway failure, so this is safe for both
+            # Gen1 and Gen2, and for visitor accounts that may not have plant_id.
+            result = await self._hass.async_add_executor_job(
+                self._api.get_data_gen2,
+                self._station_id,
+            )
         except OutOfRetries as err:
             raise UpdateFailed(
                 f"Too many retries talking to SEMS API: {err}"
@@ -114,8 +110,9 @@ class SemsUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             result,
         )
 
-        # Dynamic polling: faster while actively charging (power > 0)
-        is_charging = float(result.get("power", 0) or 0) > 0
+        # Dynamic polling: faster while actively charging.
+        # startStatus is an explicit boolean from the API (True = actively charging).
+        is_charging = bool(result.get("startStatus", False))
         new_interval = timedelta(
             seconds=self._interval_charging if is_charging else self._interval_idle
         )

@@ -68,9 +68,17 @@
             },
             "charger_manual": {
                 "title": "Enter wallbox serial number",
-                "description": "The wallbox could not be detected automatically. Enter the serial number manually (found in the SEMS app or on the device label).",
+                "description": "The wallbox could not be detected automatically. Enter the serial number manually (found in the SEMS app or on the device label). If you are a shared/visitor user, also enter the Plant ID (copy it from the SEMS Plus portal URL).",
                 "data": {
-                    "wallbox_serial_No": "Wallbox serial number"
+                    "wallbox_serial_No": "Wallbox serial number",
+                    "plant_id": "Plant ID (optional, for Gen2 / visitor accounts)"
+                }
+            },
+            "model": {
+                "title": "Product model",
+                "description": "The product model could not be detected automatically. Enter it manually — it is required for setting the charge power limit on Gen2 chargers (HCA series). You can find it in the SEMS app, on the device label, or in the SEMS Plus portal (e.g. GW11K-HCA). Leave empty to skip — you can enter it later in the integration options.",
+                "data": {
+                    "product_model": "Product model (e.g. GW11K-HCA)"
                 }
             }
         }

@@ -9,7 +9,7 @@ from homeassistant import exceptions
 
 _LOGGER = logging.getLogger(__name__)
 
-API_VERSION = "1.2.0"
+API_VERSION = "1.3.0"
 
 _LoginURL = "https://www.semsportal.com/api/v3/Common/CrossLogin"
 _WebLoginURL = "https://semsplus.goodwe.com/web/sems/sems-user/api/v1/auth/cross-login"
@@ -39,7 +39,9 @@ _EuGatewayControlItemsURL = _EuGatewayBase + "/sems-remote/api/ev-charger/contro
 _GetPowerStationListURLPart = "/v1/PowerStation/GetPowerStationIdByOwner"
 
 _RequestTimeout = 30   # seconds for status reads
-_SetModeTimeout = 5    # seconds for EU gateway set-mode (short to fail fast to set-config)
+_SetModeTimeout = 90   # seconds for EU gateway set-mode (device can take 60-90s to respond)
+_SetModeR0305Retries = 3   # retry count on R0305 (remote_control_fail — transient)
+_SetModeR0305Delay = 2.0   # seconds between R0305 retries
 
 _DefaultHeaders = {
     "Content-Type": "application/json",
@@ -107,9 +109,8 @@ class SemsApi:
     def _fetch_web_token(self) -> dict | None:
         """Login to semsplus.goodwe.com to obtain a semsPlusWeb token.
 
-        The EU gateway requires client=semsPlusWeb.  Password is sent as
-        base64(MD5(password)) — observed from browser traffic capture.
-        The request is signed with an empty uid/token x-signature.
+        Password is sent as base64(MD5(password)) — observed from browser
+        traffic capture.  The request is signed with an empty uid/token x-signature.
         """
         try:
             empty_token = json.dumps(
@@ -736,101 +737,65 @@ class SemsApi:
                 _EuGatewaySetModeURL, payload,
             )
             try:
-                resp = requests.post(
-                    _EuGatewaySetModeURL,
-                    headers=headers,
-                    json=payload,
-                    timeout=_SetModeTimeout,
-                )
-                _LOGGER.debug(
-                    "SEMS gen2 set-mode: HTTP %s body=%s", resp.status_code, resp.text
-                )
-                rj = resp.json()
-                code = str(rj.get("code") or "")
-                if code in ("00000", "0") or rj.get("data") is True:
-                    _LOGGER.info(
-                        "SEMS gen2 set-mode succeeded (sn=%s, mode=%s, power=%s)",
-                        wallboxSn, mode, chargePower,
+                for attempt in range(1, _SetModeR0305Retries + 2):
+                    resp = requests.post(
+                        _EuGatewaySetModeURL,
+                        headers=headers,
+                        json=payload,
+                        timeout=_SetModeTimeout,
                     )
-                    return True
-                if code == "C0602" and maxTokenRetries > 0:
-                    # Web session invalidated (e.g. after a previous timeout).
-                    # Clear cached token, obtain a fresh one, and retry once.
                     _LOGGER.debug(
-                        "SEMS gen2 set-mode C0602 (session expired), renewing web token and retrying"
+                        "SEMS gen2 set-mode (attempt %d): HTTP %s body=%s",
+                        attempt, resp.status_code, resp.text,
                     )
-                    self._web_token = None
-                    return self.set_charge_mode_gen2(
-                        wallboxSn, mode, chargePower=chargePower,
-                        renewToken=True, maxTokenRetries=maxTokenRetries - 1,
-                    )
-                _LOGGER.warning(
-                    "SEMS gen2 set-mode non-success code=%s body=%s",
-                    code, resp.text[:300],
-                )
-                return self._set_mode_config_fallback(wallboxSn, plant_id, chargePower, headers)
+                    rj = resp.json()
+                    code = str(rj.get("code") or "")
+                    if code in ("00000", "0") or rj.get("data") is True:
+                        _LOGGER.info(
+                            "SEMS gen2 set-mode succeeded (sn=%s, mode=%s, power=%s, attempt=%d)",
+                            wallboxSn, mode, chargePower, attempt,
+                        )
+                        return True
+                    if code == "C0602" and maxTokenRetries > 0:
+                        _LOGGER.debug(
+                            "SEMS gen2 set-mode C0602 (session expired), renewing web token and retrying"
+                        )
+                        self._web_token = None
+                        return self.set_charge_mode_gen2(
+                            wallboxSn, mode, chargePower=chargePower,
+                            renewToken=True, maxTokenRetries=maxTokenRetries - 1,
+                        )
+                    if code == "R0305":
+                        # Transient "remote_control_fail" — retry after short delay
+                        if attempt <= _SetModeR0305Retries:
+                            _LOGGER.debug(
+                                "SEMS gen2 set-mode R0305 (remote_control_fail), "
+                                "retrying in %.1fs (attempt %d/%d)",
+                                _SetModeR0305Delay, attempt, _SetModeR0305Retries,
+                            )
+                            time.sleep(_SetModeR0305Delay)
+                            continue
+                        _LOGGER.warning(
+                            "SEMS gen2 set-mode R0305 persisted after %d attempts (sn=%s)",
+                            _SetModeR0305Retries, wallboxSn,
+                        )
+                    else:
+                        _LOGGER.warning(
+                            "SEMS gen2 set-mode non-success code=%s body=%s",
+                            code, resp.text[:300],
+                        )
+                    break
+                return False
             except requests.exceptions.Timeout:
                 _LOGGER.warning(
-                    "SEMS gen2 set-mode timed out after %ss (sn=%s), trying set-config fallback",
+                    "SEMS gen2 set-mode timed out after %ss (sn=%s)",
                     _SetModeTimeout, wallboxSn,
                 )
-                return self._set_mode_config_fallback(wallboxSn, plant_id, chargePower, headers)
+                return False
         except OutOfRetries:
             raise
         except Exception as exc:  # noqa: BLE001
             _LOGGER.error("Unable to execute gen2 SetChargeMode command. %s", exc)
-            return False
-
-    def _set_mode_config_fallback(
-        self,
-        wallbox_sn: str,
-        plant_id: str,
-        charge_power: float | None,
-        headers: dict,
-    ) -> bool:
-        """Fallback: set ratedMaxiChargePower via set-config when set-mode fails/times out.
-
-        This is the endpoint that historically works for the HCA series.
-        Returns True on success, False on any failure.
-        """
-        if charge_power is None:
-            return False
-        payload: dict = {
-            "sn": wallbox_sn,
-            "plantId": plant_id,
-            "chargePowerSetted": round(float(charge_power), 1),
-        }
-        if self._product_model:
-            payload["productModel"] = self._product_model
-        try:
-            _LOGGER.debug(
-                "SEMS gen2 set-config fallback: POST %s payload=%s",
-                _EuGatewaySetConfigURL, payload,
-            )
-            resp = requests.post(
-                _EuGatewaySetConfigURL,
-                headers=headers,
-                json=payload,
-                timeout=_RequestTimeout,
-            )
-            _LOGGER.debug(
-                "SEMS gen2 set-config fallback: HTTP %s body=%s", resp.status_code, resp.text
-            )
-            rj = resp.json()
-            code = str(rj.get("code") or "")
-            if code in ("00000", "0") or rj.get("data") is True:
-                _LOGGER.info(
-                    "SEMS gen2 set-config fallback succeeded (sn=%s, power=%s)",
-                    wallbox_sn, charge_power,
-                )
-                return True
-            _LOGGER.warning(
-                "SEMS gen2 set-config fallback non-success code=%s body=%s",
-                code, resp.text[:300],
-            )
-            return False
-        except Exception as exc:  # noqa: BLE001
-            _LOGGER.warning("SEMS gen2 set-config fallback failed: %s", exc)
             return False
 
     def get_data_gen2(self, wallbox_sn: str) -> dict | None:
@@ -941,6 +906,31 @@ class SemsApi:
 
     _StationsPageURL = _EuGatewayBase + "/sems-plant/api/portal/stations/page"
     _CentralizedPageURL = _EuGatewayBase + "/sems-plant/api/web/device/centralized/page"
+    _ControlItemURL = _EuGatewayBase + "/sems-remote/api/ev-charger/control-item-content-list"
+
+    def fetch_device_info(self, wallbox_sn: str) -> dict:
+        """Fetch device metadata (productModel, ratedPower, etc.) from the EU gateway.
+
+        GET /sems-remote/api/ev-charger/control-item-content-list/{sn}
+        Returns a dict with at least 'productModel' (empty string on failure).
+        """
+        if not self._ensure_web_token():
+            return {}
+        headers = self._build_web_headers()
+        try:
+            resp = requests.get(
+                f"{self._ControlItemURL}/{wallbox_sn}",
+                headers=headers,
+                timeout=_RequestTimeout,
+            )
+            rj = resp.json()
+            _LOGGER.debug("SEMS fetch_device_info raw: %s", rj)
+            if str(rj.get("code") or "") not in ("00000", "0"):
+                return {}
+            return rj.get("data") or {}
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.debug("SEMS fetch_device_info failed: %s", exc)
+            return {}
 
     def fetch_stations(self) -> list[dict]:
         """Return list of plants/stations from the EU gateway.
@@ -966,13 +956,27 @@ class SemsApi:
             if isinstance(data, list):
                 records = data
             else:
+                # Response uses dataList (centralized endpoint) or records/list
                 records = (
-                    data.get("records")
+                    data.get("dataList")
+                    or data.get("records")
                     or data.get("list")
                     or data.get("data")
                     or []
                 )
-            return records if isinstance(records, list) else []
+            # Normalise: ensure each record has 'id' and 'name'
+            result = []
+            for r in (records if isinstance(records, list) else []):
+                sid = (
+                    r.get("stationId")
+                    or r.get("id")
+                    or r.get("plantId")
+                    or r.get("powerStationId")
+                )
+                name = r.get("stationName") or r.get("name") or str(sid)
+                if sid:
+                    result.append({"id": sid, "name": name, **r})
+            return result
         except Exception as exc:  # noqa: BLE001
             _LOGGER.error("SEMS fetch_stations failed: %s", exc)
             return []
@@ -981,9 +985,15 @@ class SemsApi:
         """Return list of EV chargers from the EU gateway.
 
         If *station_id* is provided the request is scoped to that plant.
-        Each dict contains at least 'sn' (and optionally 'name', 'model').
-        Raw response is logged at DEBUG for diagnostics.
+        Each dict contains at least 'sn' (and optionally 'name', 'model',
+        'stationId').  Raw response is logged at DEBUG for diagnostics.
         Returns an empty list on any error.
+
+        Response structure (centralized/page endpoint):
+          data.dataList[]
+            .stationId, .stationName
+            .children[]
+              .sn, .name, .deviceType, .stationId
         """
         if not self._ensure_web_token():
             _LOGGER.warning("SEMS fetch_ev_chargers: no web token")
@@ -1002,15 +1012,30 @@ class SemsApi:
             rj = resp.json()
             _LOGGER.debug("SEMS fetch_ev_chargers raw: %s", rj)
             data = rj.get("data") or {}
+
+            # Primary structure: data.dataList[].children[]
+            data_list = data.get("dataList") if isinstance(data, dict) else None
+            if data_list:
+                chargers = []
+                for station in data_list:
+                    for child in (station.get("children") or []):
+                        if child.get("deviceType") == "EV_CHARGER" or child.get("sn"):
+                            # Enrich child with stationId if missing
+                            if not child.get("stationId"):
+                                child["stationId"] = station.get("stationId")
+                            chargers.append(child)
+                if chargers:
+                    return chargers
+
+            # Fallback: flat records/list/data
             if isinstance(data, list):
-                records = data
-            else:
-                records = (
-                    data.get("records")
-                    or data.get("list")
-                    or data.get("data")
-                    or []
-                )
+                return data
+            records = (
+                data.get("records")
+                or data.get("list")
+                or data.get("data")
+                or []
+            )
             return records if isinstance(records, list) else []
         except Exception as exc:  # noqa: BLE001
             _LOGGER.error("SEMS fetch_ev_chargers failed: %s", exc)

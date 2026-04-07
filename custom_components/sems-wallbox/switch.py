@@ -108,15 +108,21 @@ class SemsSwitch(CoordinatorEntity, SwitchEntity):
 
     def _compute_is_on_from_data(self, data: dict) -> bool:
         """Compute is_on from API data, respecting the grace period after commands."""
+        # startStatus is an explicit API boolean (True = charging active).
+        # Fall back to old-API status string for Gen1 without startStatus.
+        start_status = data.get("startStatus")
+        if start_status is not None:
+            api_is_on = bool(start_status)
+        else:
+            status = data.get("status")
+            api_is_on = status == "EVDetail_Status_Title_Charging"
         status = data.get("status")
-        power = float(data.get("power", 0) or 0)
-        api_is_on = status == "EVDetail_Status_Title_Charging" or power > 0
 
         now = self.hass.loop.time()
         target = self._last_command_target
         ts = self._last_command_ts
 
-        # Within ON grace: keep optimistic ON even if API still shows Waiting/power=0
+        # Within ON grace: keep optimistic ON even if API still shows not charging
         if (
             target is True
             and ts is not None
@@ -125,16 +131,16 @@ class SemsSwitch(CoordinatorEntity, SwitchEntity):
         ):
             _LOGGER.debug(
                 "SemsSwitch %s: within ON grace (%.1fs < %.1fs), "
-                "API status=%s, power=%s -> holding is_on=True",
+                "API status=%s, startStatus=%s -> holding is_on=True",
                 self.sn,
                 now - ts,
                 GRACE_ON_SECONDS,
                 status,
-                power,
+                data.get("startStatus"),
             )
             return True
 
-        # Within OFF grace: keep optimistic OFF even if API briefly shows power>0
+        # Within OFF grace: keep optimistic OFF even if API briefly shows charging
         if (
             target is False
             and ts is not None
@@ -143,12 +149,12 @@ class SemsSwitch(CoordinatorEntity, SwitchEntity):
         ):
             _LOGGER.debug(
                 "SemsSwitch %s: within OFF grace (%.1fs < %.1fs), "
-                "API status=%s, power=%s -> holding is_on=False",
+                "API status=%s, startStatus=%s -> holding is_on=False",
                 self.sn,
                 now - ts,
                 GRACE_OFF_SECONDS,
                 status,
-                power,
+                data.get("startStatus"),
             )
             return False
 
@@ -158,10 +164,10 @@ class SemsSwitch(CoordinatorEntity, SwitchEntity):
             self._last_command_ts = None
 
         _LOGGER.debug(
-            "SemsSwitch %s: API status=%s, power=%s -> is_on=%s (no grace override)",
+            "SemsSwitch %s: API status=%s, startStatus=%s -> is_on=%s (no grace override)",
             self.sn,
             status,
-            power,
+            data.get("startStatus"),
             api_is_on,
         )
         return api_is_on
