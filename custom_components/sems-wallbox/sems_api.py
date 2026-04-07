@@ -102,34 +102,43 @@ class SemsApi:
             return None
 
     def _fetch_web_token(self) -> dict | None:
-        """Login via SEMS Plus web endpoint to obtain a semsPlusWeb token.
+        """Exchange Android token for a semsPlusWeb token via cross-login.
 
-        The EU gateway requires client=semsPlusWeb which is only issued by
-        semsplus.goodwe.com. The password is sent as plaintext (same as CrossLogin).
+        The EU gateway requires client=semsPlusWeb.  We sign the request
+        with the already-obtained Android token so no password is needed.
         """
+        # Make sure we have the Android token to sign the cross-login with.
+        if not self._ensure_token():
+            _LOGGER.warning("SEMS web login: no Android token available")
+            return None
+        android = self._token  # type: ignore[assignment]
         try:
-            empty_token = json.dumps(
-                {"uid": "", "timestamp": 0, "token": "",
-                 "client": "semsPlusWeb", "version": "", "language": "en"}
+            android_token_hdr = json.dumps(
+                {
+                    "uid": android.get("uid", ""),
+                    "timestamp": android.get("timestamp", 0),
+                    "token": android.get("token", ""),
+                    "client": "semsPlusAndroid",
+                    "version": "",
+                    "language": "en",
+                }
             )
             ts = str(int(time.time() * 1000))
-            digest = hashlib.sha256(f"{ts}@@".encode()).hexdigest()
+            uid = android.get("uid", "")
+            tok = android.get("token", "")
+            digest = hashlib.sha256(f"{ts}@{uid}@{tok}".encode()).hexdigest()
             x_sig = base64.b64encode(f"{digest}@{ts}".encode()).decode()
             headers = {
                 "Content-Type": "application/json",
                 "Accept": "application/json",
-                "token": empty_token,
-                "client": "semsPlusWeb",
+                "token": android_token_hdr,
+                "client": "semsPlusAndroid",
                 "neutral": "0",
                 "currentlang": "en",
                 "x-signature": x_sig,
             }
             body = {
                 "account": self._username,
-                "pwd": self._password,
-                "agreement": 1,
-                "isLocal": False,
-                "isChinese": False,
             }
             _LOGGER.debug("SEMS web login: POST %s", _WebLoginURL)
             resp = requests.post(
