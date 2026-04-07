@@ -116,7 +116,7 @@ class SemsApi:
                  "client": "semsPlusWeb", "version": "", "language": "en"}
             )
             ts = str(int(time.time() * 1000))
-            digest = hashlib.sha256(f"{ts}@@@".encode()).hexdigest()
+            digest = hashlib.sha256(f"{ts}@@".encode()).hexdigest()
             x_sig = base64.b64encode(f"{digest}@{ts}".encode()).decode()
             headers = {
                 "Content-Type": "application/json",
