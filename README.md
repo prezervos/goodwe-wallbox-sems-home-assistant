@@ -53,16 +53,33 @@ Copy the `custom_components/sems-wallbox/` folder into your HA `config/custom_co
 
 Go to **Settings → Devices & Services → Add Integration** and search for **GoodWe SEMS Wallbox**.
 
-| Field | Description |
-|-------|-------------|
-| Username (e-mail) | SEMS Portal login |
-| Password | SEMS Portal password |
-| Wallbox serial number | Found in the SEMS app or on the device label |
-| Update interval (seconds) | How often to poll the API (default: 60) |
+The setup is guided and automatic:
 
-> **Tip:** Create a **visitor account** in the SEMS Portal app and use that to avoid exposing your main credentials. The visitor account has read+control access to the charger.
+1. Enter your **SEMS Plus / semsportal.com** username and password.
+2. The integration queries your account and lists your **plants** (if you have more than one).
+3. It then lists the **EV chargers** in the selected plant — pick yours, or confirm the only one detected.
+4. If automatic discovery fails (EU gateway unavailable, no EU account), you are prompted to enter the **wallbox serial number** manually.
+
+The discovered **Plant ID** and **product model** are stored automatically — no manual copy-paste from URLs needed for Gen2 (HCA series) chargers.
+
+> **Tip:** Create a **visitor account** in the SEMS Portal app and use that to avoid exposing your main credentials. The visitor account has read + control access to the charger.
 
 After setup the integration creates a single device with all entities listed above.
+
+---
+
+## Gen2 / HCA series chargers
+
+Chargers in the HCA product family (e.g. `GW7K-HCA-20`) use the **SEMS Plus EU gateway API** to set the charge power limit instead of the legacy semsportal.com endpoint.
+
+The integration handles this automatically:
+
+- During setup the **Plant ID** is discovered and saved.
+- All set-mode / set-power commands are sent exclusively to `eu-gateway.semsportal.com` — the old SetChargeMode endpoint is skipped entirely to avoid device-busy timeouts.
+- If the EU gateway is unreachable, the integration falls back to the legacy API (which works for Gen1 chargers without SEMS Plus).
+
+You can review or override the Plant ID and product model at any time via  
+**Settings → Devices & Services → GoodWe SEMS Wallbox → Configure**.
 
 ---
 
@@ -109,6 +126,15 @@ pytest tests/ -v
 ---
 
 ## Changelog
+
+### 1.2.0
+- **Auto-discovery in config flow**: after login the integration queries the EU gateway and automatically detects your plants and EV chargers — no manual serial number entry needed
+- **Gen2 / HCA series**: full support via SEMS Plus EU gateway (`eu-gateway.semsportal.com`)
+  - Plant ID auto-detected from account — no URL copy-paste needed
+  - Set-mode / set-power sent exclusively to EU gateway (legacy SetChargeMode skipped) to avoid 30 s device-busy timeouts
+  - Password encoded correctly as `base64(MD5(password))` per SEMS Plus browser protocol
+- Dynamic polling: faster interval while charging, slower while idle
+- Options flow: override Plant ID, product model and polling intervals at any time
 
 ### 1.1.0
 - Full Czech and English entity translations via HA translation system (`_attr_translation_key`)

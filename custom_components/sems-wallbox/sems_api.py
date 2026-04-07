@@ -9,7 +9,7 @@ from homeassistant import exceptions
 
 _LOGGER = logging.getLogger(__name__)
 
-API_VERSION = "0.5.0"
+API_VERSION = "1.2.0"
 
 _LoginURL = "https://www.semsportal.com/api/v3/Common/CrossLogin"
 _WebLoginURL = "https://semsplus.goodwe.com/web/sems/sems-user/api/v1/auth/cross-login"
