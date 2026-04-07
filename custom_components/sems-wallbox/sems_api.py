@@ -12,6 +12,7 @@ _LOGGER = logging.getLogger(__name__)
 API_VERSION = "0.5.0"
 
 _LoginURL = "https://www.semsportal.com/api/v3/Common/CrossLogin"
+_WebLoginURL = "https://semsplus.goodwe.com/web/sems/sems-user/api/v1/auth/cross-login"
 
 # v3/v4 endpoints for reading wallbox status
 _WallboxURL_V3 = "https://www.semsportal.com/api/v3/EvCharger/GetCurrentChargeinfo"
@@ -53,6 +54,7 @@ class SemsApi:
         self._username = username
         self._password = password
         self._token: dict | None = None
+        self._web_token: dict | None = None  # semsPlusWeb token for EU gateway
         # Gen2: cached plant info (auto-detected or user-supplied)
         self._plant_id: str | None = None
         self._product_model: str | None = None
@@ -99,6 +101,66 @@ class SemsApi:
             _LOGGER.error("Unable to fetch login token from SEMS API. %s", exc)
             return None
 
+    def _fetch_web_token(self) -> dict | None:
+        """Login via SEMS Plus web endpoint to obtain a semsPlusWeb token.
+
+        The EU gateway requires client=semsPlusWeb which is only issued by
+        semsplus.goodwe.com. The password is sent base64-encoded (same encoding
+        that semsportal.com uses for its own CrossLogin).
+        """
+        try:
+            import base64 as _b64
+            pwd_b64 = _b64.b64encode(self._password.encode()).decode()
+            empty_token = json.dumps(
+                {"uid": "", "timestamp": 0, "token": "",
+                 "client": "semsPlusWeb", "version": "", "language": "en"}
+            )
+            ts = str(int(time.time() * 1000))
+            digest = hashlib.sha256(f"{ts}@@@".encode()).hexdigest()
+            x_sig = base64.b64encode(f"{digest}@{ts}".encode()).decode()
+            headers = {
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "token": empty_token,
+                "client": "semsPlusWeb",
+                "neutral": "0",
+                "currentlang": "en",
+                "x-signature": x_sig,
+            }
+            body = {
+                "account": self._username,
+                "pwd": pwd_b64,
+                "agreement": 1,
+                "isLocal": False,
+                "isChinese": False,
+            }
+            _LOGGER.debug("SEMS web login: POST %s", _WebLoginURL)
+            resp = requests.post(
+                _WebLoginURL, headers=headers, json=body, timeout=_RequestTimeout
+            )
+            resp.raise_for_status()
+            rj = resp.json()
+            _LOGGER.debug("SEMS web login response: %s", rj)
+            code = rj.get("code")
+            if code not in (0, "0", "00000", None) or rj.get("hasError"):
+                _LOGGER.warning("SEMS web login failed: code=%s msg=%s", code, rj.get("msg"))
+                return None
+            data = rj.get("data") or {}
+            _LOGGER.debug("SEMS web token received: client=%s", data.get("client"))
+            return data
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.warning("SEMS web login exception: %s", exc)
+            return None
+
+    def _ensure_web_token(self, renew: bool = False) -> bool:
+        """Ensure we have a valid semsPlusWeb token."""
+        if self._web_token is None or renew:
+            tok = self._fetch_web_token()
+            if tok is None:
+                return False
+            self._web_token = tok
+        return True
+
     def _ensure_token(self, renew: bool = False) -> bool:
         """Ensure we have a valid token in self._token."""
         if self._token is None or renew:
@@ -128,23 +190,21 @@ class SemsApi:
     def _build_web_headers(self) -> dict:
         """Build headers for SEMS Plus EU gateway (requires x-signature).
 
+        Uses a dedicated semsPlusWeb token obtained from semsplus.goodwe.com.
         Algorithm (from semsplus.goodwe.com JS bundle):
           x-signature = base64(SHA256(timestamp_ms + '@' + uid + '@' + token) + '@' + timestamp_ms)
         """
-        if not self._ensure_token():
-            raise OutOfRetries("Could not obtain SEMS token")
+        if not self._ensure_web_token():
+            raise OutOfRetries("Could not obtain SEMS Plus web token")
         ts = str(int(time.time() * 1000))
-        uid = self._token.get("uid", "") if self._token else ""
-        tok = self._token.get("token", "") if self._token else ""
+        uid = self._web_token.get("uid", "") if self._web_token else ""
+        tok = self._web_token.get("token", "") if self._web_token else ""
         digest = hashlib.sha256(f"{ts}@{uid}@{tok}".encode()).hexdigest()
         x_signature = base64.b64encode(f"{digest}@{ts}".encode()).decode()
-        # EU gateway requires client=semsPlusWeb; our semsportal.com login returns
-        # semsPlusAndroid, so we override it here. client is NOT part of x-signature.
-        web_token = {**self._token, "client": "semsPlusWeb"}
         return {
             "Content-Type": "application/json",
             "Accept": "application/json",
-            "token": json.dumps(web_token),
+            "token": json.dumps(self._web_token),
             "client": "semsPlusWeb",
             "neutral": "0",
             "currentlang": "en",
