@@ -29,8 +29,26 @@ All entities are automatically translated — Czech (`cs`) and English (`en`) ar
 ## Requirements
 
 - Home Assistant 2023.6 or newer  
-- A [SEMS Portal](https://www.semsportal.com) account (visitor account recommended — see below)  
+- A GoodWe **SEMS Plus** account with access to the wallbox (visitor account recommended — see below)  
 - GoodWe EV Charger (Wallbox) registered in the SEMS Portal
+
+---
+
+## Recommended: use a visitor account
+
+It is strongly recommended to create a **dedicated visitor account** in the SEMS app and use those credentials for this integration instead of your main account. This way:
+
+- Your main account password is never stored in Home Assistant.
+- You can revoke access at any time without changing your main password.
+- The integration has only the permissions you explicitly grant.
+
+### How to set it up
+
+1. Open the **SEMS Plus** mobile app and log in with your **main** account.
+2. Go to your station (plant) → **Share** (or **Visitor Management**).
+3. Tap **Add visitor**, enter the e-mail of the visitor account and set privileges to **Read and Modify** (to allow the integration to start/stop charging and change modes).
+4. Register a new account with that visitor e-mail address at [semsportal.com](https://www.semsportal.com) or in the app.
+5. Use the **visitor e-mail and password** when adding this integration in Home Assistant.
 
 ---
 
@@ -61,8 +79,6 @@ The setup is guided and automatic:
 4. If automatic discovery fails (EU gateway unavailable, no EU account), you are prompted to enter the **wallbox serial number** manually.
 
 The discovered **Plant ID** and **product model** are stored automatically — no manual copy-paste from URLs needed for Gen2 (HCA series) chargers.
-
-> **Tip:** Create a **visitor account** in the SEMS Portal app and use that to avoid exposing your main credentials. The visitor account has read + control access to the charger.
 
 After setup the integration creates a single device with all entities listed above.
 
@@ -126,6 +142,21 @@ pytest tests/ -v
 ---
 
 ## Changelog
+
+### 1.3.0
+- **Visitor account support**: config flow discovers plants and chargers from EV charger `stationId` — no owner access required
+- **Auto-discovery of `productModel`** via `ev-charger/control-item-content-list/{sn}` (EU gateway); manual fallback step shown only if discovery fails
+- **Existing entries without `productModel`** auto-recover at startup — fixes R0219 `model_not_supported` errors after upgrade
+- **set-config fallback removed** — was returning `success` on anything and masking real failures; set-mode is now the only control path
+- **set-mode timeout raised to 90 s** — device can take 60–90 s to respond
+- **R0305 `remote_control_fail`** retried 3× with 2 s delay before giving up
+- **Number entity grace period (120 s)** — slider holds the new value while the device slowly applies it; confirm poll fires 60 s after set-mode returns
+- **Status sensor**: maps gen2 API values (`available`, `charging`, `offline`) alongside legacy `EVDetail_Status_Title_*` strings
+- **Workstate sensor**: maps gen2 `workState` values (`available_gun_no_insered`, `available_gun_insered`, `finishing`, …)
+- **Power sensor**: returns `0` when `startStatus=False` — `chargePower` from the API is the configured *limit*, not actual draw
+- **Switch**: uses `startStatus` boolean for `is_on` instead of `power > 0` (power = limit, not actual consumption)
+- **Charging detection** for dynamic polling uses `startStatus` instead of `power > 0`
+- 135 unit tests, all passing
 
 ### 1.2.0
 - **Auto-discovery in config flow**: after login the integration queries the EU gateway and automatically detects your plants and EV chargers — no manual serial number entry needed
