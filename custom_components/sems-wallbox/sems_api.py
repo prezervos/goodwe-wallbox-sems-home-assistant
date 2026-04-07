@@ -105,12 +105,9 @@ class SemsApi:
         """Login via SEMS Plus web endpoint to obtain a semsPlusWeb token.
 
         The EU gateway requires client=semsPlusWeb which is only issued by
-        semsplus.goodwe.com. The password is sent base64-encoded (same encoding
-        that semsportal.com uses for its own CrossLogin).
+        semsplus.goodwe.com. The password is sent as plaintext (same as CrossLogin).
         """
         try:
-            import base64 as _b64
-            pwd_b64 = _b64.b64encode(self._password.encode()).decode()
             empty_token = json.dumps(
                 {"uid": "", "timestamp": 0, "token": "",
                  "client": "semsPlusWeb", "version": "", "language": "en"}
@@ -129,7 +126,7 @@ class SemsApi:
             }
             body = {
                 "account": self._username,
-                "pwd": pwd_b64,
+                "pwd": self._password,
                 "agreement": 1,
                 "isLocal": False,
                 "isChinese": False,
