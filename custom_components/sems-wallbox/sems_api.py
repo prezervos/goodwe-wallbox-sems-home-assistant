@@ -753,22 +753,84 @@ class SemsApi:
                         wallboxSn, mode, chargePower,
                     )
                     return True
+                if code == "C0602" and maxTokenRetries > 0:
+                    # Web session invalidated (e.g. after a previous timeout).
+                    # Clear cached token, obtain a fresh one, and retry once.
+                    _LOGGER.debug(
+                        "SEMS gen2 set-mode C0602 (session expired), renewing web token and retrying"
+                    )
+                    self._web_token = None
+                    return self.set_charge_mode_gen2(
+                        wallboxSn, mode, chargePower=chargePower,
+                        renewToken=True, maxTokenRetries=maxTokenRetries - 1,
+                    )
                 _LOGGER.warning(
                     "SEMS gen2 set-mode non-success code=%s body=%s",
                     code, resp.text[:300],
                 )
-                return False
+                return self._set_mode_config_fallback(wallboxSn, plant_id, chargePower, headers)
             except requests.exceptions.Timeout:
                 _LOGGER.warning(
-                    "SEMS gen2 set-mode timed out after %ss (sn=%s) — "
-                    "try increasing _SetModeTimeout or check device connectivity",
+                    "SEMS gen2 set-mode timed out after %ss (sn=%s), trying set-config fallback",
                     _SetModeTimeout, wallboxSn,
                 )
-                return False
+                return self._set_mode_config_fallback(wallboxSn, plant_id, chargePower, headers)
         except OutOfRetries:
             raise
         except Exception as exc:  # noqa: BLE001
             _LOGGER.error("Unable to execute gen2 SetChargeMode command. %s", exc)
+            return False
+
+    def _set_mode_config_fallback(
+        self,
+        wallbox_sn: str,
+        plant_id: str,
+        charge_power: float | None,
+        headers: dict,
+    ) -> bool:
+        """Fallback: set ratedMaxiChargePower via set-config when set-mode fails/times out.
+
+        This is the endpoint that historically works for the HCA series.
+        Returns True on success, False on any failure.
+        """
+        if charge_power is None:
+            return False
+        payload: dict = {
+            "sn": wallbox_sn,
+            "plantId": plant_id,
+            "ratedMaxiChargePower": int(charge_power),
+        }
+        if self._product_model:
+            payload["productModel"] = self._product_model
+        try:
+            _LOGGER.debug(
+                "SEMS gen2 set-config fallback: POST %s payload=%s",
+                _EuGatewaySetConfigURL, payload,
+            )
+            resp = requests.post(
+                _EuGatewaySetConfigURL,
+                headers=headers,
+                json=payload,
+                timeout=_RequestTimeout,
+            )
+            _LOGGER.debug(
+                "SEMS gen2 set-config fallback: HTTP %s body=%s", resp.status_code, resp.text
+            )
+            rj = resp.json()
+            code = str(rj.get("code") or "")
+            if code in ("00000", "0") or rj.get("data") is True:
+                _LOGGER.info(
+                    "SEMS gen2 set-config fallback succeeded (sn=%s, power=%s)",
+                    wallbox_sn, charge_power,
+                )
+                return True
+            _LOGGER.warning(
+                "SEMS gen2 set-config fallback non-success code=%s body=%s",
+                code, resp.text[:300],
+            )
+            return False
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.warning("SEMS gen2 set-config fallback failed: %s", exc)
             return False
 
     # ------------------------------------------------------------------
