@@ -23,3 +23,56 @@ getlastcharge nenabíjím
             "workStu": 8, - cotoje?
             "showFlag": true
         }
+
+taky když je PV priority jde nastavit minimum charging power při set-mode
+        {"mode":1,"ensureMinimumChargingPower":false,"sn":"5011KHCA232W0570","plantId":"3183fe27-6904-4573-a95c-5c926f4ab421","productModel":"GW11K-HCA"}
+        response: {
+            "code": "00000",
+            "description": "成功",
+            "traceId": "377525fee7199eed6d809bd155b17395",
+            "data": true
+        }
+a detail endpoint po chvíli začne ukazovat konečně v parametru 0 místo nesmyslu 170
+"data": {
+        "currentLimit": 0,
+        "dynamicLoad": 0,
+        "ensureMinimumChargingPower": 0,
+        "chargeFromGrid": 0,
+        "chargeMode": 1,
+        "chargePower": 0.1,
+        "scheduleChargeMode": 1,
+        "scheduleMode": 0,
+        "scheduleTime": "2026-04-08 23:00:00",
+        "scheduleTotalMinute": 360,
+        "status": "available",
+        "workState": "available_gun_no_insered",
+        "chargePowerSetted": 0.1,
+        "startStatus": false,
+        "unit": 0,
+        "mileage": 5.0
+    }
+
+    ale trvá to a i když to failne nebo zapíše správně ,tak se to do detailu nemusí propsat, ale bral bych ten api endpoint jako směrodatný
+
+    tady se to propsalo na true a několik pokusů zpátky na 170 ??
+
+     "data": {
+        "currentLimit": 0,
+        "dynamicLoad": 0,
+        "ensureMinimumChargingPower": 170,
+        "chargeFromGrid": 170,
+        "chargeMode": 1,
+        "chargePower": 0.0,
+        "scheduleChargeMode": 1,
+        "scheduleMode": 0,
+        "scheduleTime": "2026-04-08 23:00:00",
+        "scheduleTotalMinute": 360,
+        "status": "available",
+        "workState": "available_gun_no_insered",
+        "chargePowerSetted": 0.0,
+        "startStatus": false,
+        "unit": 0,
+        "mileage": 5.0
+    }
+
+    Nevím jak to funguje u GEN2

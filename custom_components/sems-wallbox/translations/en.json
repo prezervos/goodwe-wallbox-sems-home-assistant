@@ -135,6 +135,9 @@
         "switch": {
             "start_charging": {
                 "name": "Charging"
+            },
+            "ensure_minimum_charging_power": {
+                "name": "Ensure minimum charging power"
             }
         }
     }

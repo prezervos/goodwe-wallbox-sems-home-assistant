@@ -213,6 +213,7 @@ class SemsApi:
         wallboxSn,
         mode,
         chargePower=None,
+        ensure_minimum_charging_power: bool | None = None,
         renewToken: bool = False,
         maxTokenRetries: int = 1,
     ):
@@ -224,11 +225,12 @@ class SemsApi:
         cleanly test whether the old API was causing the 30s timeout.
         """
         _LOGGER.debug(
-            "SEMS v%s - set_charge_mode_gen2(sn=%s, mode=%s, power=%s, renewToken=%s, retries=%s)",
+            "SEMS v%s - set_charge_mode_gen2(sn=%s, mode=%s, power=%s, ensure_min=%s, renewToken=%s, retries=%s)",
             API_VERSION,
             wallboxSn,
             mode,
             chargePower,
+            ensure_minimum_charging_power,
             renewToken,
             maxTokenRetries,
         )
@@ -257,6 +259,8 @@ class SemsApi:
                 payload["productModel"] = self._product_model
             if chargePower is not None:
                 payload["chargePowerSetted"] = float(chargePower)
+            if ensure_minimum_charging_power is not None:
+                payload["ensureMinimumChargingPower"] = ensure_minimum_charging_power
 
             _eu_set_mode_url = self._eu_url(_PATH_SET_MODE)
             _LOGGER.debug(
@@ -290,6 +294,7 @@ class SemsApi:
                         self._web_token = None
                         return self.set_charge_mode_gen2(
                             wallboxSn, mode, chargePower=chargePower,
+                            ensure_minimum_charging_power=ensure_minimum_charging_power,
                             renewToken=True, maxTokenRetries=maxTokenRetries - 1,
                         )
                     if code == "R0305":
@@ -419,6 +424,11 @@ class SemsApi:
                 "charge_from_grid": _get("charge_from_grid", "chargeFromGrid", default=1),
                 "isOpen": _get("isOpen", "isConnected", default=False),
                 "currentLimit": _get("currentLimit", "currentLimitValue", default=0.0),
+                # ensureMinimumChargingPower: firmware may return 170 (0xAA) as
+                # uninitialized sentinel — treat that as False (disabled).
+                "ensure_minimum_charging_power": (
+                    raw.get("ensureMinimumChargingPower") in (True, 1)
+                ),
             }
             _LOGGER.debug("SEMS gen2 getData mapped result: %s", result)
             return result

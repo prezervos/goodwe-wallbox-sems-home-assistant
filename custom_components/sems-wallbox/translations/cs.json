@@ -135,6 +135,9 @@
         "switch": {
             "start_charging": {
                 "name": "Nabíjení"
+            },
+            "ensure_minimum_charging_power": {
+                "name": "Zajistit minimální nabíjecí výkon"
             }
         }
     }

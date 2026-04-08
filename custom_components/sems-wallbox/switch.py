@@ -6,6 +6,7 @@ import logging
 
 from homeassistant.components.switch import SwitchDeviceClass, SwitchEntity
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
@@ -45,6 +46,7 @@ async def async_setup_entry(
         start_status = data.get("startStatus")
         current_is_on = bool(start_status) if start_status is not None else False
         entities.append(SemsSwitch(coordinator, sn, api, current_is_on))
+        entities.append(SemsMinimumPowerSwitch(coordinator, sn, api))
 
     async_add_entities(entities)
 
@@ -225,3 +227,93 @@ class SemsSwitch(CoordinatorEntity, SwitchEntity):
         data = self.coordinator.data.get(self.sn, {}) or {}
         self._attr_is_on = self._compute_is_on_from_data(data)
         self.async_write_ha_state()
+
+
+class SemsMinimumPowerSwitch(CoordinatorEntity, SwitchEntity):
+    """Switch to enable/disable 'ensure minimum charging power' in PV priority mode.
+
+    When enabled, the wallbox guarantees a minimum charge current from the grid
+    even when PV production is insufficient. Only relevant in PV priority mode (mode=1);
+    the entity is unavailable in other modes.
+    """
+
+    _attr_should_poll = False
+    _attr_has_entity_name = True
+    _attr_translation_key = "ensure_minimum_charging_power"
+    _attr_entity_category = EntityCategory.CONFIG
+
+    def __init__(self, coordinator: SemsUpdateCoordinator, sn: str, api) -> None:
+        """Initialize the switch."""
+        super().__init__(coordinator)
+        self.coordinator = coordinator
+        self.api = api
+        self.sn = sn
+        _LOGGER.debug("Creating SemsMinimumPowerSwitch for wallbox %s", self.sn)
+
+    @property
+    def unique_id(self) -> str:
+        return f"{self.sn}-switch-ensure-minimum-power"
+
+    @property
+    def device_info(self):
+        data = self.coordinator.data.get(self.sn, {}) or {}
+        return {
+            "identifiers": {(DOMAIN, self.sn)},
+            "name": data.get("name") or f"GoodWe Wallbox {self.sn}",
+            "manufacturer": "GoodWe",
+        }
+
+    @property
+    def available(self) -> bool:
+        """Only available in PV priority mode (chargeMode == 1)."""
+        if not self.coordinator.last_update_success:
+            return False
+        data = self.coordinator.data.get(self.sn, {}) or {}
+        return data.get("chargeMode") == 1
+
+    @property
+    def is_on(self) -> bool:
+        data = self.coordinator.data.get(self.sn, {}) or {}
+        return bool(data.get("ensure_minimum_charging_power", False))
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        self.async_write_ha_state()
+
+    async def async_turn_on(self, **kwargs) -> None:
+        """Enable minimum charging power guarantee."""
+        _LOGGER.debug("SemsMinimumPowerSwitch %s: turning ON", self.sn)
+        # Optimistic update
+        data = self.coordinator.data.get(self.sn, {}) or {}
+        self.coordinator.async_set_updated_data(
+            {**self.coordinator.data, self.sn: {**data, "ensure_minimum_charging_power": True}}
+        )
+        ok = await self.hass.async_add_executor_job(
+            self.api.set_charge_mode_gen2,
+            self.sn,
+            1,  # PV priority
+            None,
+            True,  # ensure_minimum_charging_power
+        )
+        if not ok:
+            _LOGGER.warning("SemsMinimumPowerSwitch %s: turn ON failed, refreshing", self.sn)
+        self.coordinator.schedule_delayed_refresh(5.0)
+
+    async def async_turn_off(self, **kwargs) -> None:
+        """Disable minimum charging power guarantee."""
+        _LOGGER.debug("SemsMinimumPowerSwitch %s: turning OFF", self.sn)
+        # Optimistic update
+        data = self.coordinator.data.get(self.sn, {}) or {}
+        self.coordinator.async_set_updated_data(
+            {**self.coordinator.data, self.sn: {**data, "ensure_minimum_charging_power": False}}
+        )
+        ok = await self.hass.async_add_executor_job(
+            self.api.set_charge_mode_gen2,
+            self.sn,
+            1,  # PV priority
+            None,
+            False,  # ensure_minimum_charging_power
+        )
+        if not ok:
+            _LOGGER.warning("SemsMinimumPowerSwitch %s: turn OFF failed, refreshing", self.sn)
+        self.coordinator.schedule_delayed_refresh(5.0)
