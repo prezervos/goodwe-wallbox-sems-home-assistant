@@ -357,13 +357,33 @@ class SemsCurrentSensor(CoordinatorEntity, SensorEntity):
 
     @property
     def native_value(self) -> float:
-        """Return the charging current in A."""
+        """Return the charging current in A.
+
+        The EU gateway detail endpoint does not expose a current field directly.
+        When the device is actively charging (startStatus=True), derive it from
+        the actual charge power: I = P / U where U ≈ 230 V (single-phase EU).
+        When not charging, return 0.
+        """
         data = self.coordinator.data.get(self.sn, {}) or {}
+        if not data.get("startStatus", False):
+            return 0.0
+        # Try direct API field first (may be present in future firmware or old API)
+        raw = data.get("current")
+        if raw is not None:
+            try:
+                v = float(raw)
+                if v > 0:
+                    return round(v, 1)
+            except (TypeError, ValueError):
+                pass
+        # Derive from actual charge power (kW → A at 230 V)
         try:
-            current = float(data.get("current", 0) or 0)
+            power_kw = float(data.get("power", 0) or 0)
         except (TypeError, ValueError):
-            current = 0.0
-        return max(0.0, current)
+            power_kw = 0.0
+        if power_kw <= 0:
+            return 0.0
+        return round(power_kw * 1000.0 / 230.0, 1)
 
     @property
     def available(self) -> bool:

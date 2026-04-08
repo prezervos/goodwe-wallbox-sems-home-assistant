@@ -401,17 +401,19 @@ class TestSemsCurrentSensor:
         s = SemsCurrentSensor(coord, SAMPLE_SN)
         assert s.native_value == pytest.approx(32.0)
 
-    def test_negative_current_clamped_to_zero(self):
+    def test_negative_current_falls_back_to_power(self):
+        # When current field is negative, derive from power (7.4 kW / 230 V ≈ 32.2 A)
         d = {**SAMPLE_DATA, "current": -5.0}
         coord = _make_coordinator(d)
         s = SemsCurrentSensor(coord, SAMPLE_SN)
-        assert s.native_value == 0.0
+        assert s.native_value == pytest.approx(7.4 * 1000.0 / 230.0, abs=0.2)
 
-    def test_none_current_defaults_to_zero(self):
+    def test_none_current_falls_back_to_power(self):
+        # When current field is absent/None, derive from power (7.4 kW / 230 V ≈ 32.2 A)
         d = {**SAMPLE_DATA, "current": None}
         coord = _make_coordinator(d)
         s = SemsCurrentSensor(coord, SAMPLE_SN)
-        assert s.native_value == 0.0
+        assert s.native_value == pytest.approx(7.4 * 1000.0 / 230.0, abs=0.2)
 
     def test_unique_id(self):
         coord = _make_coordinator()

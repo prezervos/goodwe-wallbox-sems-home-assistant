@@ -1,0 +1,25 @@
+getlastcharge nabíjím
+
+"currentChargeQuantity": 0.08,
+            "chargeTimeLength": 2, - nový senzor na dobu nabíjení... v minutách
+            "mileage": 0.4,
+            "unit": "km",
+            "chargeCardNumber": "00000000000000",
+            "charGun": 1, - cotoje?
+            "status": 2, - cotoje?
+            "overViewStatus": 2, - cotoje?
+            "chartUnit": "kWh",
+            "workStu": 6, - cotoje?
+            "a": 0.0, -proud a neposílá se?
+            "pevChar": 3.5 - power
+
+getlastcharge nenabíjím
+
+"chargeLog": {
+            "chargePileSN": "5011KHCA232W0570",
+            "unit": "km",
+            "status": 1, - cotoje?
+            "chartUnit": "kWh",
+            "workStu": 8, - cotoje?
+            "showFlag": true
+        }

@@ -42,9 +42,8 @@ async def async_setup_entry(
 
     entities: list[SemsSwitch] = []
     for sn, data in coordinator.data.items():
-        status = data.get("status")
-        power = float(data.get("power", 0) or 0)
-        current_is_on = status == "EVDetail_Status_Title_Charging" or power > 0
+        start_status = data.get("startStatus")
+        current_is_on = bool(start_status) if start_status is not None else False
         entities.append(SemsSwitch(coordinator, sn, api, current_is_on))
 
     async_add_entities(entities)
@@ -187,7 +186,7 @@ class SemsSwitch(CoordinatorEntity, SwitchEntity):
         self.hass.async_create_task(self.coordinator.async_request_refresh())
 
         # Send command to SEMS API
-        await self.hass.async_add_executor_job(self.api.change_status, self.sn, 2)
+        await self.hass.async_add_executor_job(self.api.change_status_gen2, self.sn, "stop")
         self.coordinator.schedule_delayed_refresh(5)
 
     async def async_turn_on(self, **kwargs):
@@ -205,7 +204,7 @@ class SemsSwitch(CoordinatorEntity, SwitchEntity):
         self.hass.async_create_task(self.coordinator.async_request_refresh())
 
         # Send command to SEMS API
-        await self.hass.async_add_executor_job(self.api.change_status, self.sn, 1)
+        await self.hass.async_add_executor_job(self.api.change_status_gen2, self.sn, "start")
         self.coordinator.schedule_delayed_refresh(5)
 
     async def async_added_to_hass(self):
