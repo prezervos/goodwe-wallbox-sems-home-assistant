@@ -13,14 +13,16 @@ Home Assistant custom integration for the **GoodWe EV Charger (Wallbox)** via th
 
 | Entity | Type | Description |
 |--------|------|-------------|
-| Status | Sensor (Enum) | Charging / Standby / Offline |
-| Vehicle state | Sensor (Enum) | Not Plugged in / Connected / Finished Charging |
-| Charging power | Sensor (kW) | Live charge power |
-| Total charged energy | Sensor (kWh) | Cumulative energy, compatible with HA Energy Dashboard |
-| Charging current | Sensor (A) | Live charge current |
+| Status | Sensor (Enum) | Charging / Standby / Offline — driven by `getLastCharge` workStu=6 |
+| Vehicle state | Sensor (Enum) | Not Plugged in / Connected / Finished Charging / -- (during charge) |
+| Charging power | Sensor (kW) | Actual power drawn (`pevChar` from `getLastCharge`); 0 when not charging |
+| Session energy | Sensor (kWh) | Energy delivered in the current session (`currentChargeQuantity` from `getLastCharge`) |
+| Allocated charge power | Sensor (kW) | Inverter's dynamically allocated limit (`chargePowerSetted`); readonly |
+| Charge duration | Sensor (min) | Duration of current/last session in minutes |
 | Charging | Switch | Start / stop charging |
+| Ensure minimum power | Switch | Keep charging even when PV output is low |
 | Charge mode | Select | Fast / PV priority / PV & battery |
-| Charge power limit | Number | Set max charge power (4.2–11 kW, 0.1 kW steps); **disabled when mode ≠ Fast** |
+| Charge power limit | Number | Set max charge power (4.2–11 kW, 0.1 kW steps); always visible, moving the slider from any mode switches to Fast |
 
 All entities are automatically translated — Czech (`cs`) and English (`en`) are included.
 
@@ -101,9 +103,9 @@ You can review or override the Plant ID and product model at any time via
 
 ## Charge mode & power interaction
 
-- **Charge power limit** slider is only active when **Charge mode = Fast**.  
-  In PV priority or PV & battery modes the wallbox controls power internally; the slider is shown as *Unavailable*.
-- Moving the **Charge power limit** slider always sets the mode to **Fast** and applies the chosen power limit in one API call.
+- **Charge power limit** slider is always visible and shows the current allocated power (inverter limit in PV modes, configured limit in Fast mode).
+- Moving the slider from **any mode** (including PV priority / PV & battery) switches the wallbox to **Fast mode** and applies the chosen power limit in a single API call.
+- An `editable` state attribute on the entity shows `true` when in Fast mode and `false` in PV modes (useful for automations).
 
 ---
 
@@ -142,6 +144,21 @@ pytest tests/ -v
 ---
 
 ## Changelog
+
+### 1.4.0
+- **`getLastCharge` polling**: each coordinator update also calls the `getLastCharge` endpoint to get the real charging state — the `/detail` endpoint always returns `startStatus=false` and `workState=available_gun_no_insered` in PV modes, making it useless for charging detection
+- **Status sensor** now driven by `workStu=6` from `getLastCharge` — correctly shows *Charging* in all PV modes
+- **Vehicle state sensor** shows `--` during active charging (matches old API behaviour; Gen2 detail API always reports *not plugged in* even while charging)
+- **Charging power sensor** now shows `pevChar` (actual drawn power from `getLastCharge`) instead of the inverter's allocation limit; returns 0 when not charging
+- **Removed Charging current sensor** — cannot be calculated reliably for 2-phase or 3-phase sessions without knowing the number of phases
+- **Session energy sensor** (`Nabito celkem`) reads `currentChargeQuantity` from `getLastCharge` instead of the always-zero `chargeEnergy` from the detail endpoint
+- **New: Allocated charge power sensor** — readonly, shows `chargePowerSetted` (inverter's dynamic allocation in kW)
+- **New: Charge duration sensor** — shows `chargeTimeLength` (current/last session duration in minutes)
+- **Charge power limit slider** is now always visible (shows allocated power in PV modes); moving it from any mode switches to Fast and applies the chosen limit
+- **`ensureMinimumChargingPower` mapping fixed** — value `170` correctly maps to `True` (was wrongly mapped to `False`)
+- **`SemsMinimumPowerSwitch` pending guard (120 s)** — prevents re-firing during slow 44–58 s set-mode API calls
+- **Status sensor attributes** cleaned up — explicit allowlist replaces full coordinator data dump
+- 128 unit tests, all passing
 
 ### 1.3.0
 - **Visitor account support**: config flow discovers plants and chargers from EV charger `stationId` — no owner access required
