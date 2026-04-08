@@ -11,7 +11,7 @@ from homeassistant.components.sensor import (
     SensorEntity,
     SensorStateClass,
 )
-from homeassistant.const import UnitOfEnergy, UnitOfPower, UnitOfElectricCurrent
+from homeassistant.const import UnitOfEnergy, UnitOfPower, UnitOfTime
 from homeassistant.core import HomeAssistant
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -40,7 +40,8 @@ async def async_setup_entry(
         entities.append(SemsWorkStateSensor(coordinator, sn))
         entities.append(SemsStatisticsSensor(coordinator, sn))
         entities.append(SemsPowerSensor(coordinator, sn))
-        entities.append(SemsCurrentSensor(coordinator, sn))
+        entities.append(SemsChargePowerLimitSensor(coordinator, sn))
+        entities.append(SemsChargeDurationSensor(coordinator, sn))
 
     async_add_entities(entities)
 
@@ -69,6 +70,10 @@ class SemsSensor(CoordinatorEntity, SensorEntity):
     def state(self) -> str:
         """Return the state of the device as human readable string."""
         data = self.coordinator.data.get(self.sn, {})
+        # workStu=6 from getLastCharge is the authoritative charging signal.
+        # The detail endpoint's status field is always 'available' in PV mode.
+        if data.get("last_charge_work_status") == 6:
+            return "charging"
         status = data.get("status")
         # Gen2 EU gateway values
         if status in ("EVDetail_Status_Title_Charging", "charging"):
@@ -81,14 +86,25 @@ class SemsSensor(CoordinatorEntity, SensorEntity):
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        """Return the state attributes of the monitored installation."""
+        """Return meaningful state attributes."""
         data = self.coordinator.data.get(self.sn, {}) or {}
-        attributes = {
-            k: v for k, v in data.items() if k is not None and v is not None
-        }
-        if "status" in data:
-            attributes["statusText"] = data["status"]
-        return attributes
+        attrs: dict[str, Any] = {}
+        # Raw status string for display / automations
+        if data.get("status"):
+            attrs["statusText"] = data["status"]
+        # Scheduling
+        for key in ("chargeMode", "scheduleMode", "schedule_total_minute"):
+            if (v := data.get(key)) is not None:
+                attrs[key] = v
+        # Power management
+        for key in ("set_charge_power", "charge_from_grid", "ensure_minimum_charging_power"):
+            if (v := data.get(key)) is not None:
+                attrs[key] = v
+        # Last charge session (from getLastCharge)
+        for key in ("last_charge_work_status", "last_charge_power", "last_charge_duration_minutes"):
+            if (v := data.get(key)) is not None:
+                attrs[key] = v
+        return attrs
 
     @property
     def icon(self) -> str:
@@ -152,6 +168,10 @@ class SemsWorkStateSensor(CoordinatorEntity, SensorEntity):
     def native_value(self) -> str:
         """Return the workstate of the device as a human-readable string."""
         data = self.coordinator.data.get(self.sn, {})
+        # When actively charging, the Gen2 API still reports 'available_gun_no_insered'.
+        # Override with dash (as the old API did via empty string during charging).
+        if data.get("last_charge_work_status") == 6:
+            return "dash"
         workstate = data.get("workstate")
 
         # Old semsportal.com API values
@@ -234,17 +254,17 @@ class SemsPowerSensor(CoordinatorEntity, SensorEntity):
 
     @property
     def native_value(self) -> float:
-        """Return the actual charging power in kW.
+        """Return the actual charging power in kW; 0 when not actively charging.
 
-        When startStatus is False the device is not actively charging — the
-        API's chargePower field reflects the configured *limit*, not actual draw.
-        Return 0 in that case so HA statistics and energy dashboard are correct.
+        Uses pevChar from getLastCharge (last_charge_power) as the real drawn
+        power.  The detail endpoint's chargePower is the inverter allocation
+        limit, which can differ (e.g. 2-phase vs 3-phase sessions).
         """
         data = self.coordinator.data.get(self.sn, {}) or {}
-        if not data.get("startStatus", False):
+        if data.get("last_charge_work_status") != 6:
             return 0.0
         try:
-            power = float(data.get("power", 0) or 0)
+            power = float(data.get("last_charge_power") or 0)
         except (TypeError, ValueError):
             power = 0.0
         return max(0.0, power)
@@ -275,7 +295,7 @@ class SemsPowerSensor(CoordinatorEntity, SensorEntity):
 
 
 class SemsStatisticsSensor(CoordinatorEntity, SensorEntity):
-    """Energy sensor in kWh to enable HA statistics."""
+    """Energy sensor in kWh — shows current session energy from getLastCharge."""
 
     _attr_device_class = SensorDeviceClass.ENERGY
     _attr_state_class = SensorStateClass.TOTAL_INCREASING
@@ -291,17 +311,16 @@ class SemsStatisticsSensor(CoordinatorEntity, SensorEntity):
         _LOGGER.debug("Creating SemsStatisticsSensor with id %s", self.sn)
 
     @property
-    def native_value(self) -> Decimal:
-        """Return the value reported by the sensor (kWh)."""
+    def native_value(self) -> Decimal | None:
+        """Return current session energy in kWh (currentChargeQuantity from getLastCharge)."""
         data = self.coordinator.data.get(self.sn, {}) or {}
-        raw = data.get("chargeEnergy", 0)
+        raw = data.get("last_charge_energy")
+        if raw is None:
+            return None
         try:
             return Decimal(str(raw))
         except Exception:  # noqa: BLE001
-            _LOGGER.debug(
-                "Unable to parse chargeEnergy=%s for %s, falling back to 0", raw, self.sn
-            )
-            return Decimal("0")
+            return None
 
     @property
     def available(self) -> bool:
@@ -334,60 +353,45 @@ class SemsStatisticsSensor(CoordinatorEntity, SensorEntity):
         await self.coordinator.async_request_refresh()
 
 
-class SemsCurrentSensor(CoordinatorEntity, SensorEntity):
-    """Instantaneous charging current sensor in A."""
+class SemsChargePowerLimitSensor(CoordinatorEntity, SensorEntity):
+    """Readonly sensor for the current allocated charge power limit (kW).
 
-    _attr_device_class = SensorDeviceClass.CURRENT
+    In PV modes (1 & 2) the inverter dynamically adjusts this value based on
+    solar / battery availability.  In Fast mode (0) it reflects the configured
+    fixed limit.  Always available — unlike the number entity which is only
+    editable in Fast mode.
+    """
+
+    _attr_device_class = SensorDeviceClass.POWER
     _attr_should_poll = False
     _attr_has_entity_name = True
-    _attr_translation_key = "current"
-    _attr_native_unit_of_measurement = UnitOfElectricCurrent.AMPERE
+    _attr_translation_key = "set_charge_power_limit"
+    _attr_native_unit_of_measurement = UnitOfPower.KILO_WATT
+    _attr_state_class = SensorStateClass.MEASUREMENT
 
     def __init__(self, coordinator: SemsUpdateCoordinator, sn: str) -> None:
-        """Initialize the current sensor."""
+        """Initialize the charge power limit sensor."""
         super().__init__(coordinator)
         self.sn = sn
-        _LOGGER.debug("Creating SemsCurrentSensor with id %s", self.sn)
 
     @property
     def unique_id(self) -> str:
-        """Unique ID for current sensor."""
         sn = self.coordinator.data.get(self.sn, {}).get("sn", self.sn)
-        return f"{sn}_current"
+        return f"{sn}_set_charge_power_limit"
 
     @property
-    def native_value(self) -> float:
-        """Return the charging current in A.
-
-        The EU gateway detail endpoint does not expose a current field directly.
-        When the device is actively charging (startStatus=True), derive it from
-        the actual charge power: I = P / U where U ≈ 230 V (single-phase EU).
-        When not charging, return 0.
-        """
+    def native_value(self) -> float | None:
         data = self.coordinator.data.get(self.sn, {}) or {}
-        if not data.get("startStatus", False):
-            return 0.0
-        # Try direct API field first (may be present in future firmware or old API)
-        raw = data.get("current")
-        if raw is not None:
-            try:
-                v = float(raw)
-                if v > 0:
-                    return round(v, 1)
-            except (TypeError, ValueError):
-                pass
-        # Derive from actual charge power (kW → A at 230 V)
+        v = data.get("set_charge_power")
+        if v is None:
+            return None
         try:
-            power_kw = float(data.get("power", 0) or 0)
+            return float(v)
         except (TypeError, ValueError):
-            power_kw = 0.0
-        if power_kw <= 0:
-            return 0.0
-        return round(power_kw * 1000.0 / 230.0, 1)
+            return None
 
     @property
     def available(self) -> bool:
-        """Return if entity is available."""
         return self.coordinator.last_update_success
 
     @property
@@ -407,4 +411,55 @@ class SemsCurrentSensor(CoordinatorEntity, SensorEntity):
 
     async def async_update(self) -> None:
         """Update the entity via the coordinator."""
+        await self.coordinator.async_request_refresh()
+
+
+class SemsChargeDurationSensor(CoordinatorEntity, SensorEntity):
+    """Sensor showing the duration of the current (or last) charge session in minutes."""
+
+    _attr_should_poll = False
+    _attr_has_entity_name = True
+    _attr_translation_key = "charge_duration"
+    _attr_native_unit_of_measurement = UnitOfTime.MINUTES
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(self, coordinator: SemsUpdateCoordinator, sn: str) -> None:
+        super().__init__(coordinator)
+        self.sn = sn
+
+    @property
+    def unique_id(self) -> str:
+        sn = self.coordinator.data.get(self.sn, {}).get("sn", self.sn)
+        return f"{sn}_charge_duration"
+
+    @property
+    def native_value(self) -> int | None:
+        data = self.coordinator.data.get(self.sn, {}) or {}
+        v = data.get("last_charge_duration_minutes")
+        if v is None:
+            return None
+        try:
+            return int(v)
+        except (TypeError, ValueError):
+            return None
+
+    @property
+    def available(self) -> bool:
+        return self.coordinator.last_update_success
+
+    @property
+    def device_info(self) -> dict[str, Any]:
+        data = self.coordinator.data.get(self.sn, {}) or {}
+        return {
+            "identifiers": {(DOMAIN, self.sn)},
+            "name": data.get("name") or f"GoodWe Wallbox {self.sn}",
+            "manufacturer": "GoodWe",
+            "model": data.get("model", "unknown"),
+            "sw_version": data.get("fireware", "unknown"),
+        }
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+
+    async def async_update(self) -> None:
         await self.coordinator.async_request_refresh()

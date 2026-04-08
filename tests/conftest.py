@@ -62,11 +62,15 @@ if not hasattr(const_mod, "CONF_PASSWORD"):
     class UnitOfElectricCurrent:
         AMPERE = "A"
 
+    class UnitOfTime:
+        MINUTES = "min"
+
     const_mod.UnitOfElectricCurrent = UnitOfElectricCurrent
 
     const_mod.Platform = Platform
     const_mod.UnitOfPower = UnitOfPower
     const_mod.UnitOfEnergy = UnitOfEnergy
+    const_mod.UnitOfTime = UnitOfTime
 
 # --------------------------------------------------------------------------
 # homeassistant.core
@@ -102,6 +106,7 @@ if not hasattr(sensor_mod, "SensorDeviceClass"):
         CURRENT = "current"
     class SensorStateClass:
         TOTAL_INCREASING = "total_increasing"
+        MEASUREMENT = "measurement"
     class SensorEntity:
         pass
     sensor_mod.SensorDeviceClass = SensorDeviceClass

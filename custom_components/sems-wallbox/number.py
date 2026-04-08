@@ -134,55 +134,45 @@ class SemsNumber(CoordinatorEntity, NumberEntity):
 
     @property
     def available(self) -> bool:
-        """Only available when chargeMode is Fast (0); disabled in PV modes."""
-        if not self.coordinator.last_update_success:
-            return False
+        """Always available — entity is editable only in Fast mode (chargeMode=0)."""
+        return self.coordinator.last_update_success
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        """Expose whether the slider is currently editable."""
         data = self.coordinator.data.get(self.sn, {}) or {}
-        return data.get("chargeMode", 0) == 0
+        return {"editable": data.get("chargeMode", 0) == 0}
 
     @callback
     def _handle_coordinator_update(self) -> None:
         """Handle updated data from the coordinator."""
         data = self.coordinator.data.get(self.sn, {}) or {}
         set_charge_power = data.get("set_charge_power")
-        charge_mode = data.get("chargeMode")
 
-        if charge_mode == 0:
-            # Grace period: after a set, ignore stale API values until device catches up
-            now = time.monotonic()
-            if self._pending_value is not None and now < self._pending_until:
-                if set_charge_power is not None:
-                    try:
-                        if abs(float(set_charge_power) - self._pending_value) < 0.05:
-                            # API has caught up — clear grace and accept
-                            self._pending_value = None
-                            self._attr_native_value = float(set_charge_power)
-                        # else: still stale — keep _attr_native_value at pending value
-                    except (TypeError, ValueError):
-                        pass
-            else:
-                # Grace expired or no pending set — accept the API value
-                if self._pending_value is not None:
-                    self._pending_value = None
-                if set_charge_power is not None:
-                    try:
+        # Grace period: after a set, ignore stale API values until device catches up
+        now = time.monotonic()
+        if self._pending_value is not None and now < self._pending_until:
+            if set_charge_power is not None:
+                try:
+                    if abs(float(set_charge_power) - self._pending_value) < 0.05:
+                        self._pending_value = None
                         self._attr_native_value = float(set_charge_power)
-                    except (TypeError, ValueError):
-                        _LOGGER.warning(
-                            "SemsNumber %s: invalid set_charge_power value %r from API",
-                            self.sn,
-                            set_charge_power,
-                        )
+                    # else: still stale — keep _attr_native_value at pending value
+                except (TypeError, ValueError):
+                    pass
         else:
-            # PV mode — the device may report a stale / default set_charge_power.
-            # Preserve the last user-set value so that switching back to Fast
-            # restores it correctly.  Patch coordinator.data directly (no listeners
-            # triggered) so select.py also reads the preserved value when it builds
-            # the API payload for the next Fast-mode switch.
-            if self._attr_native_value is not None:
-                device = self.coordinator.data.get(self.sn)
-                if device is not None:
-                    device["set_charge_power"] = self._attr_native_value
+            # Grace expired or no pending set — always accept the API value
+            if self._pending_value is not None:
+                self._pending_value = None
+            if set_charge_power is not None:
+                try:
+                    self._attr_native_value = float(set_charge_power)
+                except (TypeError, ValueError):
+                    _LOGGER.warning(
+                        "SemsNumber %s: invalid set_charge_power value %r from API",
+                        self.sn,
+                        set_charge_power,
+                    )
 
         _LOGGER.debug(
             "SemsNumber coordinator update SN=%s -> native_value=%s, available=%s",
@@ -197,7 +187,7 @@ class SemsNumber(CoordinatorEntity, NumberEntity):
         await self.coordinator.async_request_refresh()
 
     async def async_set_native_value(self, value: float) -> None:
-        """Handle change from UI slider (only reachable in Fast mode)."""
+        """Handle change from UI slider — switches to Fast mode (0) with the given power."""
         _LOGGER.debug(
             "Setting set_charge_power for SN=%s to %s",
             self.sn,
@@ -243,7 +233,7 @@ class SemsNumber(CoordinatorEntity, NumberEntity):
                 self.sn,
                 value,
             )
-            if old_value is not None and self.available:
+            if old_value is not None and self.coordinator.data.get(self.sn, {}).get("chargeMode", 0) == 0:
                 self._attr_native_value = old_value
                 self._pending_value = None  # revert cancels grace
                 self._pending_until = 0.0

@@ -103,6 +103,18 @@ class SemsUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if not sn:
             raise UpdateFailed("Missing 'sn' in SEMS API data")
 
+        # Also poll getLastCharge to determine real-time charging state.
+        # workStu=6 means actively charging (startStatus in /detail is unreliable).
+        try:
+            last_charge = await self._hass.async_add_executor_job(
+                self._api.fetch_last_charge,
+                self._station_id,
+            )
+        except Exception:  # noqa: BLE001
+            last_charge = None
+        if last_charge:
+            result.update(last_charge)
+
         data: dict[str, Any] = {sn: result}
         _LOGGER.debug(
             "Coordinator fetched data for wallbox %s: %s",
@@ -111,8 +123,8 @@ class SemsUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
 
         # Dynamic polling: faster while actively charging.
-        # startStatus is an explicit boolean from the API (True = actively charging).
-        is_charging = bool(result.get("startStatus", False))
+        # Use workStu=6 from getLastCharge (startStatus in /detail is always False in PV mode).
+        is_charging = result.get("last_charge_work_status") == 6
         new_interval = timedelta(
             seconds=self._interval_charging if is_charging else self._interval_idle
         )

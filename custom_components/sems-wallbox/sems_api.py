@@ -424,10 +424,10 @@ class SemsApi:
                 "charge_from_grid": _get("charge_from_grid", "chargeFromGrid", default=1),
                 "isOpen": _get("isOpen", "isConnected", default=False),
                 "currentLimit": _get("currentLimit", "currentLimitValue", default=0.0),
-                # ensureMinimumChargingPower: firmware may return 170 (0xAA) as
-                # uninitialized sentinel — treat that as False (disabled).
-                "ensure_minimum_charging_power": (
-                    raw.get("ensureMinimumChargingPower") in (True, 1)
+                # ensureMinimumChargingPower: 0 = disabled, 170 (0xAA) = enabled.
+                # Use bool() so 170 → True, 0 → False, None → False.
+                "ensure_minimum_charging_power": bool(
+                    raw.get("ensureMinimumChargingPower", 0)
                 ),
             }
             _LOGGER.debug("SEMS gen2 getData mapped result: %s", result)
@@ -488,6 +488,52 @@ class SemsApi:
         except Exception as exc:  # noqa: BLE001
             _LOGGER.error("SEMS gen2 %sCharge failed: %s", action, exc)
             return False
+
+    def fetch_last_charge(self, wallbox_sn: str) -> dict | None:
+        """Fetch last charge session from EU gateway (GET getLastCharge).
+
+        Returns a dict with:
+          - ``last_charge_work_status`` (int): 6 = actively charging, other = not charging
+          - ``last_charge_power`` (float): actual EV power draw in kW (pevChar)
+        Returns None on any error (non-blocking — detail data is still valid).
+        """
+        plant_id = self._ensure_plant_id()
+        if not plant_id:
+            _LOGGER.debug("fetch_last_charge: no plant_id, skipping")
+            return None
+        if not self._ensure_web_token():
+            _LOGGER.debug("fetch_last_charge: no web token, skipping")
+            return None
+        headers = self._build_web_headers()
+        url = self._eu_url(_PATH_GET_LAST_CHARGE)
+        params = {"chargeSn": wallbox_sn, "pwId": plant_id}
+        try:
+            resp = requests.get(url, headers=headers, params=params, timeout=_RequestTimeout)
+            rj = resp.json()
+            code = str(rj.get("code") or "")
+            if code == "C0602":
+                self._web_token = None
+                if not self._ensure_web_token(renew=True):
+                    return None
+                headers = self._build_web_headers()
+                resp = requests.get(url, headers=headers, params=params, timeout=_RequestTimeout)
+                rj = resp.json()
+                code = str(rj.get("code") or "")
+            if code != "00000":
+                _LOGGER.debug("fetch_last_charge: non-success code=%s", code)
+                return None
+            log = (rj.get("data") or {}).get("chargeLog") or {}
+            result = {
+                "last_charge_work_status": log.get("workStu"),
+                "last_charge_power": log.get("pevChar"),
+                "last_charge_duration_minutes": log.get("chargeTimeLength"),
+                "last_charge_energy": log.get("currentChargeQuantity"),
+            }
+            _LOGGER.debug("fetch_last_charge: %s", result)
+            return result
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.warning("fetch_last_charge failed: %s", exc)
+            return None
 
     # ------------------------------------------------------------------
     # EU gateway discovery (used during config flow)

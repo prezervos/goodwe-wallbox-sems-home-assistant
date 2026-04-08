@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 
 from homeassistant.components.switch import SwitchDeviceClass, SwitchEntity
 from homeassistant.config_entries import ConfigEntry
@@ -109,14 +110,19 @@ class SemsSwitch(CoordinatorEntity, SwitchEntity):
 
     def _compute_is_on_from_data(self, data: dict) -> bool:
         """Compute is_on from API data, respecting the grace period after commands."""
-        # startStatus is an explicit API boolean (True = charging active).
-        # Fall back to old-API status string for Gen1 without startStatus.
-        start_status = data.get("startStatus")
-        if start_status is not None:
-            api_is_on = bool(start_status)
+        # Primary signal: workStu=6 from getLastCharge (merged into coordinator data).
+        # startStatus in /detail is unreliable — always False in PV mode even when charging.
+        work_status = data.get("last_charge_work_status")
+        if work_status is not None:
+            api_is_on = work_status == 6
         else:
-            status = data.get("status")
-            api_is_on = status == "EVDetail_Status_Title_Charging"
+            # Fallback: startStatus for Gen1 or when getLastCharge failed
+            start_status = data.get("startStatus")
+            if start_status is not None:
+                api_is_on = bool(start_status)
+            else:
+                status = data.get("status")
+                api_is_on = status == "EVDetail_Status_Title_Charging"
         status = data.get("status")
 
         now = self.hass.loop.time()
@@ -242,12 +248,20 @@ class SemsMinimumPowerSwitch(CoordinatorEntity, SwitchEntity):
     _attr_translation_key = "ensure_minimum_charging_power"
     _attr_entity_category = EntityCategory.CONFIG
 
+    # How long to hold the pending (optimistic) state while waiting for API to apply.
+    # set-mode can take up to 90 s; use 120 s to be safe.
+    _PENDING_TIMEOUT = 120.0
+
     def __init__(self, coordinator: SemsUpdateCoordinator, sn: str, api) -> None:
         """Initialize the switch."""
         super().__init__(coordinator)
         self.coordinator = coordinator
         self.api = api
         self.sn = sn
+        # Pending state: set while we wait for the API to confirm the command.
+        # Prevents coordinator polls from reverting the optimistic UI state.
+        self._pending_state: bool | None = None
+        self._pending_set_at: float = 0.0
         _LOGGER.debug("Creating SemsMinimumPowerSwitch for wallbox %s", self.sn)
 
     @property
@@ -274,7 +288,18 @@ class SemsMinimumPowerSwitch(CoordinatorEntity, SwitchEntity):
     @property
     def is_on(self) -> bool:
         data = self.coordinator.data.get(self.sn, {}) or {}
-        return bool(data.get("ensure_minimum_charging_power", False))
+        api_val = bool(data.get("ensure_minimum_charging_power", False))
+        if self._pending_state is not None:
+            if time.monotonic() - self._pending_set_at >= self._PENDING_TIMEOUT:
+                # Timeout expired — stop holding
+                self._pending_state = None
+            elif api_val == self._pending_state:
+                # API confirmed our command
+                self._pending_state = None
+            else:
+                # Still waiting — show pending state to prevent flicker
+                return self._pending_state
+        return api_val
 
     @callback
     def _handle_coordinator_update(self) -> None:
@@ -283,11 +308,9 @@ class SemsMinimumPowerSwitch(CoordinatorEntity, SwitchEntity):
     async def async_turn_on(self, **kwargs) -> None:
         """Enable minimum charging power guarantee."""
         _LOGGER.debug("SemsMinimumPowerSwitch %s: turning ON", self.sn)
-        # Optimistic update
-        data = self.coordinator.data.get(self.sn, {}) or {}
-        self.coordinator.async_set_updated_data(
-            {**self.coordinator.data, self.sn: {**data, "ensure_minimum_charging_power": True}}
-        )
+        self._pending_state = True
+        self._pending_set_at = time.monotonic()
+        self.async_write_ha_state()
         ok = await self.hass.async_add_executor_job(
             self.api.set_charge_mode_gen2,
             self.sn,
@@ -296,17 +319,17 @@ class SemsMinimumPowerSwitch(CoordinatorEntity, SwitchEntity):
             True,  # ensure_minimum_charging_power
         )
         if not ok:
-            _LOGGER.warning("SemsMinimumPowerSwitch %s: turn ON failed, refreshing", self.sn)
+            _LOGGER.warning("SemsMinimumPowerSwitch %s: turn ON failed", self.sn)
+            self._pending_state = None
+            self.async_write_ha_state()
         self.coordinator.schedule_delayed_refresh(5.0)
 
     async def async_turn_off(self, **kwargs) -> None:
         """Disable minimum charging power guarantee."""
         _LOGGER.debug("SemsMinimumPowerSwitch %s: turning OFF", self.sn)
-        # Optimistic update
-        data = self.coordinator.data.get(self.sn, {}) or {}
-        self.coordinator.async_set_updated_data(
-            {**self.coordinator.data, self.sn: {**data, "ensure_minimum_charging_power": False}}
-        )
+        self._pending_state = False
+        self._pending_set_at = time.monotonic()
+        self.async_write_ha_state()
         ok = await self.hass.async_add_executor_job(
             self.api.set_charge_mode_gen2,
             self.sn,
@@ -315,5 +338,7 @@ class SemsMinimumPowerSwitch(CoordinatorEntity, SwitchEntity):
             False,  # ensure_minimum_charging_power
         )
         if not ok:
-            _LOGGER.warning("SemsMinimumPowerSwitch %s: turn OFF failed, refreshing", self.sn)
+            _LOGGER.warning("SemsMinimumPowerSwitch %s: turn OFF failed", self.sn)
+            self._pending_state = None
+            self.async_write_ha_state()
         self.coordinator.schedule_delayed_refresh(5.0)

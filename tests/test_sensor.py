@@ -150,7 +150,6 @@ SemsSensor = sensor_mod.SemsSensor
 SemsWorkStateSensor = sensor_mod.SemsWorkStateSensor
 SemsPowerSensor = sensor_mod.SemsPowerSensor
 SemsStatisticsSensor = sensor_mod.SemsStatisticsSensor
-SemsCurrentSensor = sensor_mod.SemsCurrentSensor
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -172,6 +171,11 @@ SAMPLE_DATA = {
     "max_charge_power": 11,
     "set_charge_power": 7.4,
     "startStatus": True,
+    # From getLastCharge — workStu=6 means actively charging
+    "last_charge_work_status": 6,
+    "last_charge_power": 7.4,
+    "last_charge_duration_minutes": 42,
+    "last_charge_energy": 1.82,
 }
 
 
@@ -190,19 +194,19 @@ class TestSemsSensor:
         assert sensor.state == "charging"
 
     def test_state_standby(self):
-        d = {**SAMPLE_DATA, "status": "EVDetail_Status_Title_Waiting"}
+        d = {**SAMPLE_DATA, "status": "EVDetail_Status_Title_Waiting", "last_charge_work_status": 8}
         coord = _make_coordinator(d)
         sensor = SemsSensor(coord, SAMPLE_SN)
         assert sensor.state == "standby"
 
     def test_state_offline(self):
-        d = {**SAMPLE_DATA, "status": "EVDetail_Status_Title_Offline"}
+        d = {**SAMPLE_DATA, "status": "EVDetail_Status_Title_Offline", "last_charge_work_status": 8}
         coord = _make_coordinator(d)
         sensor = SemsSensor(coord, SAMPLE_SN)
         assert sensor.state == "offline"
 
     def test_state_unknown(self):
-        d = {**SAMPLE_DATA, "status": "EVDetail_Status_SomethingElse"}
+        d = {**SAMPLE_DATA, "status": "EVDetail_Status_SomethingElse", "last_charge_work_status": 8}
         coord = _make_coordinator(d)
         sensor = SemsSensor(coord, SAMPLE_SN)
         assert sensor.state == "unknown"
@@ -213,19 +217,19 @@ class TestSemsSensor:
         assert sensor.icon == "mdi:battery-charging-100"
 
     def test_icon_standby(self):
-        d = {**SAMPLE_DATA, "status": "EVDetail_Status_Title_Waiting"}
+        d = {**SAMPLE_DATA, "status": "EVDetail_Status_Title_Waiting", "last_charge_work_status": 8}
         coord = _make_coordinator(d)
         sensor = SemsSensor(coord, SAMPLE_SN)
         assert sensor.icon == "mdi:ev-station"
 
     def test_icon_offline(self):
-        d = {**SAMPLE_DATA, "status": "EVDetail_Status_Title_Offline"}
+        d = {**SAMPLE_DATA, "status": "EVDetail_Status_Title_Offline", "last_charge_work_status": 8}
         coord = _make_coordinator(d)
         sensor = SemsSensor(coord, SAMPLE_SN)
         assert sensor.icon == "mdi:power-plug-off"
 
     def test_icon_unknown(self):
-        d = {**SAMPLE_DATA, "status": "EVDetail_Status_Other"}
+        d = {**SAMPLE_DATA, "status": "EVDetail_Status_Other", "last_charge_work_status": 8}
         coord = _make_coordinator(d)
         sensor = SemsSensor(coord, SAMPLE_SN)
         assert sensor.icon == "mdi:help-circle-outline"
@@ -275,9 +279,17 @@ class TestSemsSensor:
 
 class TestSemsWorkStateSensor:
     def _sensor(self, workstate: str):
-        d = {**SAMPLE_DATA, "workstate": workstate}
+        # Clear workStu so the workstate field drives the result, not the override.
+        d = {**SAMPLE_DATA, "workstate": workstate, "last_charge_work_status": 8}
         coord = _make_coordinator(d)
         return SemsWorkStateSensor(coord, SAMPLE_SN)
+
+    def test_workstu_charging_returns_dash(self):
+        # When workStu=6, the API's workstate is unreliable — always show dash.
+        d = {**SAMPLE_DATA, "workstate": "available_gun_no_insered", "last_charge_work_status": 6}
+        coord = _make_coordinator(d)
+        s = SemsWorkStateSensor(coord, SAMPLE_SN)
+        assert s.native_value == "dash"
 
     def test_not_plugged_in(self):
         s = self._sensor("EVDetail_Status_Waiting_Stat00")
@@ -330,28 +342,28 @@ class TestSemsPowerSensor:
         assert s.native_value == pytest.approx(7.4)
 
     def test_not_charging_returns_zero(self):
-        # startStatus=False means device is idle — chargePower is just the configured limit
-        d = {**SAMPLE_DATA, "startStatus": False, "power": 5.8}
+        # When workStu != 6 (not actively charging), power must be 0.
+        d = {**SAMPLE_DATA, "last_charge_work_status": 8, "power": 5.8}
         coord = _make_coordinator(d)
         s = SemsPowerSensor(coord, SAMPLE_SN)
         assert s.native_value == 0.0
 
-    def test_no_start_status_defaults_to_zero(self):
-        # Missing startStatus treated as not charging
-        d = {k: v for k, v in SAMPLE_DATA.items() if k != "startStatus"}
+    def test_no_work_status_defaults_to_zero(self):
+        # When last_charge_work_status is absent, power must be 0.
+        d = {k: v for k, v in SAMPLE_DATA.items() if k != "last_charge_work_status"}
         d["power"] = 5.8
         coord = _make_coordinator(d)
         s = SemsPowerSensor(coord, SAMPLE_SN)
         assert s.native_value == 0.0
 
     def test_negative_power_clamped_to_zero(self):
-        d = {**SAMPLE_DATA, "power": -1.5}
+        d = {**SAMPLE_DATA, "last_charge_power": -1.5}
         coord = _make_coordinator(d)
         s = SemsPowerSensor(coord, SAMPLE_SN)
         assert s.native_value == 0.0
 
     def test_none_power_defaults_to_zero(self):
-        d = {**SAMPLE_DATA, "power": None}
+        d = {**SAMPLE_DATA, "last_charge_power": None}
         coord = _make_coordinator(d)
         s = SemsPowerSensor(coord, SAMPLE_SN)
         assert s.native_value == 0.0
@@ -372,18 +384,25 @@ class TestSemsPowerSensor:
 # ===========================================================================
 
 class TestSemsStatisticsSensor:
-    def test_parse_string_value(self):
+    def test_session_energy(self):
         from decimal import Decimal
         coord = _make_coordinator()
         s = SemsStatisticsSensor(coord, SAMPLE_SN)
-        assert s.native_value == Decimal("123.5")
+        assert s.native_value == Decimal("1.82")
+        assert s._attr_state_class == "total_increasing"
 
-    def test_fallback_on_invalid_value(self):
-        from decimal import Decimal
-        d = {**SAMPLE_DATA, "chargeEnergy": "not_a_number"}
+    def test_missing_energy_returns_none(self):
+        d = {k: v for k, v in SAMPLE_DATA.items() if k != "last_charge_energy"}
         coord = _make_coordinator(d)
         s = SemsStatisticsSensor(coord, SAMPLE_SN)
-        assert s.native_value == Decimal("0")
+        assert s.native_value is None
+
+    def test_invalid_energy_returns_none(self):
+        from decimal import Decimal
+        d = {**SAMPLE_DATA, "last_charge_energy": "not_a_number"}
+        coord = _make_coordinator(d)
+        s = SemsStatisticsSensor(coord, SAMPLE_SN)
+        assert s.native_value is None
 
     def test_unique_id(self):
         coord = _make_coordinator()
@@ -391,54 +410,4 @@ class TestSemsStatisticsSensor:
         assert s.unique_id == f"{SAMPLE_SN}-energy"
 
 
-# ===========================================================================
-# SemsCurrentSensor
-# ===========================================================================
 
-class TestSemsCurrentSensor:
-    def test_normal_current(self):
-        coord = _make_coordinator()
-        s = SemsCurrentSensor(coord, SAMPLE_SN)
-        assert s.native_value == pytest.approx(32.0)
-
-    def test_negative_current_falls_back_to_power(self):
-        # When current field is negative, derive from power (7.4 kW / 230 V ≈ 32.2 A)
-        d = {**SAMPLE_DATA, "current": -5.0}
-        coord = _make_coordinator(d)
-        s = SemsCurrentSensor(coord, SAMPLE_SN)
-        assert s.native_value == pytest.approx(7.4 * 1000.0 / 230.0, abs=0.2)
-
-    def test_none_current_falls_back_to_power(self):
-        # When current field is absent/None, derive from power (7.4 kW / 230 V ≈ 32.2 A)
-        d = {**SAMPLE_DATA, "current": None}
-        coord = _make_coordinator(d)
-        s = SemsCurrentSensor(coord, SAMPLE_SN)
-        assert s.native_value == pytest.approx(7.4 * 1000.0 / 230.0, abs=0.2)
-
-    def test_unique_id(self):
-        coord = _make_coordinator()
-        s = SemsCurrentSensor(coord, SAMPLE_SN)
-        assert s.unique_id == f"{SAMPLE_SN}_current"
-
-    def test_translation_key(self):
-        coord = _make_coordinator()
-        s = SemsCurrentSensor(coord, SAMPLE_SN)
-        assert s._attr_translation_key == "current"
-
-    def test_available_when_coordinator_success(self):
-        coord = _make_coordinator()
-        coord.last_update_success = True
-        s = SemsCurrentSensor(coord, SAMPLE_SN)
-        assert s.available is True
-
-    def test_unavailable_when_coordinator_fails(self):
-        coord = _make_coordinator()
-        coord.last_update_success = False
-        s = SemsCurrentSensor(coord, SAMPLE_SN)
-        assert s.available is False
-
-    def test_device_info(self):
-        coord = _make_coordinator()
-        s = SemsCurrentSensor(coord, SAMPLE_SN)
-        info = s.device_info
-        assert info["name"] == "My Wallbox"

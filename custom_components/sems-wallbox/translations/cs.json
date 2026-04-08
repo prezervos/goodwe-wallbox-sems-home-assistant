@@ -92,7 +92,7 @@
                 "name": "Stav",
                 "state": {
                     "charging": "Nabíjení",
-                    "standby": "Pohotovost",
+                    "standby": "Připraveno",
                     "offline": "Offline",
                     "unknown": "Neznámý"
                 }
@@ -113,8 +113,11 @@
             "energy": {
                 "name": "Nabito celkem"
             },
-            "current": {
-                "name": "Nabíjecí proud"
+            "set_charge_power_limit": {
+                "name": "Přidělený nabíjecí výkon"
+            },
+            "charge_duration": {
+                "name": "Doba nabíjení"
             }
         },
         "select": {

@@ -113,8 +113,11 @@
             "energy": {
                 "name": "Total charged energy"
             },
-            "current": {
-                "name": "Charging current"
+            "set_charge_power_limit": {
+                "name": "Allocated charge power"
+            },
+            "charge_duration": {
+                "name": "Charge duration"
             }
         },
         "select": {

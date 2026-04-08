@@ -151,13 +151,22 @@ class TestAvailability:
         entity = _make_entity(chargeMode=0)
         assert entity.available is True
 
-    def test_unavailable_in_pv_priority(self):
+    def test_available_in_pv_priority(self):
+        # Always available now — value shown as read-only, editable=False attribute
         entity = _make_entity(chargeMode=1)
-        assert entity.available is False
+        assert entity.available is True
 
-    def test_unavailable_in_pv_and_battery(self):
+    def test_available_in_pv_and_battery(self):
         entity = _make_entity(chargeMode=2)
-        assert entity.available is False
+        assert entity.available is True
+
+    def test_editable_attribute_fast_mode(self):
+        entity = _make_entity(chargeMode=0)
+        assert entity.extra_state_attributes["editable"] is True
+
+    def test_editable_attribute_pv_mode(self):
+        entity = _make_entity(chargeMode=2)
+        assert entity.extra_state_attributes["editable"] is False
 
     def test_unavailable_when_coordinator_failed(self):
         entity = _make_entity(chargeMode=0)
@@ -321,34 +330,15 @@ class TestSetNativeValue:
         entity.hass.async_create_task.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_slider_does_not_revert_when_pv_mode_during_timeout(self):
-        """If an API call times out while the mode has already switched to PV
-        (entity becomes unavailable), the revert must NOT overwrite the preserved
-        PV power value.  The user set 11 kW; we must remember that for the next
-        switch back to Fast — not silently revert to the old 7.4 kW.
+    async def test_slider_from_pv_mode_switches_to_fast(self):
+        """Moving the slider from PV mode should switch to Fast mode (0)."""
+        entity = _make_entity(chargeMode=2, set_charge_power=5.6)
 
-        Real-world scenario (from log):
-          15:27:30 Slider moved to 11 kW → API call starts (30 s timeout)
-          15:27:33 PV mode selected → confirmed by poll, slider hidden (unavailable)
-          15:28:00 Set-Fast-11 API call finally times out → revert must be skipped
-        """
-        entity = _make_entity(chargeMode=0, set_charge_power=7.4)
+        entity.api.set_charge_mode_gen2 = MagicMock(return_value=True)
+        await entity.async_set_native_value(9.0)
 
-        def side_effect(sn, mode, power):
-            # Simulate: while waiting for the API, PV mode was confirmed by poll →
-            # coordinator.data now shows chargeMode=1, slider is unavailable.
-            entity.coordinator.data[SAMPLE_SN]["chargeMode"] = 1
-            return False  # timeout
-
-        entity.api.set_charge_mode_gen2 = side_effect
-
-        with pytest.raises(Exception):  # HomeAssistantError
-            await entity.async_set_native_value(11.0)
-
-        # native_value must stay at 11.0 (not reverted to 7.4)
-        assert entity._attr_native_value == 11.0
-        # coordinator.data must also keep 11.0 so select.py uses it on next Fast switch
-        assert entity.coordinator.data[SAMPLE_SN]["set_charge_power"] == 11.0
+        entity.api.set_charge_mode_gen2.assert_called_once_with(SAMPLE_SN, 0, 9.0)
+        assert entity._attr_native_value == 9.0
 
 
 # ---------------------------------------------------------------------------
@@ -375,29 +365,26 @@ class TestCoordinatorUpdate:
         entity.async_write_ha_state.assert_called()
 
     def test_update_availability_reflects_charge_mode(self):
+        # Entity is always available now; only editable attribute changes.
         entity = _make_entity(chargeMode=0)
         assert entity.available is True
         entity.coordinator.data[SAMPLE_SN]["chargeMode"] = 1
         entity._handle_coordinator_update()
-        assert entity.available is False
+        assert entity.available is True
+        assert entity.extra_state_attributes["editable"] is False
 
-    def test_pv_mode_does_not_overwrite_native_value_with_stale_api_value(self):
-        """In PV mode the API may return a stale/default set_charge_power.
-        The entity must keep the last user-set value so switching back to Fast
-        restores it correctly."""
+    def test_pv_mode_shows_api_allocated_power(self):
+        """In PV mode the entity shows the dynamically allocated power from the API."""
         entity = _make_entity(chargeMode=0, set_charge_power=11.0)
-        # Simulate switch to PV mode: chargeMode changes, API returns old power
-        entity.coordinator.data[SAMPLE_SN]["chargeMode"] = 1
+        entity.coordinator.data[SAMPLE_SN]["chargeMode"] = 2
         entity.coordinator.data[SAMPLE_SN]["set_charge_power"] = 5.6
         entity._handle_coordinator_update()
-        assert entity._attr_native_value == 11.0
+        assert entity._attr_native_value == 5.6
 
-    def test_pv_mode_preserves_value_in_coordinator_data_for_select(self):
-        """In PV mode, the locally-held value must also be written back into
-        coordinator.data so that select.py reads the right power when the user
-        switches back to Fast."""
+    def test_pv_mode_coordinator_data_reflects_api(self):
+        """coordinator.data set_charge_power is the API value in PV mode (not patched back)."""
         entity = _make_entity(chargeMode=0, set_charge_power=11.0)
         entity.coordinator.data[SAMPLE_SN]["chargeMode"] = 1
         entity.coordinator.data[SAMPLE_SN]["set_charge_power"] = 5.6
         entity._handle_coordinator_update()
-        assert entity.coordinator.data[SAMPLE_SN]["set_charge_power"] == 11.0
+        assert entity.coordinator.data[SAMPLE_SN]["set_charge_power"] == 5.6
