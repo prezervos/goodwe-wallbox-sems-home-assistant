@@ -104,16 +104,8 @@ class SemsSwitch(CoordinatorEntity, SwitchEntity):
 
     @property
     def available(self):
-        """Return if entity is available.
-
-        Only allow start/stop commands when the gun/cable is physically connected.
-        workstate 'available_gun_no_insered' means no gun — commands would have
-        no effect and confuse the user.
-        """
-        if not self.coordinator.last_update_success:
-            return False
-        data = self.coordinator.data.get(self.sn, {}) or {}
-        return data.get("workstate") != "available_gun_no_insered"
+        """Return if entity is available."""
+        return self.coordinator.last_update_success
 
     def _compute_is_on_from_data(self, data: dict) -> bool:
         """Compute is_on from API data, respecting the grace period after commands."""
