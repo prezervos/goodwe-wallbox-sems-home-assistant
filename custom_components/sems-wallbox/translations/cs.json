@@ -22,14 +22,14 @@
                 "data": {
                     "scan_interval": "Interval aktualizace v klidu (sekundy)",
                     "scan_interval_charging": "Interval aktualizace při nabíjení (sekundy)",
-                    "plant_id": "Plant ID (Gen2 / SEMS Plus)",
-                    "product_model": "Model zařízení (Gen2, např. GW7K-HCA-20)"
+                    "plant_id": "Plant ID",
+                    "product_model": "Model zařízení"
                 },
                 "data_description": {
                     "scan_interval": "Jak často se data stahují, když se nenabíjí (doporučeno: 60)",
                     "scan_interval_charging": "Jak často se data stahují při aktivním nabíjení (doporučeno: 30)",
-                    "plant_id": "Vyžadováno pro Gen2 nabíječky (řada HCA) pro nastavení limitu výkonu. Otevřete portál SEMS Plus, přejděte na svůj závod a zkopírujte ID z URL.",
-                    "product_model": "Např. GW7K-HCA-20. Pro Gen1 nebo pokud nevíte, nechte prázdné."
+                    "plant_id": "Nechte prázdné — detekuje se automaticky.",
+                    "product_model": "Nechte prázdné — detekuje se automaticky (např. GW11K-HCA)."
                 }
             }
         }
@@ -46,7 +46,7 @@
         "step": {
             "user": {
                 "title": "Připojení k SEMS portálu",
-                "description": "Zadejte přihlašovací údaje semsportal.com / SEMS Plus. Wallbox bude detekován automaticky.",
+                "description": "Zadejte přihlašovací údaje SEMS portálu. Wallbox bude detekován automaticky.",
                 "data": {
                     "username": "Uživatelské jméno (e-mail)",
                     "password": "Heslo"
@@ -68,15 +68,15 @@
             },
             "charger_manual": {
                 "title": "Zadejte sériové číslo wallboxu",
-                "description": "Wallbox se nepodařilo detekovat automaticky. Zadejte sériové číslo ručně (najdete v aplikaci SEMS nebo na štítku zařízení). Pokud jste sdílený/visitor uživatel, zadejte také Plant ID (zkopírujte z URL portálu SEMS Plus).",
+                "description": "Wallbox se nepodařilo detekovat automaticky. Zadejte sériové číslo ručně (najdete v aplikaci SEMS nebo na štítku zařízení).",
                 "data": {
                     "wallbox_serial_No": "Sériové číslo wallboxu",
-                    "plant_id": "Plant ID (volitelné, pro Gen2 / visitor účty)"
+                    "plant_id": "Plant ID (volitelné)"
                 }
             },
             "model": {
                 "title": "Model produktu",
-                "description": "Model produktu se nepodařilo detekovat automaticky. Zadejte ho ručně — je vyžadován pro nastavení limitu nabíjecího výkonu u Gen2 nabíječek (řada HCA). Najdete ho v aplikaci SEMS, na štítku zařízení nebo v portálu SEMS Plus (např. GW11K-HCA). Nechte prázdné pro přeskočení — lze zadat i dodatečně v nastavení integrace.",
+                "description": "Model produktu se nepodařilo detekovat automaticky. Najdete ho v aplikaci SEMS nebo na štítku zařízení (např. GW11K-HCA). Nechte prázdné pro přeskočení — lze zadat i dodatečně v nastavení integrace.",
                 "data": {
                     "product_model": "Model produktu (např. GW11K-HCA)"
                 }

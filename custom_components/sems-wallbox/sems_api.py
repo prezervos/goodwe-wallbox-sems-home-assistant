@@ -493,10 +493,6 @@ class SemsApi:
     # EU gateway discovery (used during config flow)
     # ------------------------------------------------------------------
 
-    _StationsPageURL    = None  # unused — use self._eu_url(_PATH_STATIONS_PAGE)
-    _CentralizedPageURL = None  # unused — use self._eu_url(_PATH_CENTRALIZED_PAGE)
-    _ControlItemURL     = None  # unused — use self._eu_url(_PATH_CONTROL_ITEMS)
-
     def fetch_device_info(self, wallbox_sn: str) -> dict:
         """Fetch device metadata (productModel, ratedPower, etc.) from the EU gateway.
 
@@ -593,7 +589,7 @@ class SemsApi:
             payload["stationId"] = station_id
         try:
             resp = requests.post(
-                self._CentralizedPageURL,
+                self._eu_url(_PATH_CENTRALIZED_PAGE),
                 headers=headers,
                 json=payload,
                 timeout=_RequestTimeout,
