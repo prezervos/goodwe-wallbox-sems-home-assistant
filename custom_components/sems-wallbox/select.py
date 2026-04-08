@@ -177,7 +177,7 @@ class InverterOperationModeEntity(CoordinatorEntity, SelectEntity):
         self._pending_mode_set_at = time.monotonic()
 
         ok = await self.hass.async_add_executor_job(
-            self.api.set_charge_mode,
+            self.api.set_charge_mode_gen2,
             self.sn,
             mode,
             charge_power,
@@ -244,7 +244,7 @@ class InverterOperationModeEntity(CoordinatorEntity, SelectEntity):
                     latest_power,
                 )
                 await self.hass.async_add_executor_job(
-                    self.api.set_charge_mode,
+                    self.api.set_charge_mode_gen2,
                     self.sn,
                     0,
                     latest_power,

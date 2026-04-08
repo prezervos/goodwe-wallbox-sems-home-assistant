@@ -11,8 +11,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.typing import ConfigType
 
-from .const import DOMAIN
-
+from .const import DOMAIN, CONF_PLANT_ID, CONF_PRODUCT_MODEL, CONF_STATION_ID
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 from .sems_api import SemsApi
 from .coordinator import SemsUpdateCoordinator
@@ -41,6 +40,30 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     password = entry.data[CONF_PASSWORD]
 
     api = SemsApi(hass, username, password)
+
+    # Configure gen2 (SEMS Plus) plant info from options/data if provided.
+    # strip() + or None so empty-string values from the OptionsFlow are treated as unset.
+    plant_id = (entry.options.get(CONF_PLANT_ID) or entry.data.get(CONF_PLANT_ID) or "").strip() or None
+    product_model = (entry.options.get(CONF_PRODUCT_MODEL) or entry.data.get(CONF_PRODUCT_MODEL) or "").strip() or None
+    _LOGGER.debug(
+        "SEMS setup: plant_id=%r product_model=%r (from options=%r data=%r)",
+        plant_id,
+        product_model,
+        entry.options,
+        {k: v for k, v in entry.data.items() if k not in (CONF_PASSWORD,)},
+    )
+    api.configure_gen2(plant_id, product_model)
+
+    # If model wasn't known at config time, try to fetch it from the EU gateway.
+    if plant_id and not product_model:
+        station_id = entry.data.get(CONF_STATION_ID) or entry.options.get(CONF_STATION_ID) or ""
+        if station_id:
+            info = await hass.async_add_executor_job(api.fetch_device_info, station_id)
+            discovered_model = (info.get("productModel") or "").strip() or None
+            if discovered_model:
+                _LOGGER.debug("SEMS setup: auto-discovered model=%r for sn=%r", discovered_model, station_id)
+                api.configure_gen2(plant_id, discovered_model)
+
     coordinator = SemsUpdateCoordinator(hass, entry, api)
 
     await coordinator.async_config_entry_first_refresh()

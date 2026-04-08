@@ -86,7 +86,7 @@ class TestAuthentication:
         token = {"uid": "abc", "token": "tok123", "timestamp": 123}
         with patch("requests.post", return_value=_login_response(token)):
             assert api.test_authentication() is True
-        assert api._token is not None
+        assert api._web_token is not None
 
     def test_failure_returns_false(self):
         api = _make_api()
@@ -100,181 +100,121 @@ class TestAuthentication:
 
 
 # ===========================================================================
-# test _fetch_login_token
+# test _fetch_web_token
 # ===========================================================================
 
-class TestFetchLoginToken:
+class TestFetchWebToken:
     def test_returns_token_dict(self):
         api = _make_api()
         token = {"uid": "u1", "token": "t1", "timestamp": 999}
         with patch("requests.post", return_value=_login_response(token)):
-            result = api._fetch_login_token()
+            result = api._fetch_web_token()
         assert result is not None
         assert result["token"] == "t1"
-        assert result["api"] == "https://www.semsportal.com/api/"
 
     def test_returns_none_on_network_error(self):
         api = _make_api()
         with patch("requests.post", side_effect=OSError("network down")):
-            assert api._fetch_login_token() is None
+            assert api._fetch_web_token() is None
 
     def test_returns_none_when_has_error(self):
         api = _make_api()
         with patch("requests.post", return_value=_login_response(None, has_error=True)):
-            assert api._fetch_login_token() is None
+            assert api._fetch_web_token() is None
 
 
 # ===========================================================================
-# test _ensure_token
+# test _ensure_web_token
 # ===========================================================================
 
-class TestEnsureToken:
+class TestEnsureWebToken:
     def test_fetches_token_when_none(self):
         api = _make_api()
         token = {"uid": "u", "token": "t", "timestamp": 1}
         with patch("requests.post", return_value=_login_response(token)):
-            assert api._ensure_token() is True
-        assert api._token is not None
+            assert api._ensure_web_token() is True
+        assert api._web_token is not None
 
     def test_skips_fetch_when_token_already_set(self):
         api = _make_api()
-        api._token = {"uid": "existing"}
+        api._web_token = {"uid": "existing"}
         with patch("requests.post") as mock_post:
-            assert api._ensure_token() is True
+            assert api._ensure_web_token() is True
             mock_post.assert_not_called()
 
     def test_renew_forces_refetch(self):
         api = _make_api()
-        api._token = {"uid": "old"}
+        api._web_token = {"uid": "old"}
         new_token = {"uid": "new", "token": "fresh", "timestamp": 2}
         with patch("requests.post", return_value=_login_response(new_token)):
-            assert api._ensure_token(renew=True) is True
-        assert api._token["uid"] == "new"
+            assert api._ensure_web_token(renew=True) is True
+        assert api._web_token["uid"] == "new"
 
     def test_returns_false_when_login_fails(self):
         api = _make_api()
-        with patch("requests.post", return_value=_login_response(None)):
-            assert api._ensure_token() is False
-        assert api._token is None
+        with patch("requests.post", return_value=_login_response(None, code=100)):
+            assert api._ensure_web_token() is False
+        assert api._web_token is None
 
 
 # ===========================================================================
-# test getData
+# test change_status_gen2
 # ===========================================================================
 
-class TestGetData:
-    def _setup_api_with_token(self):
+class TestChangeStatusGen2:
+    def _setup_api(self, plant_id="plant-001", product_model="GW11K-HCA"):
         api = _make_api()
-        api._token = {"uid": "u", "token": "t", "timestamp": 1, "api": "https://www.semsportal.com/api/"}
+        api._plant_id = plant_id
+        api._web_token = {"uid": "u", "token": "tok", "timestamp": 1}
+        api._product_model = product_model
         return api
 
-    def test_returns_data_dict(self):
-        api = self._setup_api_with_token()
-        payload = {"sn": "SN001", "status": "EVDetail_Status_Title_Charging", "power": 7.4}
-        with patch("requests.post", return_value=_data_response(payload)):
-            result = api.getData("SN001")
-        assert result == payload
-
-    def test_returns_none_on_network_error(self):
-        api = self._setup_api_with_token()
-        with patch("requests.post", side_effect=OSError("connection refused")):
-            assert api.getData("SN001") is None
-
-    def test_retries_on_expired_auth(self):
-        api = self._setup_api_with_token()
-        expired_resp = _data_response(None, msg="authorization has expired")
-        good_payload = {"sn": "SN001", "power": 0.0}
-        good_resp = _data_response(good_payload)
-        new_token = {"uid": "u", "token": "new", "timestamp": 99, "api": "x"}
-
-        call_count = 0
-
-        def side_effect(*args, **kwargs):
-            nonlocal call_count
-            call_count += 1
-            if call_count == 1:
-                return expired_resp  # status call -> expired
-            if call_count == 2:
-                return _login_response(new_token)  # token renewal
-            return good_resp  # retry status call
-
-        with patch("requests.post", side_effect=side_effect):
-            result = api.getData("SN001", maxTokenRetries=1)
-        assert result == good_payload
-
-    def test_raises_out_of_retries_when_max_reached(self):
-        api = self._setup_api_with_token()
-        with pytest.raises(OutOfRetries):
-            api.getData("SN001", maxTokenRetries=-1)
-
-
-# ===========================================================================
-# test change_status
-# ===========================================================================
-
-class TestChangeStatus:
-    def _setup_api_with_token(self):
-        api = _make_api()
-        api._token = {"uid": "u", "token": "t", "timestamp": 1, "api": "x"}
-        return api
-
-    def test_sends_correct_payload(self):
-        api = self._setup_api_with_token()
+    def _gen2_response(self, code="00000", data=None):
         resp = MagicMock()
         resp.raise_for_status = MagicMock()
         resp.status_code = 200
-        resp.json.return_value = {"data": "ok", "msg": ""}
+        resp.json.return_value = {"code": code, "data": data, "msg": ""}
+        resp.text = '{"code": "' + code + '"}'
+        return resp
 
+    def test_start_charge_success(self):
+        api = self._setup_api()
+        resp = self._gen2_response(code="00000")
         with patch("requests.post", return_value=resp) as mock_post:
-            api.change_status("SN001", 1)
+            result = api.change_status_gen2("SN001", "start")
+        assert result is True
+        call_url = mock_post.call_args[0][0]
+        assert "startCharge" in call_url
+        payload = mock_post.call_args[1]["json"]
+        assert payload["sn"] == "SN001"
+        assert payload["plantId"] == "plant-001"
 
-        call_kwargs = mock_post.call_args
-        assert call_kwargs[1]["json"] == {"sn": "SN001", "status": "1"}
+    def test_stop_charge_success(self):
+        api = self._setup_api()
+        resp = self._gen2_response(code="00000")
+        with patch("requests.post", return_value=resp) as mock_post:
+            result = api.change_status_gen2("SN001", "stop")
+        assert result is True
+        call_url = mock_post.call_args[0][0]
+        assert "stopCharge" in call_url
 
-    def test_logs_warning_on_non_200(self):
-        api = self._setup_api_with_token()
-        resp = MagicMock()
-        resp.raise_for_status = MagicMock()
-        resp.status_code = 500
-        resp.text = "Internal Server Error"
-        resp.json.return_value = {"data": None, "msg": "error"}
+    def test_no_plant_id_returns_false(self):
+        api = _make_api()
+        api._plant_id = None
+        with patch.object(api, "_try_fetch_plant_id", return_value=None):
+            result = api.change_status_gen2("SN001", "start")
+        assert result is False
 
+    def test_non_success_code_returns_false(self):
+        api = self._setup_api()
+        resp = self._gen2_response(code="E0001")
         with patch("requests.post", return_value=resp):
-            api.change_status("SN001", 2)  # Should not raise, just log warning
+            result = api.change_status_gen2("SN001", "start")
+        assert result is False
 
+    def test_network_error_returns_false(self):
+        api = self._setup_api()
+        with patch("requests.post", side_effect=OSError("connection refused")):
+            result = api.change_status_gen2("SN001", "start")
+        assert result is False
 
-# ===========================================================================
-# test set_charge_mode
-# ===========================================================================
-
-class TestSetChargeMode:
-    def _setup_api_with_token(self):
-        api = _make_api()
-        api._token = {"uid": "u", "token": "t", "timestamp": 1, "api": "x"}
-        return api
-
-    def test_sends_mode_without_power(self):
-        api = self._setup_api_with_token()
-        resp = MagicMock()
-        resp.raise_for_status = MagicMock()
-        resp.status_code = 200
-        resp.json.return_value = {"data": "ok", "msg": ""}
-
-        with patch("requests.post", return_value=resp) as mock_post:
-            api.set_charge_mode("SN001", 1)
-
-        call_kwargs = mock_post.call_args
-        assert call_kwargs[1]["json"] == {"sn": "SN001", "type": 1}
-
-    def test_sends_mode_with_power(self):
-        api = self._setup_api_with_token()
-        resp = MagicMock()
-        resp.raise_for_status = MagicMock()
-        resp.status_code = 200
-        resp.json.return_value = {"data": "ok", "msg": ""}
-
-        with patch("requests.post", return_value=resp) as mock_post:
-            api.set_charge_mode("SN001", 0, chargePower=7.4)
-
-        call_kwargs = mock_post.call_args
-        assert call_kwargs[1]["json"] == {"sn": "SN001", "type": 0, "charge_power": 7.4}

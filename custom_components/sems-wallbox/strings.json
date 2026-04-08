@@ -32,16 +32,36 @@
     "step": {
       "user": {
         "data": {
-          "station_id": "[%key:common::config_flow::data::wallbox_serial_No%]",
           "username": "[%key:common::config_flow::data::username%]",
-          "password": "[%key:common::config_flow::data::password%]",
-          "scan_interval": "[%key:common::config_flow::data::scan_interval%]"
+          "password": "[%key:common::config_flow::data::password%]"
+        }
+      },
+      "plant": {
+        "data": {
+          "plant_id": "Plant / station"
+        }
+      },
+      "charger": {
+        "data": {
+          "wallbox_serial_No": "Wallbox"
+        }
+      },
+      "charger_manual": {
+        "data": {
+          "wallbox_serial_No": "Wallbox serial number",
+          "plant_id": "Plant ID (optional)"
+        }
+      },
+      "model": {
+        "data": {
+          "product_model": "Product model"
         }
       }
     },
     "error": {
       "cannot_connect": "[%key:common::config_flow::error::cannot_connect%]",
       "invalid_auth": "[%key:common::config_flow::error::invalid_auth%]",
+      "no_chargers_found": "No EV chargers found. Enter the serial number manually.",
       "unknown": "[%key:common::config_flow::error::unknown%]"
     },
     "abort": {

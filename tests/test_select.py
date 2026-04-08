@@ -104,7 +104,7 @@ def _make_entity(chargeMode=0, set_charge_power=7.4, min_charge_power=4.2, max_c
     }
     coordinator = _FakeCoordinator({SAMPLE_SN: data})
     api = MagicMock()
-    api.set_charge_mode = MagicMock()
+    api.set_charge_mode_gen2 = MagicMock()
 
     entity = InverterOperationModeEntity(
         coordinator,
@@ -156,35 +156,35 @@ class TestSelectOption:
         """Switching TO fast (mode 0) must include set_charge_power in the API call."""
         entity = _make_entity(chargeMode=1, set_charge_power=6.0)
         await entity.async_select_option("fast")
-        entity.api.set_charge_mode.assert_called_once_with(SAMPLE_SN, 0, 6.0)
+        entity.api.set_charge_mode_gen2.assert_called_once_with(SAMPLE_SN, 0, 6.0)
 
     @pytest.mark.asyncio
     async def test_switch_to_fast_falls_back_to_min_when_power_none(self):
         """When set_charge_power is None, fall back to min_charge_power."""
         entity = _make_entity(chargeMode=1, set_charge_power=None, min_charge_power=4.2)
         await entity.async_select_option("fast")
-        entity.api.set_charge_mode.assert_called_once_with(SAMPLE_SN, 0, 4.2)
+        entity.api.set_charge_mode_gen2.assert_called_once_with(SAMPLE_SN, 0, 4.2)
 
     @pytest.mark.asyncio
     async def test_switch_to_fast_clamps_out_of_range_power_to_min(self):
         """When set_charge_power is out of range, clamp it to min."""
         entity = _make_entity(chargeMode=1, set_charge_power=1.0, min_charge_power=4.2, max_charge_power=11.0)
         await entity.async_select_option("fast")
-        entity.api.set_charge_mode.assert_called_once_with(SAMPLE_SN, 0, 4.2)
+        entity.api.set_charge_mode_gen2.assert_called_once_with(SAMPLE_SN, 0, 4.2)
 
     @pytest.mark.asyncio
     async def test_switch_to_pv_priority_no_charge_power(self):
         """Switching to pv_priority must NOT include charge_power."""
         entity = _make_entity(chargeMode=0, set_charge_power=7.4)
         await entity.async_select_option("pv_priority")
-        entity.api.set_charge_mode.assert_called_once_with(SAMPLE_SN, 1, None)
+        entity.api.set_charge_mode_gen2.assert_called_once_with(SAMPLE_SN, 1, None)
 
     @pytest.mark.asyncio
     async def test_switch_to_pv_and_battery_no_charge_power(self):
         """Switching to pv_and_battery must NOT include charge_power."""
         entity = _make_entity(chargeMode=0, set_charge_power=7.4)
         await entity.async_select_option("pv_and_battery")
-        entity.api.set_charge_mode.assert_called_once_with(SAMPLE_SN, 2, None)
+        entity.api.set_charge_mode_gen2.assert_called_once_with(SAMPLE_SN, 2, None)
 
     @pytest.mark.asyncio
     async def test_optimistic_update_on_select(self):
@@ -217,7 +217,7 @@ class TestSelectOption:
         """An unknown option string must not call the API."""
         entity = _make_entity(chargeMode=0)
         await entity.async_select_option("invalid_option")
-        entity.api.set_charge_mode.assert_not_called()
+        entity.api.set_charge_mode_gen2.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_switch_to_fast_writes_charge_power_into_coordinator_data(self):
@@ -232,7 +232,7 @@ class TestSelectOption:
     async def test_switch_to_fast_resends_if_power_changed_during_api_call(self):
         """If number.py updates set_charge_power in coordinator.data while the
         mode-switch API call is in flight (slider moved by user), select must
-        re-fire set_charge_mode with the new power so the last write wins."""
+        re-fire set_charge_mode_gen2 with the new power so the last write wins."""
         entity = _make_entity(chargeMode=1, set_charge_power=6.0)
 
         calls = []
@@ -244,7 +244,7 @@ class TestSelectOption:
                 entity.coordinator.data[SAMPLE_SN]["set_charge_power"] = 11.0
             return True
 
-        entity.api.set_charge_mode = side_effect
+        entity.api.set_charge_mode_gen2 = side_effect
 
         await entity.async_select_option("fast")
 
@@ -257,7 +257,7 @@ class TestSelectOption:
         """If set_charge_power did not change during the API call, no re-fire."""
         entity = _make_entity(chargeMode=1, set_charge_power=6.0)
         await entity.async_select_option("fast")
-        entity.api.set_charge_mode.assert_called_once_with(SAMPLE_SN, 0, 6.0)
+        entity.api.set_charge_mode_gen2.assert_called_once_with(SAMPLE_SN, 0, 6.0)
 
     @pytest.mark.asyncio
     async def test_superseded_fast_call_does_not_refires_when_pv_pending(self):
@@ -277,7 +277,7 @@ class TestSelectOption:
                 entity._pending_mode = 1
             return True
 
-        entity.api.set_charge_mode = side_effect
+        entity.api.set_charge_mode_gen2 = side_effect
 
         await entity.async_select_option("fast")
 
@@ -314,7 +314,7 @@ class TestSelectOption:
                 entity.coordinator.data[SAMPLE_SN]["set_charge_power"] = 11.0
             return True
 
-        entity.api.set_charge_mode = side_effect
+        entity.api.set_charge_mode_gen2 = side_effect
 
         await entity.async_select_option("fast")
 
@@ -324,12 +324,12 @@ class TestSelectOption:
 
     @pytest.mark.asyncio
     async def test_mode_switch_reverts_on_api_failure(self):
-        """If set_charge_mode returns False the select entity must revert
+        """If set_charge_mode_gen2 returns False the select entity must revert
         _attr_current_option to whatever coordinator.data currently holds,
         clear _pending_mode, and schedule a coordinator refresh.
         HomeAssistantError is raised so HA shows a toast notification."""
         entity = _make_entity(chargeMode=0, set_charge_power=6.0)  # currently Fast
-        entity.api.set_charge_mode = MagicMock(return_value=False)
+        entity.api.set_charge_mode_gen2 = MagicMock(return_value=False)
         with pytest.raises(Exception):  # HomeAssistantError
             await entity.async_select_option("pv_priority")
         # _attr_current_option must be reverted to "fast" (chargeMode=0 in coordinator)
@@ -344,7 +344,7 @@ class TestSelectOption:
         """async_write_ha_state must be called after reverting so the UI
         reflects the correct option without waiting for the next poll."""
         entity = _make_entity(chargeMode=0, set_charge_power=6.0)
-        entity.api.set_charge_mode = MagicMock(return_value=False)
+        entity.api.set_charge_mode_gen2 = MagicMock(return_value=False)
         with pytest.raises(Exception):  # HomeAssistantError
             await entity.async_select_option("pv_priority")
         entity.async_write_ha_state.assert_called()

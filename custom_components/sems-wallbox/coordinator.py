@@ -78,8 +78,11 @@ class SemsUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     async def _async_update_data(self) -> dict[str, Any]:
         """Fetch data from the SEMS API."""
         try:
+            # Always try EU gateway first — get_data_gen2 falls back to getData()
+            # automatically on any EU gateway failure, so this is safe for both
+            # Gen1 and Gen2, and for visitor accounts that may not have plant_id.
             result = await self._hass.async_add_executor_job(
-                self._api.getData,
+                self._api.get_data_gen2,
                 self._station_id,
             )
         except OutOfRetries as err:
@@ -100,6 +103,18 @@ class SemsUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if not sn:
             raise UpdateFailed("Missing 'sn' in SEMS API data")
 
+        # Also poll getLastCharge to determine real-time charging state.
+        # workStu=6 means actively charging (startStatus in /detail is unreliable).
+        try:
+            last_charge = await self._hass.async_add_executor_job(
+                self._api.fetch_last_charge,
+                self._station_id,
+            )
+        except Exception:  # noqa: BLE001
+            last_charge = None
+        if last_charge:
+            result.update(last_charge)
+
         data: dict[str, Any] = {sn: result}
         _LOGGER.debug(
             "Coordinator fetched data for wallbox %s: %s",
@@ -107,8 +122,9 @@ class SemsUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             result,
         )
 
-        # Dynamic polling: faster while actively charging (power > 0)
-        is_charging = float(result.get("power", 0) or 0) > 0
+        # Dynamic polling: faster while actively charging.
+        # Use workStu=6 from getLastCharge (startStatus in /detail is always False in PV mode).
+        is_charging = result.get("last_charge_work_status") == 6
         new_interval = timedelta(
             seconds=self._interval_charging if is_charging else self._interval_idle
         )

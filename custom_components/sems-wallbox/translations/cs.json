@@ -21,11 +21,15 @@
                 "description": "Nastavte, jak často integrace dotazuje SEMS portál.",
                 "data": {
                     "scan_interval": "Interval aktualizace v klidu (sekundy)",
-                    "scan_interval_charging": "Interval aktualizace při nabíjení (sekundy)"
+                    "scan_interval_charging": "Interval aktualizace při nabíjení (sekundy)",
+                    "plant_id": "Plant ID",
+                    "product_model": "Model zařízení"
                 },
                 "data_description": {
                     "scan_interval": "Jak často se data stahují, když se nenabíjí (doporučeno: 60)",
-                    "scan_interval_charging": "Jak často se data stahují při aktivním nabíjení (doporučeno: 30)"
+                    "scan_interval_charging": "Jak často se data stahují při aktivním nabíjení (doporučeno: 30)",
+                    "plant_id": "Nechte prázdné — detekuje se automaticky.",
+                    "product_model": "Nechte prázdné — detekuje se automaticky (např. GW11K-HCA)."
                 }
             }
         }
@@ -42,19 +46,45 @@
         "step": {
             "user": {
                 "title": "Připojení k SEMS portálu",
-                "description": "Zadejte přihlašovací údaje k portálu semsportal.com a sériové číslo vašeho wallboxu GoodWe.",
+                "description": "Zadejte přihlašovací údaje SEMS portálu. Wallbox bude detekován automaticky.",
+                "data": {
+                    "username": "Uživatelské jméno (e-mail)",
+                    "password": "Heslo"
+                }
+            },
+            "plant": {
+                "title": "Vyberte plant / stanici",
+                "description": "V účtu bylo nalezeno více plantů. Vyberte ten, který obsahuje váš wallbox.",
+                "data": {
+                    "plant_id": "Plant / stanice"
+                }
+            },
+            "charger": {
+                "title": "Vyberte wallbox",
+                "description": "Bylo nalezeno více nabíječek EV. Vyberte váš wallbox.",
+                "data": {
+                    "wallbox_serial_No": "Wallbox"
+                }
+            },
+            "charger_manual": {
+                "title": "Zadejte sériové číslo wallboxu",
+                "description": "Wallbox se nepodařilo detekovat automaticky. Zadejte sériové číslo ručně (najdete v aplikaci SEMS nebo na štítku zařízení).",
                 "data": {
                     "wallbox_serial_No": "Sériové číslo wallboxu",
-                    "username": "Uživatelské jméno (e-mail)",
-                    "password": "Heslo",
-                    "scan_interval": "Interval aktualizace (sekundy)"
-                },
-                "data_description": {
-                    "wallbox_serial_No": "Najdete v aplikaci SEMS nebo na štítku zařízení",
-                    "scan_interval": "Jak často se data stahují ze SEMS portálu (doporučeno 60)"
+                    "plant_id": "Plant ID (volitelné)"
+                }
+            },
+            "model": {
+                "title": "Model produktu",
+                "description": "Model produktu se nepodařilo detekovat automaticky. Najdete ho v aplikaci SEMS nebo na štítku zařízení (např. GW11K-HCA). Nechte prázdné pro přeskočení — lze zadat i dodatečně v nastavení integrace.",
+                "data": {
+                    "product_model": "Model produktu (např. GW11K-HCA)"
                 }
             }
         }
+    },
+    "error": {
+        "no_chargers_found": "V daném plantu nebyly nalezeny žádné nabíječky EV. Zadejte sériové číslo ručně."
     },
     "entity": {
         "sensor": {
@@ -62,7 +92,7 @@
                 "name": "Stav",
                 "state": {
                     "charging": "Nabíjení",
-                    "standby": "Pohotovost",
+                    "standby": "Připraveno",
                     "offline": "Offline",
                     "unknown": "Neznámý"
                 }
@@ -83,8 +113,11 @@
             "energy": {
                 "name": "Nabito celkem"
             },
-            "current": {
-                "name": "Nabíjecí proud"
+            "set_charge_power_limit": {
+                "name": "Přidělený nabíjecí výkon"
+            },
+            "charge_duration": {
+                "name": "Doba nabíjení"
             }
         },
         "select": {
@@ -105,6 +138,9 @@
         "switch": {
             "start_charging": {
                 "name": "Nabíjení"
+            },
+            "ensure_minimum_charging_power": {
+                "name": "Zajistit minimální nabíjecí výkon"
             }
         }
     }
