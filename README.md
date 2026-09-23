@@ -193,8 +193,7 @@ not prove physical support for an untested charger.
 
 ## Upgrade notes
 
-Read [the draft release notes](docs/RELEASE_NOTES_DRAFT.md) before installing this
-unreleased candidate. Both current upstream and this candidate use `sems_wallbox`.
+Read [the release notes](docs/RELEASE_NOTES.md) before installing version 2.1.0. Both current upstream and this candidate use `sems_wallbox`.
 Historical `sems-wallbox` installations require separate migration. Entity IDs and
 custom names are preserved for the reviewed baseline, but default labels, categories,
 missing-data behavior and some state semantics changed. Check dependent templates;
@@ -202,7 +201,7 @@ do not treat unavailable measurements as zero.
 
 ## Changelog
 
-### Unreleased
+### 2.1.0
 
 - Opt-in native Socket A TCP control and automatic cloud-failure fallback.
 - Persistent native charging preferences, verified handovers and power supervision.
@@ -210,8 +209,7 @@ do not treat unavailable measurements as zero.
 - Native session energy, optional lifetime energy, truthful missing-data handling,
   translated service errors and expanded lifecycle/protocol tests.
 
-See [release notes and migration caveats](docs/RELEASE_NOTES_DRAFT.md). No new
-release version or GitHub publication has been created yet.
+See [release notes and migration caveats](docs/RELEASE_NOTES.md). Native TCP remains opt-in; review the documented model and transport limitations.
 
 ### 2.0.0
 - **Local Modbus TCP mode**: connect directly to the wallbox without cloud or internet

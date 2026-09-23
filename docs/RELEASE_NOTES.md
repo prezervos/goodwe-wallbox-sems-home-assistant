@@ -1,10 +1,5 @@
-# Draft release notes: cloud/native TCP reliability update
+# 2.1.0 — Native TCP control and cloud reliability
 
-UNRELEASED. Proposed changes relative to upstream 2.0.0; no tag or release created.
-Version number is not assigned. The installed development manifest still says
-2.0.0; choose and apply the release version before publication. These notes cover
-the accumulated candidate relative to the recorded upstream baseline
-9ce5772195f13cc9c4082a93e09b87213a1e2a6a, not only the latest production deployment.
 ## Features and behavior
 
 - Optional native Socket A TCP control alongside cloud and the existing Modbus
@@ -101,5 +96,5 @@ reauthorization and other hardware remain unverified. Changes to minimum-power
 settings require confirmed idle on the tested original HCA; an active-write bypass
 is not implemented. Accepted API writes alone do not prove hardware support.
 
-The manifest version remains 2.0.0 pending release-version assignment. This pull
-request does not create a release or claim automatic migration from sems-wallbox.
+The integration version is 2.1.0. Automatic migration from the historical
+sems-wallbox domain is not provided.
