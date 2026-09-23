@@ -1,4 +1,4 @@
-# 2.1.0 — Native TCP control and cloud reliability
+# 3.0.0 — Native TCP control and cloud reliability
 
 ## Features and behavior
 
@@ -96,5 +96,5 @@ reauthorization and other hardware remain unverified. Changes to minimum-power
 settings require confirmed idle on the tested original HCA; an active-write bypass
 is not implemented. Accepted API writes alone do not prove hardware support.
 
-The integration version is 2.1.0. Automatic migration from the historical
+The integration version is 3.0.0. Automatic migration from the historical
 sems-wallbox domain is not provided.

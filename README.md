@@ -193,7 +193,7 @@ not prove physical support for an untested charger.
 
 ## Upgrade notes
 
-Read [the release notes](docs/RELEASE_NOTES.md) before installing version 2.1.0. Both current upstream and this candidate use `sems_wallbox`.
+Read [the release notes](docs/RELEASE_NOTES.md) before installing version 3.0.0. Both current upstream and this candidate use `sems_wallbox`.
 Historical `sems-wallbox` installations require separate migration. Entity IDs and
 custom names are preserved for the reviewed baseline, but default labels, categories,
 missing-data behavior and some state semantics changed. Check dependent templates;
@@ -201,7 +201,7 @@ do not treat unavailable measurements as zero.
 
 ## Changelog
 
-### 2.1.0
+### 3.0.0
 
 - Opt-in native Socket A TCP control and automatic cloud-failure fallback.
 - Persistent native charging preferences, verified handovers and power supervision.
