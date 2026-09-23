@@ -14,7 +14,6 @@ from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .const import (
-    DOMAIN,
     CONF_STATION_ID,
     DEFAULT_SCAN_INTERVAL_IDLE,
     DEFAULT_SCAN_INTERVAL_CHARGING,
@@ -51,10 +50,12 @@ class ModbusUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         ))
         self._interval_charging = int(entry.options.get(
             CONF_SCAN_INTERVAL_CHARGING,
-            DEFAULT_SCAN_INTERVAL_CHARGING,
+            entry.data.get(CONF_SCAN_INTERVAL_CHARGING, DEFAULT_SCAN_INTERVAL_CHARGING),
         ))
 
         self._pending_refresh_cancel = None
+        self._closed = False
+        entry.async_on_unload(self._cancel_delayed_refresh)
         # Timestamp when we first detected a phantom-charging state
         # (status=charging but car not at CP=6V).  None when not in that state.
         self._phantom_charging_since: float | None = None
@@ -63,11 +64,22 @@ class ModbusUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             hass,
             _LOGGER,
             name="Modbus wallbox",
+            config_entry=entry,
             update_interval=timedelta(seconds=self._interval_idle),
         )
 
+    @callback
+    def _cancel_delayed_refresh(self) -> None:
+        """Cancel the custom timer as well as HA's coordinator-owned timers."""
+        self._closed = True
+        if self._pending_refresh_cancel is not None:
+            self._pending_refresh_cancel()
+            self._pending_refresh_cancel = None
+
     def schedule_delayed_refresh(self, delay: float = 3.0) -> None:
         """Schedule a one-shot coordinator refresh after `delay` seconds."""
+        if self._closed:
+            return
         if self._pending_refresh_cancel is not None:
             self._pending_refresh_cancel()
             self._pending_refresh_cancel = None
@@ -91,9 +103,11 @@ class ModbusUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self.schedule_delayed_refresh(_RETRY_AFTER_ERROR_SECONDS)
             raise UpdateFailed("No data received from Modbus -- check wallbox connectivity")
 
-        sn = result.get("sn") or self._station_id
-        if not sn:
-            raise UpdateFailed("Could not determine SN from Modbus data")
+        if self._closed:
+            raise UpdateFailed("Modbus coordinator is closed")
+        sn = result.get("sn")
+        if sn != self._station_id:
+            raise UpdateFailed("Missing or mismatched Modbus device identity")
 
         data: dict[str, Any] = {sn: result}
         _LOGGER.debug(

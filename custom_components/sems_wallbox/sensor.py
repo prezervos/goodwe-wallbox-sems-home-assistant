@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 import logging
+import math
 from typing import Any
 
 from homeassistant.components.sensor import (
@@ -19,6 +20,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN, CONN_TYPE_MODBUS
 from .coordinator import SemsUpdateCoordinator
+from .observed_state import charging_active
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -32,6 +34,10 @@ async def async_setup_entry(
     runtime: dict[str, Any] = hass.data[DOMAIN][config_entry.entry_id]
     coordinator: SemsUpdateCoordinator = runtime["coordinator"]
     conn_type = runtime.get("connection_type", "cloud")
+    if conn_type == "native_tcp":
+        from .native_entities import setup_platform
+        setup_platform("sensor", runtime["coordinator"], async_add_entities)
+        return
 
     sns = list(coordinator.data.keys())
 
@@ -46,6 +52,7 @@ async def async_setup_entry(
         # Add Modbus-specific sensors when running in local Modbus mode
         if conn_type == CONN_TYPE_MODBUS:
             entities.extend([
+                SemsModbusEnergyTotalSensor(coordinator, sn),
                 SemsModbusVoltageSensor(coordinator, sn, "a"),
                 SemsModbusVoltageSensor(coordinator, sn, "b"),
                 SemsModbusVoltageSensor(coordinator, sn, "c"),
@@ -187,14 +194,10 @@ class SemsWorkStateSensor(CoordinatorEntity, SensorEntity):
     def native_value(self) -> str:
         """Return the workstate of the device as a human-readable string."""
         data = self.coordinator.data.get(self.sn, {})
-        last_status = data.get("last_charge_work_status")
-        # last_charge_work_status is more reliable than the detail API workstate field.
-        # workStu=6 → actively charging (vehicle connected and drawing power)
-        # workStu=8 → session finished (vehicle still connected, not drawing power)
-        if last_status == 6:
+        # Last-session workStu=8 also follows manual Stop and can outlive the
+        # connection. It must not replace the current vehicle observation.
+        if charging_active(data, local=False) is True:
             return "connected"
-        if last_status == 8:
-            return "charged"
         workstate = data.get("workstate")
 
         # Old semsportal.com API values
@@ -276,7 +279,7 @@ class SemsPowerSensor(CoordinatorEntity, SensorEntity):
         return f"{sn}_power"
 
     @property
-    def native_value(self) -> float:
+    def native_value(self) -> float | None:
         """Return the actual charging power in kW; 0 when not actively charging.
 
         Uses pevChar from getLastCharge (last_charge_power) as the real drawn
@@ -284,13 +287,19 @@ class SemsPowerSensor(CoordinatorEntity, SensorEntity):
         limit, which can differ (e.g. 2-phase vs 3-phase sessions).
         """
         data = self.coordinator.data.get(self.sn, {}) or {}
-        if data.get("last_charge_work_status") != 6:
+        work_status = data.get("last_charge_work_status")
+        if work_status is None:
+            return None
+        if work_status != 6:
             return 0.0
+        raw = data.get("last_charge_power")
+        if raw is None or isinstance(raw, bool):
+            return None
         try:
-            power = float(data.get("last_charge_power") or 0)
+            power = float(raw)
         except (TypeError, ValueError):
-            power = 0.0
-        return max(0.0, power)
+            return None
+        return power if math.isfinite(power) and power >= 0 else None
 
     @property
     def available(self) -> bool:
@@ -577,10 +586,13 @@ class SemsModbusCurrentSensor(CoordinatorEntity, SensorEntity):
 class SemsModbusEnergyTotalSensor(CoordinatorEntity, SensorEntity):
     """Total accumulated energy sensor read via Modbus (register 10065)."""
 
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_entity_registry_enabled_default = False
     _attr_device_class = SensorDeviceClass.ENERGY
     _attr_state_class = SensorStateClass.TOTAL_INCREASING
     _attr_should_poll = False
     _attr_has_entity_name = True
+    _attr_translation_key = "modbus_energy_total"
     _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
 
     def __init__(self, coordinator, sn: str) -> None:
@@ -590,10 +602,6 @@ class SemsModbusEnergyTotalSensor(CoordinatorEntity, SensorEntity):
     @property
     def unique_id(self) -> str:
         return f"{self.sn}_modbus_energy_total"
-
-    @property
-    def name(self) -> str:
-        return "Total Energy (Modbus)"
 
     @property
     def native_value(self) -> float | None:
@@ -1037,16 +1045,6 @@ _COMM_STATUS_BITS = {
     4: "gw_meter",
     5: "ems",
 }
-
-_COMM_STATUS_LABELS = {
-    "wifi": "Wi-Fi",
-    "iot_cloud": "IoT cloud",
-    "inverter": "Inverter",
-    "mid_meter": "MID meter",
-    "gw_meter": "GW meter",
-    "ems": "EMS",
-}
-
 
 class SemsModbusCommStatusSensor(CoordinatorEntity, SensorEntity):
     """Communication connection status sensor (register 10018).

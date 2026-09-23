@@ -22,7 +22,47 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install dependencies
-        run: pip install pytest pytest-asyncio requests
+        run: pip install pytest pytest-asyncio requests voluptuous aiomqtt==2.5.1
 
       - name: Run tests
         run: pytest tests/ -v
+
+  home-assistant:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Install tested Home Assistant and integration dependencies
+        run: |
+          pip install -r scripts/requirements-ha-smoke.txt
+          python -c 'import json, subprocess, sys; subprocess.check_call([sys.executable, "-m", "pip", "install", *json.load(open("custom_components/sems_wallbox/manifest.json"))["requirements"]])'
+      - name: Real HA cloud lifecycle and services
+        run: |
+          python scripts/ha_cloud_lifecycle_smoke.py custom_components
+          python scripts/ha_cloud_lifecycle_smoke.py custom_components --native
+          python scripts/ha_runtime_smoke.py custom_components
+          python scripts/ha_reauth_smoke.py custom_components
+      - name: Real HA native services and cloud handover against loopback only
+        run: python scripts/ha_native_runtime_smoke.py custom_components
+
+      - name: Real HA external mode changes and remembered preference
+        run: python scripts/ha_native_runtime_smoke.py custom_components --mode-preference-only
+
+      - name: Real HA configuration value semantics
+        run: python scripts/ha_config_values_smoke.py custom_components
+
+      - name: Real HA restoration enable captures current mode
+        run: python scripts/ha_runtime_smoke.py custom_components --enable-mode-only
+
+      - name: Real HA audit regressions and Modbus wire safety
+        run: python scripts/ha_audit_regressions.py
+
+      - name: MQTT fallback, lifecycle overlap and minimum-power guards
+        run: |
+          python scripts/ha_cloud_push_polling_smoke.py custom_components
+          python scripts/ha_runtime_smoke.py custom_components --mqtt-only
+          python scripts/ha_native_runtime_smoke.py custom_components --lifecycle
+          python scripts/ha_runtime_smoke.py custom_components --minimum-power-only

@@ -11,8 +11,11 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
+from .operation_budget import async_execute
 from .const import DOMAIN, CONN_TYPE_MODBUS
+from .charge_mode_policy import async_apply_policy, mode_setting_write
 from .coordinator import SemsUpdateCoordinator
+from .ui_errors import operation_error
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -30,7 +33,7 @@ _OPTION_TO_MODE: dict[str, int] = {value: key for key, value in _MODE_TO_OPTION.
 
 OPERATION_MODE = SelectEntityDescription(
     key="charge_mode",
-    entity_category=EntityCategory.CONFIG,
+    entity_category=None,
     translation_key="charge_mode",
 )
 
@@ -48,6 +51,10 @@ async def async_setup_entry(
     runtime = hass.data[DOMAIN][config_entry.entry_id]
     coordinator = runtime["coordinator"]
     conn_type = runtime.get("connection_type", "cloud")
+    if conn_type == "native_tcp":
+        from .native_entities import setup_platform
+        setup_platform("select", runtime["coordinator"], async_add_entities)
+        return
 
     if conn_type == CONN_TYPE_MODBUS:
         client = runtime["modbus_client"]
@@ -84,6 +91,14 @@ class InverterOperationModeEntity(CoordinatorEntity, SelectEntity):
 
     _attr_should_poll = False
     _attr_has_entity_name = True
+
+    @property
+    def extra_state_attributes(self):
+        """Expose saved intent separately from the displayed device mode."""
+        policy = getattr(self.coordinator, "charge_mode_policy", None)
+        if policy is None or not policy.enabled:
+            return {}
+        return {"preferred_mode": _MODE_TO_OPTION.get(policy.desired_mode)}
 
     def __init__(
         self,
@@ -136,6 +151,10 @@ class InverterOperationModeEntity(CoordinatorEntity, SelectEntity):
             return
 
         mode = _OPTION_TO_MODE[option]
+        if await async_apply_policy(self.coordinator, "select_mode", mode):
+            self._pending_mode = None
+            await self.coordinator.async_request_refresh()
+            return
 
         _LOGGER.debug(
             "Setting operation mode for wallbox %s to %s (mode=%s)",
@@ -192,7 +211,7 @@ class InverterOperationModeEntity(CoordinatorEntity, SelectEntity):
         self._pending_mode = mode
         self._pending_mode_set_at = time.monotonic()
 
-        ok = await self.hass.async_add_executor_job(
+        ok = await async_execute(self.hass,
             self.api.set_charge_mode_gen2,
             self.sn,
             mode,
@@ -259,7 +278,7 @@ class InverterOperationModeEntity(CoordinatorEntity, SelectEntity):
                     charge_power,
                     latest_power,
                 )
-                await self.hass.async_add_executor_job(
+                await async_execute(self.hass,
                     self.api.set_charge_mode_gen2,
                     self.sn,
                     0,
@@ -419,6 +438,7 @@ class SemsChargeDurationSelect(CoordinatorEntity, SelectEntity):
     def _handle_coordinator_update(self) -> None:
         self.async_write_ha_state()
 
+    @mode_setting_write
     async def async_select_option(self, option: str) -> None:
         if option not in _DURATION_TO_HOURS:
             _LOGGER.warning("SemsChargeDurationSelect: unknown option %r", option)
@@ -428,27 +448,31 @@ class SemsChargeDurationSelect(CoordinatorEntity, SelectEntity):
         mode = data.get("chargeMode", 1)
         # Re-send full mode params so existing settings are preserved
         charge_power = data.get("set_charge_power") if mode == 0 else None
-        max_energy = int(data.get("max_energy") or 0)
-        min_energy = int(data.get("min_energy") or 0)
-        soc_target = int(data.get("charge_target_soc") or 0)
+        from .mode_parameters import preserved_mode_parameters
+        from .ui_errors import operation_error
+
+        try:
+            params = preserved_mode_parameters(data, mode)
+        except (ValueError, RuntimeError) as error:
+            raise operation_error(error) from error
+        params["finish_time"] = str(hours)
 
         self._pending_value = option
         self._pending_until = time.monotonic() + _SEMS_PENDING_DURATION_TIMEOUT
         self.async_write_ha_state()
 
-        ok = await self.hass.async_add_executor_job(
+        ok = await async_execute(self.hass,
             lambda: self.api.set_charge_mode_gen2(
                 self.sn, mode, charge_power, None,
-                max_energy=max_energy,
-                min_energy=min_energy,
-                soc_target=soc_target,
-                finish_time=str(hours),
+                **params,
             )
         )
         if not ok:
             _LOGGER.warning("SemsChargeDurationSelect %s: set_charge_mode_gen2 failed", self.sn)
             self._pending_value = None
             self.async_write_ha_state()
+            self.coordinator.schedule_delayed_refresh(3.0)
+            raise operation_error(RuntimeError("Device write was not confirmed"))
         else:
             self.coordinator.schedule_delayed_refresh(5.0)
 
@@ -464,11 +488,19 @@ class ModbusChargeModeSelect(CoordinatorEntity, SelectEntity):
     _attr_should_poll = False
     _attr_has_entity_name = True
     _attr_translation_key = "modbus_charge_mode"
-    _attr_entity_category = EntityCategory.CONFIG
+    _attr_entity_category = None
 
     _ALL_OPTIONS = list(_MODE_TO_OPTION.values())
     _FAST_ONLY = ["fast"]
     _PENDING_TIMEOUT = 30.0
+
+    @property
+    def extra_state_attributes(self):
+        """Expose saved intent separately from the displayed device mode."""
+        policy = getattr(self.coordinator, "charge_mode_policy", None)
+        if policy is None or not policy.enabled:
+            return {}
+        return {"preferred_mode": _MODE_TO_OPTION.get(policy.desired_mode)}
 
     def __init__(self, coordinator, sn: str, client) -> None:
         super().__init__(coordinator)
@@ -525,14 +557,20 @@ class ModbusChargeModeSelect(CoordinatorEntity, SelectEntity):
             _LOGGER.warning("Unknown charge mode option: %s", option)
             return
         mode = _OPTION_TO_MODE[option]
+        if await async_apply_policy(self.coordinator, "select_mode", mode):
+            self._pending_mode = None
+            await self.coordinator.async_request_refresh()
+            return
         self._pending_mode = mode
         self._pending_set_at = time.monotonic()
         self.async_write_ha_state()
-        ok = await self.hass.async_add_executor_job(self._client.write_charge_mode, mode)
+        ok = await async_execute(self.hass, self._client.write_charge_mode, mode)
         if not ok:
             _LOGGER.warning("ModbusChargeModeSelect %s: write failed, reverting", self.sn)
             self._pending_mode = None
             self.async_write_ha_state()
+            self.coordinator.schedule_delayed_refresh(3.0)
+            raise operation_error(RuntimeError("Device write was not confirmed"))
         else:
             self.coordinator.schedule_delayed_refresh(3.0)
 
@@ -605,6 +643,7 @@ class ModbusChargeDurationSelect(CoordinatorEntity, SelectEntity):
     def _handle_coordinator_update(self) -> None:
         self.async_write_ha_state()
 
+    @mode_setting_write
     async def async_select_option(self, option: str) -> None:
         if option not in _DURATION_TO_HOURS:
             _LOGGER.warning("Unknown charge duration option: %s", option)
@@ -613,10 +652,12 @@ class ModbusChargeDurationSelect(CoordinatorEntity, SelectEntity):
         self._pending_value = option
         self._pending_until = time.monotonic() + self._PENDING_TIMEOUT
         self.async_write_ha_state()
-        ok = await self.hass.async_add_executor_job(self._client.write_completion_time, hours)
+        ok = await async_execute(self.hass, self._client.write_completion_time, hours)
         if not ok:
             _LOGGER.warning("ModbusChargeDurationSelect %s: write failed, reverting", self.sn)
             self._pending_value = None
             self.async_write_ha_state()
+            self.coordinator.schedule_delayed_refresh(3.0)
+            raise operation_error(RuntimeError("Device write was not confirmed"))
         else:
             self.coordinator.schedule_delayed_refresh(3.0)

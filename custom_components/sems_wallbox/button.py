@@ -21,6 +21,10 @@ async def async_setup_entry(
     """Set up button entities from a config entry."""
     runtime = hass.data[DOMAIN][config_entry.entry_id]
     conn_type = runtime.get("connection_type", "cloud")
+    if conn_type == "native_tcp":
+        from .native_entities import setup_platform
+        setup_platform("button", runtime["coordinator"], async_add_entities)
+        return
 
     if conn_type == CONN_TYPE_MODBUS:
         coordinator = runtime["coordinator"]
