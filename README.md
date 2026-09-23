@@ -252,8 +252,32 @@ See [release notes and migration caveats](docs/RELEASE_NOTES.md). Native TCP rem
 
 ## Credits
 
-Based on the original work by [@prezervos](https://github.com/prezervos/goodwe-wallbox-sems-home-assistant),  
-which was itself inspired by [@TimSoethout/goodwe-sems-home-assistant](https://github.com/TimSoethout/goodwe-sems-home-assistant).
+This integration builds on work by multiple maintainers and contributors across
+its wallbox releases and inherited SEMS history:
+
+- [@prezervos](https://github.com/prezervos): original wallbox adaptation,
+  project maintenance, and the native TCP/cloud-recovery work in version 3.0.
+- [@pedrodivisez](https://github.com/pedrodivisez): substantial earlier development,
+  including charging mode/power controls, race/error handling, Gen2/HCA SEMS+
+  support, visitor accounts, Modbus, translations, documentation and tests.
+  See [#4](https://github.com/prezervos/goodwe-wallbox-sems-home-assistant/pull/4),
+  [#9](https://github.com/prezervos/goodwe-wallbox-sems-home-assistant/pull/9),
+  [#11](https://github.com/prezervos/goodwe-wallbox-sems-home-assistant/pull/11)
+  and [#15](https://github.com/prezervos/goodwe-wallbox-sems-home-assistant/pull/15).
+- [@frittefrax](https://github.com/frittefrax): vehicle workstate, configuration
+  schema, manifest and CI improvements in
+  [#3](https://github.com/prezervos/goodwe-wallbox-sems-home-assistant/pull/3),
+  [#5](https://github.com/prezervos/goodwe-wallbox-sems-home-assistant/pull/5),
+  [#6](https://github.com/prezervos/goodwe-wallbox-sems-home-assistant/pull/6)
+  and [#7](https://github.com/prezervos/goodwe-wallbox-sems-home-assistant/pull/7).
+- [@TimSoethout](https://github.com/TimSoethout) and the contributors to
+  [goodwe-sems-home-assistant](https://github.com/TimSoethout/goodwe-sems-home-assistant):
+  the original SEMS integration and inherited foundation for this project.
+
+Thanks also to everyone who contributed code, reports, device testing and feedback.
+The [full contributor history](https://github.com/prezervos/goodwe-wallbox-sems-home-assistant/graphs/contributors)
+includes contributions inherited from the upstream SEMS project; it should not be
+read as a list of authors of native TCP or of this release alone.
 
 ## Remember charging preferences
 

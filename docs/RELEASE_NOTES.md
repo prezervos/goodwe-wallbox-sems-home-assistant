@@ -98,3 +98,17 @@ is not implemented. Accepted API writes alone do not prove hardware support.
 
 The integration version is 3.0.0. Automatic migration from the historical
 sems-wallbox domain is not provided.
+
+### Acknowledgements
+
+Version 3.0 builds on substantial work from previous wallbox releases. Special
+thanks to [@pedrodivisez](https://github.com/pedrodivisez) for charging controls,
+Gen2/HCA SEMS+, Modbus, translations, documentation and tests, and to
+[@frittefrax](https://github.com/frittefrax) for vehicle state, configuration,
+manifest and CI improvements. Thanks to [@prezervos](https://github.com/prezervos)
+for the wallbox adaptation, maintenance and this release's native TCP work, and
+[@TimSoethout](https://github.com/TimSoethout) and the original
+[SEMS integration contributors](https://github.com/TimSoethout/goodwe-sems-home-assistant/graphs/contributors)
+for the inherited foundation. See the
+[full contributor history](https://github.com/prezervos/goodwe-wallbox-sems-home-assistant/graphs/contributors)
+and [README Credits](https://github.com/prezervos/goodwe-wallbox-sems-home-assistant#credits).
