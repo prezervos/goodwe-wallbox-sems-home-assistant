@@ -4,7 +4,6 @@ import sys
 import os
 import types
 import importlib.util
-from unittest.mock import MagicMock, patch
 import pytest
 
 # ---------------------------------------------------------------------------
@@ -135,6 +134,7 @@ sys.modules["const"] = const_stub
 # We need ".coordinator" and ".const" to point to our stubs
 # Use a package trick: register a fake package
 pkg = types.ModuleType("sems_wallbox_pkg")
+pkg.__path__ = [_HERE]
 sys.modules.setdefault("sems_wallbox_pkg", pkg)
 sys.modules["sems_wallbox_pkg.coordinator"] = coord_stub
 sys.modules["sems_wallbox_pkg.const"] = const_stub
@@ -235,20 +235,12 @@ class TestSemsSensor:
         sensor = SemsSensor(coord, SAMPLE_SN)
         assert sensor.icon == "mdi:help-circle-outline"
 
-    def test_translation_key_is_status(self):
-        coord = _make_coordinator()
-        sensor = SemsSensor(coord, SAMPLE_SN)
-        assert sensor._attr_translation_key == "status"
 
     def test_has_entity_name(self):
         coord = _make_coordinator()
         sensor = SemsSensor(coord, SAMPLE_SN)
         assert sensor._attr_has_entity_name is True
 
-    def test_unique_id(self):
-        coord = _make_coordinator()
-        sensor = SemsSensor(coord, SAMPLE_SN)
-        assert sensor.unique_id == SAMPLE_SN
 
     def test_available_follows_coordinator(self):
         coord = _make_coordinator()
@@ -280,17 +272,29 @@ class TestSemsSensor:
 
 class TestSemsWorkStateSensor:
     def _sensor(self, workstate: str):
-        # Clear workStu so the workstate field drives the result, not the override.
-        d = {**SAMPLE_DATA, "workstate": workstate, "last_charge_work_status": None}
+        # Exercise the current workstate independently of session history.
+        d = {**SAMPLE_DATA, "status": "waiting", "workstate": workstate, "last_charge_work_status": None}
         coord = _make_coordinator(d)
         return SemsWorkStateSensor(coord, SAMPLE_SN)
 
-    def test_workstu_charging_returns_connected(self):
-        # When workStu=6 (actively charging), car is definitely connected -- override unreliable detail API.
-        d = {**SAMPLE_DATA, "workstate": "available_gun_no_insered", "last_charge_work_status": 6}
-        coord = _make_coordinator(d)
-        s = SemsWorkStateSensor(coord, SAMPLE_SN)
-        assert s.native_value == "connected"
+    @pytest.mark.parametrize("last_status", [6, 8])
+    @pytest.mark.parametrize("workstate,expected", [
+        ("EVDetail_Status_Waiting_Stat00", "not_plugged_in"),
+        ("EVDetail_Status_Waiting_Stat01", "connected"),
+        ("EVDetail_Status_Waiting_Stat02", "finished_charging"),
+        ("unrecognized", "unknown"),
+    ])
+    def test_history_does_not_override_current_vehicle(self, last_status, workstate, expected):
+        data = {**SAMPLE_DATA, "status": "waiting", "workstate": workstate,
+                "last_charge_work_status": last_status}
+        sensor = SemsWorkStateSensor(_make_coordinator(data), SAMPLE_SN)
+        assert sensor.native_value == expected
+
+    def test_current_charging_confirms_connected_despite_previous_session(self):
+        data = {**SAMPLE_DATA, "status": "charging",
+                "workstate": "available_gun_no_insered", "last_charge_work_status": 8}
+        sensor = SemsWorkStateSensor(_make_coordinator(data), SAMPLE_SN)
+        assert sensor.native_value == "connected"
 
     def test_not_plugged_in(self):
         s = self._sensor("EVDetail_Status_Waiting_Stat00")
@@ -317,13 +321,6 @@ class TestSemsWorkStateSensor:
         assert s.native_value == "unknown"
         assert s.icon == "mdi:help-circle-outline"
 
-    def test_unique_id(self):
-        s = self._sensor("EVDetail_Status_Waiting_Stat00")
-        assert s.unique_id == f"{SAMPLE_SN}_workstate"
-
-    def test_translation_key(self):
-        s = self._sensor("EVDetail_Status_Waiting_Stat00")
-        assert s._attr_translation_key == "workstate"
 
     def test_device_info(self):
         s = self._sensor("EVDetail_Status_Waiting_Stat00")
@@ -349,35 +346,15 @@ class TestSemsPowerSensor:
         s = SemsPowerSensor(coord, SAMPLE_SN)
         assert s.native_value == 0.0
 
-    def test_no_work_status_defaults_to_zero(self):
-        # When last_charge_work_status is absent, power must be 0.
-        d = {k: v for k, v in SAMPLE_DATA.items() if k != "last_charge_work_status"}
-        d["power"] = 5.8
-        coord = _make_coordinator(d)
-        s = SemsPowerSensor(coord, SAMPLE_SN)
-        assert s.native_value == 0.0
-
-    def test_negative_power_clamped_to_zero(self):
-        d = {**SAMPLE_DATA, "last_charge_power": -1.5}
-        coord = _make_coordinator(d)
-        s = SemsPowerSensor(coord, SAMPLE_SN)
-        assert s.native_value == 0.0
-
-    def test_none_power_defaults_to_zero(self):
-        d = {**SAMPLE_DATA, "last_charge_power": None}
-        coord = _make_coordinator(d)
-        s = SemsPowerSensor(coord, SAMPLE_SN)
-        assert s.native_value == 0.0
-
-    def test_unique_id(self):
-        coord = _make_coordinator()
-        s = SemsPowerSensor(coord, SAMPLE_SN)
-        assert s.unique_id == f"{SAMPLE_SN}_power"
-
-    def test_translation_key(self):
-        coord = _make_coordinator()
-        s = SemsPowerSensor(coord, SAMPLE_SN)
-        assert s._attr_translation_key == "power"
+    @pytest.mark.parametrize("missing_status,raw", [
+        (True, 5.8), (False, None), (False, -1.5), (False, float("nan")),
+    ])
+    def test_missing_or_invalid_measurement_is_unknown(self, missing_status, raw):
+        data = {**SAMPLE_DATA, "last_charge_power": raw}
+        if missing_status:
+            data.pop("last_charge_work_status")
+        sensor = SemsPowerSensor(_make_coordinator(data), SAMPLE_SN)
+        assert sensor.native_value is None
 
 
 # ===========================================================================
@@ -399,16 +376,37 @@ class TestSemsStatisticsSensor:
         assert s.native_value is None
 
     def test_invalid_energy_returns_none(self):
-        from decimal import Decimal
         d = {**SAMPLE_DATA, "last_charge_energy": "not_a_number"}
         coord = _make_coordinator(d)
         s = SemsStatisticsSensor(coord, SAMPLE_SN)
         assert s.native_value is None
 
-    def test_unique_id(self):
-        coord = _make_coordinator()
-        s = SemsStatisticsSensor(coord, SAMPLE_SN)
-        assert s.unique_id == f"{SAMPLE_SN}-energy"
+
+async def test_modbus_total_energy_is_registered_as_opt_in_diagnostic():
+    coord = _make_coordinator({**SAMPLE_DATA, "modbus_energy_total": 123.4})
+    hass = types.SimpleNamespace(data={"sems_wallbox": {"test": {
+        "coordinator": coord, "connection_type": "modbus",
+    }}})
+    registered = []
+    await sensor_mod.async_setup_entry(hass, types.SimpleNamespace(entry_id="test"), registered.extend)
+    entity, = [item for item in registered
+               if isinstance(item, sensor_mod.SemsModbusEnergyTotalSensor)]
+    assert entity.unique_id == SAMPLE_SN + "_modbus_energy_total"
+    assert entity._attr_entity_category == "diagnostic"
+    assert entity._attr_entity_registry_enabled_default is False
+    assert entity.native_value == 123.4
+    coord.data[SAMPLE_SN].pop("modbus_energy_total")
+    assert entity.native_value is None
 
 
-
+@pytest.mark.parametrize("entity_type,unique_id,key", [
+    (SemsSensor, SAMPLE_SN, "status"),
+    (SemsWorkStateSensor, f"{SAMPLE_SN}_workstate", "workstate"),
+    (SemsPowerSensor, f"{SAMPLE_SN}_power", "power"),
+    (SemsStatisticsSensor, f"{SAMPLE_SN}-energy", "energy"),
+])
+def test_sensor_identity_contract(entity_type, unique_id, key):
+    """Keep existing registry identities and translation keys stable."""
+    entity = entity_type(_make_coordinator(), SAMPLE_SN)
+    assert entity.unique_id == unique_id
+    assert entity._attr_translation_key == key

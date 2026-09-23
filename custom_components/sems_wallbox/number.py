@@ -16,12 +16,14 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
+from .operation_budget import async_execute
 from .const import DOMAIN, CONN_TYPE_MODBUS, CAP_OUTPUT_POWER_SETTING, CAP_DYNAMIC_LOAD_CONTROL
+from .charge_mode_policy import mode_setting_write
 from .coordinator import SemsUpdateCoordinator
+from .ui_errors import operation_error
 
 _LOGGER = logging.getLogger(__name__)
 
-NUMBER_VERSION = "0.3.2"
 
 
 async def async_setup_entry(
@@ -33,6 +35,10 @@ async def async_setup_entry(
     runtime = hass.data[DOMAIN][config_entry.entry_id]
     coordinator = runtime["coordinator"]
     conn_type = runtime.get("connection_type", "cloud")
+    if conn_type == "native_tcp":
+        from .native_entities import setup_platform
+        setup_platform("number", runtime["coordinator"], async_add_entities)
+        return
 
     if conn_type == CONN_TYPE_MODBUS:
         client = runtime["modbus_client"]
@@ -51,8 +57,8 @@ async def async_setup_entry(
     more_controls = caps.get("more_device_controls", [])
 
     _LOGGER.debug(
-        "Setting up SemsNumber entities (version %s) for entry %s",
-        NUMBER_VERSION,
+        "Setting up SemsNumber entities for entry %s",
+
         config_entry.entry_id,
     )
 
@@ -93,11 +99,24 @@ class SemsNumber(CoordinatorEntity, NumberEntity):
         self._pending_value: float | None = None
         self._pending_until: float = 0.0
         _LOGGER.debug(
-            "Creating SemsNumber (v%s) for Wallbox %s, initial value=%s",
-            NUMBER_VERSION,
+            "Creating SemsNumber for Wallbox %s, initial value=%s",
+
             self.sn,
             self._attr_native_value,
         )
+
+    @property
+    def native_value(self):
+        """Expose saved HA intent separately from reported device power."""
+        policy = getattr(self.coordinator, "charge_mode_policy", None)
+        if policy is not None and policy.enabled and policy.desired_power is not None:
+            return policy.desired_power
+        return self._attr_native_value
+
+    @property
+    def extra_state_attributes(self):
+        """Expose the reported setpoint without overwriting the HA preference."""
+        return {"reported_power_limit": (self.coordinator.data.get(self.sn, {}) or {}).get("set_charge_power")}
 
     @property
     def device_class(self):
@@ -225,6 +244,7 @@ class SemsNumber(CoordinatorEntity, NumberEntity):
         """Manual update from HA."""
         await self.coordinator.async_request_refresh()
 
+    @mode_setting_write(desired_mode=0, remember_power=True)
     async def async_set_native_value(self, value: float) -> None:
         """Handle change from UI slider -- switches to Fast mode (0) with the given power."""
         _LOGGER.debug(
@@ -253,7 +273,7 @@ class SemsNumber(CoordinatorEntity, NumberEntity):
         self.async_write_ha_state()
 
         # 2) Call SEMS API -- always Fast mode (0)
-        ok = await self.hass.async_add_executor_job(
+        ok = await async_execute(self.hass,
             self.api.set_charge_mode_gen2,
             self.sn,
             0,
@@ -372,17 +392,20 @@ class SemsOutputPowerLimitNumber(CoordinatorEntity, NumberEntity):
     def _handle_coordinator_update(self) -> None:
         self.async_write_ha_state()
 
+    @mode_setting_write
     async def async_set_native_value(self, value: float) -> None:
         self._pending_value = value
         self._pending_until = time.monotonic() + self._PENDING_TIMEOUT
         self.async_write_ha_state()
-        ok = await self.hass.async_add_executor_job(
+        ok = await async_execute(self.hass,
             lambda: self.api.set_config_gen2(self.sn, ratedMaxiChargePower=round(value, 1))
         )
         if not ok:
             _LOGGER.warning("SemsOutputPowerLimitNumber %s: set_config failed", self.sn)
             self._pending_value = None
             self.async_write_ha_state()
+            self.coordinator.schedule_delayed_refresh(3.0)
+            raise operation_error(RuntimeError("Device write was not confirmed"))
         else:
             self.coordinator.schedule_delayed_refresh(5.0)
 
@@ -455,17 +478,20 @@ class SemsCurrentLimitNumber(CoordinatorEntity, NumberEntity):
     def _handle_coordinator_update(self) -> None:
         self.async_write_ha_state()
 
+    @mode_setting_write
     async def async_set_native_value(self, value: float) -> None:
         self._pending_value = value
         self._pending_until = time.monotonic() + self._PENDING_TIMEOUT
         self.async_write_ha_state()
-        ok = await self.hass.async_add_executor_job(
+        ok = await async_execute(self.hass,
             lambda: self.api.set_config_gen2(self.sn, currentLimit=int(value))
         )
         if not ok:
             _LOGGER.warning("SemsCurrentLimitNumber %s: set_config failed", self.sn)
             self._pending_value = None
             self.async_write_ha_state()
+            self.coordinator.schedule_delayed_refresh(3.0)
+            raise operation_error(RuntimeError("Device write was not confirmed"))
         else:
             self.coordinator.schedule_delayed_refresh(5.0)
 
@@ -539,29 +565,29 @@ class _SemsModeParamNumber(CoordinatorEntity, NumberEntity):
     def _handle_coordinator_update(self) -> None:
         self.async_write_ha_state()
 
+    @mode_setting_write
     async def async_set_native_value(self, value: float) -> None:
         data = self.coordinator.data.get(self.sn, {}) or {}
         mode = data.get("chargeMode", 0)
         # Build full current-param kwargs so the API call preserves other settings.
         # chargeMaxPower is only relevant for mode 0.
         charge_power = data.get("set_charge_power") if mode == 0 else None
-        kwargs: dict = {
-            "max_energy": int(data.get("max_energy") or 0),
-            "min_energy": int(data.get("min_energy") or 0),
-            "soc_target": int(data.get("charge_target_soc") or 0),
-        }
-        # Preserve finish_time for PV modes so it is not accidentally reset
-        if mode in (1, 2):
-            ft = data.get("finish_time")
-            if ft is not None:
-                kwargs["finish_time"] = str(ft)
+        from .mode_parameters import preserved_mode_parameters
+        from .ui_errors import operation_error
+
+        try:
+            kwargs = preserved_mode_parameters(data, mode)
+            if mode == 0 and charge_power is None:
+                raise ValueError("Cannot preserve unreported charging power")
+        except (ValueError, RuntimeError) as error:
+            raise operation_error(error) from error
         kwargs[self._override_kwarg] = int(value)
 
         self._pending_value = value
         self._pending_until = time.monotonic() + self._PENDING_TIMEOUT
         self.async_write_ha_state()
 
-        ok = await self.hass.async_add_executor_job(
+        ok = await async_execute(self.hass,
             lambda: self.api.set_charge_mode_gen2(
                 self.sn, mode, charge_power, None, **kwargs
             )
@@ -570,6 +596,8 @@ class _SemsModeParamNumber(CoordinatorEntity, NumberEntity):
             _LOGGER.warning("%s: set_charge_mode failed, reverting pending value", self.unique_id)
             self._pending_value = None
             self.async_write_ha_state()
+            self.coordinator.schedule_delayed_refresh(3.0)
+            raise operation_error(RuntimeError("Device write was not confirmed"))
         else:
             self.coordinator.schedule_delayed_refresh(5.0)
 
@@ -668,6 +696,10 @@ class _ModbusNumber(CoordinatorEntity, NumberEntity):
 
     @property
     def native_value(self) -> float | None:
+        policy = getattr(self.coordinator, "charge_mode_policy", None)
+        if (getattr(self, "_remember_charge_power", False) and policy is not None
+                and policy.enabled and policy.desired_power is not None):
+            return policy.desired_power
         api_val = self._api_value()
         now = time.monotonic()
         if self._pending_value is not None:
@@ -683,15 +715,18 @@ class _ModbusNumber(CoordinatorEntity, NumberEntity):
     def _handle_coordinator_update(self) -> None:
         self.async_write_ha_state()
 
+    @mode_setting_write
     async def async_set_native_value(self, value: float) -> None:
         self._pending_value = value
         self._pending_until = time.monotonic() + 30.0
         self.async_write_ha_state()
-        ok = await self.hass.async_add_executor_job(self._do_write, value)
+        ok = await async_execute(self.hass, self._do_write, value)
         if not ok:
             _LOGGER.warning("%s: write failed, reverting optimistic value", self.unique_id)
             self._pending_value = None
             self.async_write_ha_state()
+            self.coordinator.schedule_delayed_refresh(3.0)
+            raise operation_error(RuntimeError("Device write was not confirmed"))
         else:
             self.coordinator.schedule_delayed_refresh(3.0)
 
@@ -699,6 +734,7 @@ class _ModbusNumber(CoordinatorEntity, NumberEntity):
 class ModbusMaxChargePowerNumber(_ModbusNumber):
     """Max charge power limit in kW (reg 10029, SF=10)."""
 
+    _remember_charge_power = True
     _attr_translation_key = "modbus_charge_power"
     _attr_device_class = NumberDeviceClass.POWER
     _attr_native_unit_of_measurement = UnitOfPower.KILO_WATT
@@ -751,9 +787,10 @@ class ModbusMaxChargePowerNumber(_ModbusNumber):
     def _api_value(self) -> float | None:
         data = self.coordinator.data.get(self.sn, {}) or {}
         v = data.get("modbus_max_charging_power")
-        # 0.0 means the register is at its default (no software limit set);
-        # treat it the same as None and show the hardware maximum instead of 0.
-        if v is None or v == 0.0:
+        if v is None:
+            return None
+        # A reported zero means no software limit; a missing register does not.
+        if v == 0.0:
             return self.native_max_value
         return round(float(v), 1)
 

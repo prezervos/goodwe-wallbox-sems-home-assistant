@@ -1,0 +1,19 @@
+# Real HA bootstrap/config-flow dependencies, matching the tested 2026.9.2 runtime.
+# Keep separate from integration requirements; these are test infrastructure only.
+homeassistant==2026.9.2
+pytest
+pytest-asyncio
+home-assistant-frontend==20260826.7
+ha-ffmpeg==3.2.2
+rf-protocols==4.3.0
+infrared-protocols==9.0.0
+aiohasupervisor==0.6.0
+hassil==3.12.0
+home-assistant-intents==2026.8.28
+numpy==2.3.2
+av==17.0.1
+mutagen==1.48.1
+gazetteer-matcher==1.1.0
+pymicro-vad==1.0.1
+pyspeex-noise==1.0.2
+PyTurboJPEG==1.8.3

@@ -5,7 +5,7 @@ import os
 import types
 import importlib.util
 import time
-from unittest.mock import MagicMock, AsyncMock, call
+from unittest.mock import MagicMock
 import pytest
 
 # ---------------------------------------------------------------------------
@@ -13,21 +13,6 @@ import pytest
 # ---------------------------------------------------------------------------
 
 _HERE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "custom_components", "sems_wallbox")
-
-# Add EntityCategory stub
-_const_mod = sys.modules["homeassistant.const"]
-if not hasattr(_const_mod, "EntityCategory"):
-    class EntityCategory:
-        CONFIG = "config"
-    _const_mod.EntityCategory = EntityCategory
-
-# EntityCategory is also imported from homeassistant.const in select.py
-# but HA actually defines it in homeassistant.const -- stub it there too
-import homeassistant.const as _ha_const
-if not hasattr(_ha_const, "EntityCategory"):
-    class EntityCategory:
-        CONFIG = "config"
-    _ha_const.EntityCategory = EntityCategory
 
 # --------------------------------------------------------------------------
 # Load select.py under its own package namespace
@@ -133,18 +118,12 @@ def _make_entity(chargeMode=0, set_charge_power=7.4, min_charge_power=4.2, max_c
 # ---------------------------------------------------------------------------
 
 class TestModeMapping:
-    def test_option_to_mode_fast(self):
-        assert _select_mod._OPTION_TO_MODE["fast"] == 0
-
-    def test_option_to_mode_pv_priority(self):
-        assert _select_mod._OPTION_TO_MODE["pv_priority"] == 1
-
-    def test_option_to_mode_pv_and_battery(self):
-        assert _select_mod._OPTION_TO_MODE["pv_and_battery"] == 2
-
-    def test_mode_to_option_roundtrip(self):
-        for mode, option in _select_mod._MODE_TO_OPTION.items():
-            assert _select_mod._OPTION_TO_MODE[option] == mode
+    def test_mode_mapping_contract(self):
+        expected = {"fast": 0, "pv_priority": 1, "pv_and_battery": 2}
+        assert _select_mod._OPTION_TO_MODE == expected
+        assert _select_mod._MODE_TO_OPTION == {
+            mode: option for option, mode in expected.items()
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -153,65 +132,41 @@ class TestModeMapping:
 
 class TestSelectOption:
     @pytest.mark.asyncio
-    async def test_switch_to_fast_sends_charge_power(self):
-        """Switching TO fast (mode 0) must include set_charge_power in the API call."""
-        entity = _make_entity(chargeMode=1, set_charge_power=6.0)
+    @pytest.mark.parametrize(
+        ("requested", "expected"), [(6.0, 6.0), (None, 4.2), (1.0, 4.2)]
+    )
+    async def test_switch_to_fast_uses_valid_power_and_publishes_it(
+        self, requested, expected
+    ):
+        """The cloud command and shared state use the same validated limit."""
+        entity = _make_entity(
+            chargeMode=1, set_charge_power=requested,
+            min_charge_power=4.2, max_charge_power=11.0,
+        )
         await entity.async_select_option("fast")
-        entity.api.set_charge_mode_gen2.assert_called_once_with(SAMPLE_SN, 0, 6.0)
+        entity.api.set_charge_mode_gen2.assert_called_once_with(
+            SAMPLE_SN, 0, expected
+        )
+        assert entity.coordinator.data[SAMPLE_SN]["set_charge_power"] == expected
+
 
     @pytest.mark.asyncio
-    async def test_switch_to_fast_falls_back_to_min_when_power_none(self):
-        """When set_charge_power is None, fall back to min_charge_power."""
-        entity = _make_entity(chargeMode=1, set_charge_power=None, min_charge_power=4.2)
-        await entity.async_select_option("fast")
-        entity.api.set_charge_mode_gen2.assert_called_once_with(SAMPLE_SN, 0, 4.2)
-
-    @pytest.mark.asyncio
-    async def test_switch_to_fast_clamps_out_of_range_power_to_min(self):
-        """When set_charge_power is out of range, clamp it to min."""
-        entity = _make_entity(chargeMode=1, set_charge_power=1.0, min_charge_power=4.2, max_charge_power=11.0)
-        await entity.async_select_option("fast")
-        entity.api.set_charge_mode_gen2.assert_called_once_with(SAMPLE_SN, 0, 4.2)
-
-    @pytest.mark.asyncio
-    async def test_switch_to_pv_priority_no_charge_power(self):
-        """Switching to pv_priority must NOT include charge_power."""
-        entity = _make_entity(chargeMode=0, set_charge_power=7.4)
-        await entity.async_select_option("pv_priority")
-        entity.api.set_charge_mode_gen2.assert_called_once_with(SAMPLE_SN, 1, None)
-
-    @pytest.mark.asyncio
-    async def test_switch_to_pv_and_battery_no_charge_power(self):
-        """Switching to pv_and_battery must NOT include charge_power."""
-        entity = _make_entity(chargeMode=0, set_charge_power=7.4)
-        await entity.async_select_option("pv_and_battery")
-        entity.api.set_charge_mode_gen2.assert_called_once_with(SAMPLE_SN, 2, None)
-
-    @pytest.mark.asyncio
-    async def test_optimistic_update_on_select(self):
-        """Current option is set optimistically before API call."""
-        entity = _make_entity(chargeMode=1)
-        await entity.async_select_option("fast")
-        assert entity._attr_current_option == "fast"
+    @pytest.mark.parametrize(
+        ("option", "mode", "power"),
+        [("fast", 0, 7.4), ("pv_priority", 1, None), ("pv_and_battery", 2, None)],
+    )
+    async def test_selection_publishes_mode_and_sends_cloud_command(
+        self, option, mode, power
+    ):
+        """Selecting a mode updates dependent entities without waiting for a poll."""
+        entity = _make_entity(chargeMode=1 if mode == 0 else 0, set_charge_power=7.4)
+        await entity.async_select_option(option)
+        entity.api.set_charge_mode_gen2.assert_called_once_with(SAMPLE_SN, mode, power)
+        assert entity._attr_current_option == option
         entity.async_write_ha_state.assert_called()
-
-    @pytest.mark.asyncio
-    async def test_coordinator_data_updated_immediately_on_to_fast(self):
-        """chargeMode in coordinator.data must be updated immediately when switching to Fast,
-        so dependent entities (number slider) become available without waiting for a poll."""
-        entity = _make_entity(chargeMode=1)
-        await entity.async_select_option("fast")
-        assert entity.coordinator.data[SAMPLE_SN]["chargeMode"] == 0
+        assert entity.coordinator.data[SAMPLE_SN]["chargeMode"] == mode
         assert len(entity.coordinator._set_updated_data_calls) == 1
 
-    @pytest.mark.asyncio
-    async def test_coordinator_data_updated_immediately_on_to_pv(self):
-        """chargeMode in coordinator.data must be updated immediately when switching to PV,
-        so the number slider becomes unavailable right away."""
-        entity = _make_entity(chargeMode=0)
-        await entity.async_select_option("pv_priority")
-        assert entity.coordinator.data[SAMPLE_SN]["chargeMode"] == 1
-        assert len(entity.coordinator._set_updated_data_calls) == 1
 
     @pytest.mark.asyncio
     async def test_unknown_option_is_ignored(self):
@@ -220,14 +175,6 @@ class TestSelectOption:
         await entity.async_select_option("invalid_option")
         entity.api.set_charge_mode_gen2.assert_not_called()
 
-    @pytest.mark.asyncio
-    async def test_switch_to_fast_writes_charge_power_into_coordinator_data(self):
-        """When switching to Fast, the (possibly clamped) charge_power must be
-        written into coordinator.data immediately alongside chargeMode=0, so that
-        a later write by number.py can be unambiguously detected as a slider move."""
-        entity = _make_entity(chargeMode=1, set_charge_power=6.0)
-        await entity.async_select_option("fast")
-        assert entity.coordinator.data[SAMPLE_SN]["set_charge_power"] == 6.0
 
     @pytest.mark.asyncio
     async def test_switch_to_fast_resends_if_power_changed_during_api_call(self):
@@ -463,9 +410,6 @@ class TestPendingMode:
 # ---------------------------------------------------------------------------
 
 SemsChargeDurationSelect = _select_mod.SemsChargeDurationSelect
-_DURATION_OPTIONS = _select_mod._DURATION_OPTIONS
-_DURATION_TO_HOURS = _select_mod._DURATION_TO_HOURS
-_HOURS_TO_DURATION = _select_mod._HOURS_TO_DURATION
 
 
 def _make_duration_entity(chargeMode=1, finish_time="0", **extra_data):
@@ -495,19 +439,23 @@ def _make_duration_entity(chargeMode=1, finish_time="0", **extra_data):
     return entity
 
 
-class TestSemsChargeDurationSelectConstants:
-    def test_duration_options_length(self):
-        assert len(_DURATION_OPTIONS) == 7
-
-    def test_asap_maps_to_zero(self):
-        assert _DURATION_TO_HOURS["asap"] == 0
-
-    def test_6h_maps_to_six(self):
-        assert _DURATION_TO_HOURS["6h"] == 6
-
-    def test_hours_to_duration_roundtrip(self):
-        for hours in range(7):
-            assert _DURATION_TO_HOURS[_HOURS_TO_DURATION[hours]] == hours
+@pytest.mark.parametrize("option,hours", [
+    ("asap", "0"), ("1h", "1"), ("2h", "2"), ("3h", "3"),
+    ("4h", "4"), ("5h", "5"), ("6h", "6"),
+])
+@pytest.mark.parametrize("mode", [1, 2])
+@pytest.mark.asyncio
+async def test_duration_read_and_write_contract(option, hours, mode):
+    """Match each public choice to an independently specified API value."""
+    entity = _make_duration_entity(chargeMode=mode, finish_time=hours)
+    assert entity.current_option == option
+    await entity.async_select_option(option)
+    expected = {"max_energy": 20, "min_energy": 5, "finish_time": hours}
+    if mode == 2:
+        expected["soc_target"] = 20
+    entity.api.set_charge_mode_gen2.assert_called_once_with(
+        SAMPLE_SN, mode, None, None, **expected,
+    )
 
 
 class TestSemsChargeDurationSelectProperties:
@@ -532,13 +480,6 @@ class TestSemsChargeDurationSelectProperties:
         entity.coordinator.last_update_success = False
         assert entity.available is False
 
-    def test_current_option_asap(self):
-        entity = _make_duration_entity(finish_time="0")
-        assert entity.current_option == "asap"
-
-    def test_current_option_2h(self):
-        entity = _make_duration_entity(finish_time="2")
-        assert entity.current_option == "2h"
 
     def test_current_option_none_when_finish_time_missing(self):
         entity = _make_duration_entity()
@@ -547,27 +488,11 @@ class TestSemsChargeDurationSelectProperties:
 
     def test_options_list(self):
         entity = _make_duration_entity()
-        assert entity._attr_options == _DURATION_OPTIONS
+        assert entity._attr_options == ["asap", "1h", "2h", "3h", "4h", "5h", "6h"]
 
 
 class TestSemsChargeDurationSelectOption:
-    @pytest.mark.asyncio
-    async def test_select_asap_calls_api_with_zero(self):
-        entity = _make_duration_entity(chargeMode=1, finish_time="2")
-        await entity.async_select_option("asap")
-        entity.api.set_charge_mode_gen2.assert_called_once_with(
-            SAMPLE_SN, 1, None, None,
-            max_energy=20, min_energy=5, soc_target=20, finish_time="0",
-        )
 
-    @pytest.mark.asyncio
-    async def test_select_3h_calls_api_with_three(self):
-        entity = _make_duration_entity(chargeMode=2, finish_time="0")
-        await entity.async_select_option("3h")
-        entity.api.set_charge_mode_gen2.assert_called_once_with(
-            SAMPLE_SN, 2, None, None,
-            max_energy=20, min_energy=5, soc_target=20, finish_time="3",
-        )
 
     @pytest.mark.asyncio
     async def test_pending_value_set_optimistically(self):
@@ -579,7 +504,9 @@ class TestSemsChargeDurationSelectOption:
     async def test_pending_value_cleared_on_api_failure(self):
         entity = _make_duration_entity(chargeMode=1)
         entity.api.set_charge_mode_gen2 = MagicMock(return_value=False)
-        await entity.async_select_option("2h")
+        from homeassistant.exceptions import HomeAssistantError
+        with pytest.raises(HomeAssistantError):
+            await entity.async_select_option("2h")
         assert entity._pending_value is None
 
     @pytest.mark.asyncio
@@ -616,3 +543,11 @@ class TestSemsChargeDurationSelectOption:
         result = entity.current_option
         assert entity._pending_value is None
         assert result == "asap"
+
+
+async def test_duration_does_not_zero_an_unknown_energy_target():
+    entity = _make_duration_entity(chargeMode=2, min_energy=None)
+    from homeassistant.exceptions import HomeAssistantError
+    with pytest.raises(HomeAssistantError):
+        await entity.async_select_option("2h")
+    entity.api.set_charge_mode_gen2.assert_not_called()

@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import logging
 import threading
+
+from .operation_budget import BudgetCancelled, request_timeout, serialized_request
 from typing import Any
 
 _LOGGER = logging.getLogger(__name__)
@@ -86,14 +88,16 @@ class WallboxModbusClient:
     """Synchronous Modbus TCP client for GoodWe AC Wallbox Gen2.
 
     Intended to be called from executor threads (async_add_executor_job).
-    All write operations are absent -- this client is strictly read-only.
+    Connections are serialized and closed after each read or write operation.
     """
 
     def __init__(self, host: str, port: int = DEFAULT_MODBUS_PORT,
-                 device_id: int = DEFAULT_MODBUS_DEVICE_ID) -> None:
+                 device_id: int = DEFAULT_MODBUS_DEVICE_ID, *, expected_serial: str | None = None) -> None:
         self._host = host
         self._port = port
         self._device_id = device_id
+        self._expected_serial = expected_serial
+        self._closed = False
         # Serialise all Modbus TCP operations -- the wallbox only supports 2
         # simultaneous connections (1 = cloud IoT, 1 = HA).  Without a lock,
         # a coordinator read_all and a user-triggered write can open two
@@ -107,13 +111,28 @@ class WallboxModbusClient:
     def _make_client(self):
         """Create and connect a fresh ModbusTcpClient. Caller must close it."""
         from pymodbus.client import ModbusTcpClient  # deferred to avoid hard dep at import
-        client = ModbusTcpClient(self._host, port=self._port, timeout=2)
+        if self._closed:
+            raise OSError("Modbus client is closed")
+        # Never replay a possibly delivered mutating request after a lost ACK.
+        # Read recovery is handled by later coordinator polls.
+        client = ModbusTcpClient(self._host, port=self._port, timeout=request_timeout(2), retries=0)
         if not client.connect():
+            client.close()
             raise OSError(f"Cannot connect to wallbox Modbus at {self._host}:{self._port}")
         return client
 
     def close(self) -> None:
-        """No-op: connections are per-operation and auto-closed. Present for HA unload compatibility."""
+        """Drain the current operation and reject subsequent connections."""
+        with self._lock:
+            self._closed = True
+
+    def _verify_write_identity(self, client) -> None:
+        """Verify the enrolled serial on the same connection used for a write."""
+        registers = self._read(client, _REG_SN, 8)
+        if not self._expected_serial or registers is None or _decode_str(registers) != self._expected_serial:
+            raise ValueError("Modbus write requires the enrolled device identity")
+        # Identity I/O can wait while Stop or shutdown supersedes a pending Start.
+        request_timeout(2)
 
     # ------------------------------------------------------------------
     # Low-level register read
@@ -136,37 +155,25 @@ class WallboxModbusClient:
     # Public API
     # ------------------------------------------------------------------
 
-    def test_connection(self) -> bool:
-        """Return True if the wallbox responds to a minimal register read."""
-        try:
-            client = self._make_client()
-        except OSError:
-            return False
-        try:
-            return self._read(client, _REG_STATUS, 1) is not None
-        finally:
-            client.close()
-
-    # ------------------------------------------------------------------
-    # Write helpers
-    # ------------------------------------------------------------------
-
     def _write(self, address: int, value: int) -> bool:
         """Write a single holding register (function code 6)."""
-        with self._lock:
+        with serialized_request(self._lock):
             try:
                 client = self._make_client()
             except OSError as exc:
                 _LOGGER.warning("Modbus connect failed for write at %d: %s", address, exc)
                 return False
             try:
+                self._verify_write_identity(client)
                 result = client.write_register(address, value, device_id=self._device_id)
                 if result.isError():
                     _LOGGER.warning("Modbus write error at %d value=%d: %s", address, value, result)
                     return False
                 _LOGGER.debug("Modbus write reg=%d value=%d OK", address, value)
                 return True
-            except Exception as exc:  # noqa: BLE001
+            except (BudgetCancelled, TimeoutError):
+                raise
+            except Exception as exc:  # The library exposes several protocol/transport failures.
                 _LOGGER.warning("Modbus write exception at %d: %s", address, exc)
                 return False
             finally:
@@ -183,21 +190,27 @@ class WallboxModbusClient:
         if not start:
             return self._write(10060, 1)
         # Start: pre-reset to 1 then write 2 in a single connection under the lock.
-        with self._lock:
+        with serialized_request(self._lock):
             try:
                 client = self._make_client()
             except OSError as exc:
                 _LOGGER.warning("Modbus connect failed for write_start_stop: %s", exc)
                 return False
             try:
-                client.write_register(10060, 1, device_id=self._device_id)
+                self._verify_write_identity(client)
+                reset = client.write_register(10060, 1, device_id=self._device_id)
+                if reset.isError():
+                    return False
+                request_timeout(2)
                 result = client.write_register(10060, 2, device_id=self._device_id)
                 if result.isError():
                     _LOGGER.warning("Modbus start error: %s", result)
                     return False
                 _LOGGER.debug("Modbus write reg=10060 value=2 (with pre-reset) OK")
                 return True
-            except Exception as exc:  # noqa: BLE001
+            except (BudgetCancelled, TimeoutError):
+                raise
+            except Exception as exc:  # Preserve unknown delivery as failure, never replay Start.
                 _LOGGER.warning("Modbus start exception: %s", exc)
                 return False
             finally:
@@ -296,7 +309,7 @@ class WallboxModbusClient:
         A fresh TCP connection is made for each call and closed when done.
         Returns None on communication failure.
         """
-        with self._lock:
+        with serialized_request(self._lock):
             try:
                 client = self._make_client()
             except OSError as exc:
@@ -354,8 +367,6 @@ class WallboxModbusClient:
 
         # -- Parse block 2 (config) --
         reservation_status = b2[0] if b2 else None
-        reservation_time = b2[1] if b2 else None   # hi=hour, lo=min
-        reservation_duration = b2[2] if b2 else None
         phase_switch = b2[3] if b2 else None
         maintain_min_power = b2[4] if b2 else None
         dynamic_load = b2[5] if b2 else None
@@ -366,12 +377,11 @@ class WallboxModbusClient:
         max_power = max_power_raw / 10.0 if max_power_raw is not None else None
         bat_soc_limit = b2[10] if b2 else None
         completion_time = b2[11] if b2 else None
-        charging_mode = b2[12] if b2 else 0
+        charging_mode = b2[12] if b2 else None
 
         # -- Parse block 3 (device info) --
         sn = _decode_str(b3[0:8])
         sw_version = _decode_str(b3[8:10])
-        svn_internal = b3[10]
         wifi_ble_version = _decode_str(b3[11:16])
         hw_version = _decode_str(b3[16:18])
         power_spec = b3[18]
@@ -382,9 +392,6 @@ class WallboxModbusClient:
         charge_duration_s = _decode_u32(b4[3], b4[4])
         hist_energy_raw = _decode_u32(b4[5], b4[6])
         hist_energy = hist_energy_raw / 10.0
-        pile_time_ym = b4[7]
-        pile_time_dh = b4[8]
-        pile_time_ms = b4[9]
         car_connection = b4[15]
         start_mode = b4[16]
         charging_strategy = b4[17]
@@ -457,7 +464,7 @@ class WallboxModbusClient:
             "chargeMode": charging_mode,
             "set_charge_power": max_power,
             "charge_from_grid": bool(power_source & 0x01) if power_source is not None else None,
-            "ensure_minimum_charging_power": bool(maintain_min_power) if maintain_min_power is not None else None,
+            "ensure_minimum_charging_power": bool(maintain_min_power) if maintain_min_power in (0, 1) else None,
             "scheduleMode": reservation_status,
             "last_charge_work_status": last_charge_work_status,
             "last_charge_power": charging_power,
@@ -493,9 +500,9 @@ class WallboxModbusClient:
             "modbus_warn_06": warn_06,
             "modbus_hw_fault_07": hw_fault_07,
             "modbus_hw_fault_08": hw_fault_08,
-            "modbus_plug_charge_enabled": bool(plug_charge),
-            "modbus_phase_switch_enabled": bool(phase_switch) if phase_switch is not None else None,
-            "modbus_dynamic_load": bool(dynamic_load) if dynamic_load is not None else None,
+            "modbus_plug_charge_enabled": bool(plug_charge) if plug_charge in (0, 1) else None,
+            "modbus_phase_switch_enabled": bool(phase_switch) if phase_switch in (0, 1) else None,
+            "modbus_dynamic_load": bool(dynamic_load) if dynamic_load in (0, 1) else None,
             "modbus_max_charging_power": max_power,
             "modbus_min_capacity": min_cap,
             "modbus_max_capacity": max_cap,

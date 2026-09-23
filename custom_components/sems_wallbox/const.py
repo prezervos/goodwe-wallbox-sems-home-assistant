@@ -3,9 +3,7 @@
 DOMAIN = "sems_wallbox"
 
 import voluptuous as vol
-import homeassistant.helpers.config_validation as cv
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME, CONF_SCAN_INTERVAL
-from datetime import timedelta
 
 CONF_STATION_ID = "wallbox_serial_No"
 CONF_SCAN_INTERVAL_CHARGING = "scan_interval_charging"

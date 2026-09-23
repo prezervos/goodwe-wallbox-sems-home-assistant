@@ -34,8 +34,15 @@ _register("homeassistant")
 exc_mod = _register("homeassistant.exceptions")
 if not hasattr(exc_mod, "HomeAssistantError"):
     class HomeAssistantError(Exception):
-        pass
+        def __init__(self, *args, translation_domain=None, translation_key=None,
+                     translation_placeholders=None):
+            super().__init__(*args)
+            self.translation_domain = translation_domain
+            self.translation_key = translation_key
+            self.translation_placeholders = translation_placeholders
+
     exc_mod.HomeAssistantError = HomeAssistantError
+    exc_mod.ConfigEntryAuthFailed = type("ConfigEntryAuthFailed", (HomeAssistantError,), {})
 
 # --------------------------------------------------------------------------
 # homeassistant.const
@@ -50,6 +57,7 @@ if not hasattr(const_mod, "CONF_PASSWORD"):
     const_mod.CONF_PORT = "port"
 
     class Platform:
+        BINARY_SENSOR = "binary_sensor"
         NUMBER = "number"
         SELECT = "select"
         SENSOR = "sensor"
@@ -201,3 +209,38 @@ if "__init__" not in sys.modules:
     sys.modules["__init__"] = types.ModuleType("__init__")
 
 
+
+# Minimal selector validation; actual serialization/translations use real HA smoke tests.
+selector_mod = _register("homeassistant.helpers.selector")
+if not hasattr(selector_mod, "SelectSelector"):
+    class SelectSelector:
+        def __init__(self, config):
+            self.config = config
+
+        def __call__(self, value):
+            import voluptuous as vol
+            if not isinstance(value, str) or value not in self.config["options"]:
+                raise vol.Invalid("Invalid selector option")
+            return value
+
+    selector_mod.SelectSelector = SelectSelector
+    selector_mod.SelectSelectorConfig = dict
+
+binary_mod = _register("homeassistant.components.binary_sensor")
+if not hasattr(binary_mod, "BinarySensorEntity"):
+    binary_mod.BinarySensorEntity = type("BinarySensorEntity", (), {})
+
+if not hasattr(selector_mod, "NumberSelector"):
+    class NumberSelector:
+        def __init__(self, config):
+            self.config = config
+
+        def __call__(self, value):
+            import voluptuous as vol
+            return vol.All(vol.Coerce(float), vol.Range(
+                min=self.config.get("min"), max=self.config.get("max")
+            ))(value)
+
+    selector_mod.NumberSelector = NumberSelector
+    selector_mod.NumberSelectorConfig = dict
+    selector_mod.NumberSelectorMode = types.SimpleNamespace(BOX="box")

@@ -1,350 +1,533 @@
 {
-    "title": "GoodWe Wallbox",
-    "exceptions": {
-        "set_charge_mode_failed_fast": {
-            "message": "El cambio al modo de carga rápida falló (tiempo de espera agotado o error de red). Se ha restaurado el modo anterior."
-        },
-        "set_charge_mode_failed_pv_priority": {
-            "message": "El cambio al modo de prioridad PV (Fotovoltaica) falló (tiempo de espera agotado o error de red). Se ha restaurado el modo anterior."
-        },
-        "set_charge_mode_failed_pv_and_battery": {
-            "message": "El cambio al modo de PV y Batería falló (tiempo de espera agotado o error de red). Se ha restaurado el modo anterior."
-        },
-        "set_charge_power_failed": {
-            "message": "Error al establecer la potencia de carga en {value} kW. Se ha restaurado el valor anterior."
-        }
+  "title": "GoodWe Wallbox",
+  "exceptions": {
+    "set_charge_mode_failed_fast": {
+      "message": "No se pudo confirmar el cambio al modo Rápido. Compruebe el modo real del cargador antes de volver a intentarlo."
     },
-    "options": {
-        "step": {
-            "init": {
-                "title": "Intervalos de consulta",
-                "description": "Configura qué tan seguido la integración consulta el portal SEMS.",
-                "data": {
-                    "scan_interval": "Intervalo de actualización en reposo (segundos)",
-                    "scan_interval_charging": "Intervalo de actualización durante la carga (segundos)",
-                    "plant_id": "Plant ID",
-                    "product_model": "Modelo del producto"
-                },
-                "data_description": {
-                    "scan_interval": "Cada cuánto tiempo consultar cuando no se está cargando (recomendado: 60).",
-                    "scan_interval_charging": "Cada cuánto tiempo consultar mientras se está cargando (recomendado: 30)",
-                    "plant_id": "Dejar en blanco -- detectado automáticamente.",
-                    "product_model": "Dejar en blanco -- detectado automáticamente. (e.g. GW11K-HCA)."
-                }
-            }
-        }
+    "set_charge_mode_failed_pv_priority": {
+      "message": "No se pudo confirmar el cambio al modo Prioridad FV. Compruebe el modo real del cargador antes de volver a intentarlo."
     },
-    "config": {
-        "abort": {
-            "already_configured": "El dispositivo ya está configurado."
-        },
-        "error": {
-            "cannot_connect": "Error al conectar con el portal SEMS.",
-            "invalid_auth": "Autenticación inválida.",
-            "unknown": "Error inesperado",
-            "no_chargers_found": "No se encontraron cargadores EV en la planta seleccionada. Ingresa el número de serie manualmente."
-        },
-        "step": {
-            "user": {
-                "title": "Tipo de conexión",
-                "description": "Elige cómo conectarte a tu GoodWe wallbox.",
-                "data": {
-                    "connection_type": "Tipo de conexión"
-                }
-            },
-            "cloud_credentials": {
-                "title": "Conectarse al portal SEMS",
-                "description": "Ingresa tus credenciales del portal SEMS. Tu wallbox se detectará automáticamente.",
-                "data": {
-                    "username": "Username (e-mail)",
-                    "password": "Password"
-                }
-            },
-            "modbus": {
-                "title": "Modbus TCP local",
-                "description": "Conéctate directamente al wallbox a través de tu red local usando Modbus TCP (no requiere la nube).",
-                "data": {
-                    "modbus_host": "Dirección IP o hostname",
-                    "modbus_port": "Puerto",
-                    "modbus_device_id": "ID dispositivo Modbus (0 = auto-detect)"
-                },
-                "data_description": {
-                    "modbus_device_id": "Deja en 0 para detectar automáticamente. El cargador GoodWe Wallbox Gen2 utiliza el 247 (0xF7)."
-                }
-            },
-            "plant": {
-                "title": "Seleccionar planta / estación",
-                "description": "Se encontraron varias plantas en tu cuenta. Selecciona la que contiene tu wallbox",
-                "data": {
-                    "plant_id": "Planta / estación"
-                }
-            },
-            "charger": {
-                "title": "Escoger el wallbox",
-                "description": "Se encontraron varios cargadores de EV. Selecciona tu wallbox.",
-                "data": {
-                    "wallbox_serial_No": "Wallbox"
-                }
-            },
-            "charger_manual": {
-                "title": "Ingresa el número de seerie de tu wallbox",
-                "description": "No se pudo detectar el wallbox automáticamente. Ingresa el número de serie manualmente (puedes encontrarlo en la aplicación SEMS o en la etiqueta del dispositivo).",
-                "data": {
-                    "wallbox_serial_No": "Número de serie del Wallbox",
-                    "plant_id": "ID Planta (opcional)"
-                }
-            },
-            "model": {
-                "title": "Modelo del producto",
-                "description": "No se pudo detectar el modelo automáticamente. Puedes encontrarlo en la aplicación SEMS o en la etiqueta del dispositivo (ej. GW11K-HCA). Deja este campo vacío para omitirlo; podrás ingresarlo más tarde en las opciones de la integración.",
-                "data": {
-                    "product_model": "Modelo del producto (e.g. GW11K-HCA)"
-                }
-            }
-        }
+    "set_charge_mode_failed_pv_and_battery": {
+      "message": "No se pudo confirmar el cambio al modo FV y batería. Compruebe el modo real del cargador antes de volver a intentarlo."
     },
-    "entity": {
-        "sensor": {
-            "status": {
-                "name": "Estado",
-                "state": {
-                    "charging": "Cargando",
-                    "standby": "En espera",
-                    "offline": "Desconectado",
-                    "unknown": "Desconocido"
-                }
-            },
-            "workstate": {
-                "name": "Estado del Vehículo",
-                "state": {
-                    "not_plugged_in": "No conectado",
-                    "connected": "Conectado",
-                    "finished_charging": "Carga finalizada",
-                    "charged": "Cargado",
-                    "dash": "--",
-                    "unknown": "Desconocido"
-                }
-            },
-            "power": {
-                "name": "Potencia de carga"
-            },
-            "energy": {
-                "name": "Energía total cargada"
-            },
-            "set_charge_power_limit": {
-                "name": "Potencia de carga asignada"
-            },
-            "charge_duration": {
-                "name": "Duración de la carga"
-            },
-            "modbus_charging_status": {
-                "name": "Estado de la estación de carga",
-                "state": {
-                    "idle_no_plug": "En reposo (No conectado)",
-                    "idle_plugged": "En reposo (Conectado)",
-                    "handshaking": "Sincronización",
-                    "charging": "Cargando",
-                    "charging_completed": "Carga completa",
-                    "abnormal_alarm": "Anormal / Alarma",
-                    "scheduled_start": "Inicio programado",
-                    "maintenance": "Mantenimiento",
-                    "start_failed": "Inicio fallido",
-                    "upgrading": "Actualizacion de firmware",
-                    "interrupted": "Interrumpido",
-                    "unknown": "Desconocido"
-                }
-            },
-            "modbus_car_connection": {
-                "name": "Conexión del Vehículo",
-                "state": {
-                    "disconnected": "Desconectado",
-                    "half_connected": "Conexión parcial (sin bloqueo)",
-                    "connected": "Conectado",
-                    "unknown": "Desconocido"
-                }
-            },
-            "voltage_a": { "name": "Voltaje fase A" },
-            "voltage_b": { "name": "Voltaje fase B" },
-            "voltage_c": { "name": "Voltaje fase C" },
-            "current_a": { "name": "Corriente Fase A" },
-            "current_b": { "name": "Corriente Fase B" },
-            "current_c": { "name": "Corriente Fase C" },
-            "modbus_fault_state": {
-                "name": "Estado de falla",
-                "state": {
-                    "ok": "OK",
-                    "warning": "Advertencia",
-                    "fault": "Falla"
-                }
-            },
-            "modbus_comm_status": {
-                "name": "Estado de la Conexión"
-            },
-            "modbus_start_mode": {
-                "name": "Modo de inicio de carga",
-                "state": {
-                    "auth_card": "Tarjeta de Auten.",
-                    "backend": "Backend",
-                    "local_admin": "Admin local",
-                    "vin": "VIN",
-                    "wallet_card": "Tarjeta digital",
-                    "plug_and_charge": "Conectar y cargar",
-                    "scheduled": "Programado",
-                    "bluetooth": "Bluetooth",
-                    "unknown": "Desconocido"
-                }
-            },
-            "modbus_charging_strategy": {
-                "name": "Estrategia de carga",
-                "state": {
-                    "auto_full": "Auto (carga completa)",
-                    "fill_by_time": "Carga por horario",
-                    "fixed_amount": "Cantidad fija",
-                    "charge_by_energy": "Cargar por energía",
-                    "unknown": "Desconocido"
-                }
-            },
-            "modbus_appointment_sign": {
-                "name": "Reservación",
-                "state": {
-                    "no_reservation": "No reservado",
-                    "reserved": "Reservado"
-                }
-            },
-            "modbus_power_source_sensor": {
-                "name": "Fuente de energía",
-                "state": {
-                    "none": "Ninguna",
-                    "grid": "Red eléctrica",
-                    "pv": "PV",
-                    "battery": "Batería",
-                    "grid_pv": "Red eléctrica + PV",
-                    "grid_battery": "Red eléctrica + batería",
-                    "pv_battery": "PV + batería",
-                    "grid_pv_battery": "Red eléctrica + PV + batería",
-                    "unknown": "Desconocido"
-                }
-            }
-        },
-        "select": {
-            "charge_mode": {
-                "name": "Modo de carga",
-                "state": {
-                    "fast": "Rápido",
-                    "pv_priority": "Prioritario PV",
-                    "pv_and_battery": "PV & batería"
-                }
-            },
-            "charge_duration": {
-                "name": "Duración de carga",
-                "state": {
-                    "asap": "ASAP",
-                    "1h": "1 hora",
-                    "2h": "2 horas",
-                    "3h": "3 horas",
-                    "4h": "4 horas",
-                    "5h": "5 horas",
-                    "6h": "6 horas"
-                }
-            },
-            "modbus_charge_mode": {
-                "name": "Modo de carga",
-                "state": {
-                    "fast": "Rápido",
-                    "pv_priority": "Prioritario PV ",
-                    "pv_and_battery": "PV & batería"
-                }
-            },
-            "modbus_charge_duration": {
-                "name": "Duración de carga",
-                "state": {
-                    "asap": "ASAP",
-                    "1h": "1 hora",
-                    "2h": "2 horas",
-                    "3h": "3 horas",
-                    "4h": "4 horas",
-                    "5h": "5 horas",
-                    "6h": "6 horas"
-                }
-            }
-        },
-        "number": {
-            "charge_power": {
-                "name": "Potencia max. de carga"
-            },
-            "current_limit": {
-                "name": "Límite de corriente"
-            },
-            "max_session_energy": {
-                "name": "Energía max. por sesión"
-            },
-            "min_session_energy": {
-                "name": "Energía min. de sesión"
-            },
-            "charge_target_soc": {
-                "name": "SOC min. de batería"
-            },
-            "output_power_limit": {
-                "name": "Límite de potencia de salida"
-            },
-            "modbus_charge_power": {
-                "name": "Potencia max. de carga"
-            },
-            "modbus_max_capacity": {
-                "name": "Energía max. por sesión"
-            },
-            "modbus_min_capacity": {
-                "name": "Energía min. por sesión"
-            },
-            "modbus_bat_soc_limit": {
-                "name": "SOC min. de batería"
-            },
-            "modbus_current_limit": {
-                "name": "Límite de import. de corriente"
-            },
-            "output_power_limit": {
-                "name": "Límite de potencia de salida"
-            }
-        },
-        "switch": {
-            "start_charging": {
-                "name": "Cargando"
-            },
-            "ensure_minimum_charging_power": {
-                "name": "Potencia min. de carga"
-            },
-            "plug_and_charge": {
-                "name": "Conectar y cargar"
-            },
-            "dynamic_load_control": {
-                "name": "Gestión de carga dinámica"
-            },
-            "phase_switch": {
-                "name": "Cambio de fase"
-            },
-            "modbus_start_charging": {
-                "name": "Cargando"
-            },
-            "modbus_maintain_min_power": {
-                "name": "Potencia min. de carga"
-            },
-            "modbus_plug_charge": {
-                "name": "Conectar y cargar"
-            },
-            "modbus_dynamic_load": {
-                "name": "Gestión de carga dinámica"
-            },
-            "modbus_ems_dispatch": {
-                "name": "Modo de potencia minima EMS"
-            },
-            "modbus_phase_switch": {
-                "name": "Cambio de fase"
-            }
-        },
-        "button": {
-            "modbus_refresh": {
-                "name": "Refrescar"
-            }
-        }
+    "set_charge_power_failed": {
+      "message": "No se pudo confirmar el ajuste de la potencia de carga a {value} kW. Compruebe el límite de potencia real del cargador antes de volver a intentarlo."
+    },
+    "invalid_power": {
+      "message": "La potencia debe estar entre {minimum} y {maximum} kW, en incrementos de 0,1 kW."
+    },
+    "operation_timeout": {
+      "message": "La operación del cargador agotó el tiempo de espera. Compruebe el estado real antes de reintentarlo."
+    },
+    "connection_failed": {
+      "message": "La conexión con el cargador no está disponible o cambió durante la operación. Compruebe su estado."
+    },
+    "operation_failed": {
+      "message": "No se pudo confirmar la operación del cargador. Compruebe el estado real y los registros de la integración."
+    },
+    "stop_before_mode": {
+      "message": "Detenga la carga antes de cambiar el modo de carga."
+    },
+    "start_pending": {
+      "message": "Ya hay un inicio de carga en curso. Espere su resultado."
+    },
+    "request_superseded": {
+      "message": "Una solicitud más reciente sustituyó esta operación."
+    },
+    "mode_unconfirmed": {
+      "message": "El modo de carga no se confirmó con datos recientes del dispositivo. No se inició la carga."
+    },
+    "stop_unconfirmed": {
+      "message": "La detención no se confirmó. Compruebe el estado real de carga."
+    },
+    "start_unconfirmed": {
+      "message": "El inicio no se confirmó ni se reintentó. Compruebe el estado real de carga."
+    },
+    "pending_controls_expired": {
+      "message": "Las órdenes pendientes caducaron porque no se pudo verificar la conexión a tiempo. Compruebe el estado real de carga y envíe una nueva solicitud."
+    },
+    "pending_controls_failed": {
+      "message": "No se pudieron completar las órdenes pendientes. Compruebe la conexión y el estado real de carga antes de enviar otra solicitud."
+    },
+    "minimum_power_cloud_fast": {
+      "message": "El control de este ajuste mediante la nube no es compatible con el modo Rápido de este cargador. Detenga la carga y espere a que el cargador esté en reposo. Después, cambie el ajuste mediante TCP local o SolarGo. El estado comunicado sigue siendo visible."
+    },
+    "minimum_power_stop_first": {
+      "message": "Este ajuste solo se puede cambiar cuando el cargador está en reposo. Detenga la carga y espere la confirmación."
+    },
+    "cloud_control_switching": {
+      "message": "El control en la nube no está disponible. Se está cambiando a TCP local antes de enviar la última solicitud de carga."
+    },
+    "cloud_control_tcp_ready": {
+      "message": "TCP local está listo. Ahora se procesará la última solicitud de carga; compruebe el estado de carga para confirmar el resultado."
+    },
+    "cloud_control_failed": {
+      "message": "El control en la nube o el cambio a TCP ha fallado. Se han descartado las solicitudes pendientes; compruebe el estado del cargador antes de volver a intentarlo."
     }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Ajustes generales (1/2 con TCP activado)",
+        "description": "Configure los intervalos de actualización y las preferencias de carga.\n\n**Con TCP nativo activado, la configuración tiene dos páginas.** Confirme esta página para continuar al paso 2: conexión TCP y cambio automático cuando falle la nube. Los cambios solo se guardan al confirmar la segunda página. Si cierra el diálogo antes, se descartan los cambios pendientes.\n\n**Con TCP nativo desactivado, al confirmar esta página se guardan los ajustes inmediatamente; no hay segunda página.**",
+        "data": {
+          "scan_interval": "Intervalo de actualización en reposo (segundos)",
+          "scan_interval_charging": "Intervalo de actualización durante la carga (segundos)",
+          "plant_id": "Plant ID",
+          "product_model": "Modelo del producto",
+          "remember_charge_mode": "Restaurar el modo elegido en HA antes de cargar",
+          "native_enabled": "Enable native TCP controls (development)"
+        },
+        "data_description": {
+          "scan_interval": "Intervalo de consulta a la nube/Modbus. TCP local usa 5 segundos, o 2 con protección de potencia activa. MQTT verificado puede duplicar el intervalo HTTP de respaldo.",
+          "scan_interval_charging": "Intervalo de consulta a la nube/Modbus. TCP local usa 5 segundos, o 2 con protección de potencia activa. MQTT verificado puede duplicar el intervalo HTTP de respaldo.",
+          "plant_id": "Muestra el valor detectado o configurado manualmente. Puede modificarlo; deje el campo vacío para usar la detección automática.",
+          "product_model": "Muestra el valor detectado o configurado manualmente. Puede modificarlo; deje el campo vacío para usar la detección automática.",
+          "remember_charge_mode": "Al activar esta opción se guarda como preferencia el modo que indica actualmente el cargador. Si no puede leerse, no se guarda el cambio. Después, cada inicio desde HA restaura y verifica el modo guardado. La selección en HA actualiza la preferencia; SolarGo no. Se conserva al recargar y reiniciar. Desactivado mantiene el modo actual. No se fuerza periódicamente; la protección de potencia TCP sigue activa.",
+          "native_enabled": "Activado: continuar a TCP y cambio automático en la página 2. Desactivado: guardar en esta página."
+        }
+      },
+      "native": {
+        "title": "TCP y cambio automático (2/2)",
+        "description": "**Paso 2 de 2.** Revise la conexión TCP y el cambio automático cuando falle la nube. Confirme esta página para guardar los cambios de ambas páginas.\n\nDevelopment: configure a reachable LAN listener. Setup does not redirect the wallbox. Use Local TCP connection to switch Socket A; switching it off or unloading restores the original cloud endpoint. Power is selectable in 0.1 kW steps within the identified model range. Native mode keeps HA charging preferences. A TCP-only entry has no cloud telemetry.\n\nSin un límite guardado se utiliza el mínimo del modelo (4,2 kW para GW11 HCA). Cambie el límite mediante la entidad de potencia de carga; se conserva al recargar y reiniciar.",
+        "data": {
+          "native_host": "Wallbox IPv4 address",
+          "native_advertised_host": "Home Assistant IPv4 address reachable from the wallbox",
+          "native_port": "TCP listener port",
+          "native_discover": "Verify identity using LAN discovery",
+          "wallbox_serial_No": "Serial number (optional with discovery)",
+          "native_ingress_peer": "Trusted TCP proxy IPv4 (optional; for Docker source NAT only)",
+          "native_auto_fallback": "Usar TCP automáticamente si falla la nube"
+        },
+        "data_description": {
+          "native_auto_fallback": "Requiere cuenta de nube. Cambio tras al menos tres fallos y 90 segundos desde el primero. Retorno tras 30 minutos en reposo y comprobación previa satisfactoria; datos recientes en 60 segundos. Los fallos aumentan el intervalo hasta dos horas. TCP manual persiste al recargar; retorno pausado hasta seleccionar nube. La selección manual de nube pausa el respaldo hasta recargar."
+        }
+      }
+    },
+    "abort": {
+      "cloud_credentials_required": "This entry has no cloud account. Keep native TCP enabled or configure a cloud entry first."
+    },
+    "error": {
+      "mode_capture_failed": "No se pudo verificar el modo actual del cargador. Restablezca la conexión e inténtelo de nuevo; no se ha activado la restauración.",
+      "native_configuration_failed": "No se pudo validar la configuración TCP local. Compruebe las direcciones, el puerto, el número de serie y la conectividad del cargador."
+    }
+  },
+  "config": {
+    "abort": {
+      "already_configured": "El dispositivo ya está configurado.",
+      "invalid_serial": "Introduzca un número de serie que no esté vacío.",
+      "connection_change_busy": "Desactive TCP local y complete la recuperación de la conexión con la nube antes de cambiar la configuración.",
+      "cloud_credentials_required": "Esta entrada no tiene cuenta en la nube. Mantenga TCP nativo activado o configure primero una entrada de nube.",
+      "reauth_successful": "Credenciales actualizadas correctamente.",
+      "reconfigure_successful": "Configuración de conexión actualizada correctamente."
+    },
+    "error": {
+      "cannot_connect": "Error al conectar con el portal SEMS.",
+      "invalid_auth": "Autenticación inválida.",
+      "unknown": "Error inesperado",
+      "no_chargers_found": "No se encontraron cargadores EV en la planta seleccionada. Ingresa el número de serie manualmente.",
+      "invalid_serial": "Introduzca un número de serie que no esté vacío.",
+      "native_configuration_failed": "No se pudo validar la configuración TCP local. Compruebe las direcciones, el puerto, el número de serie y la conectividad del cargador.",
+      "wrong_device": "La conexión no identifica el cargador original.",
+      "connection_validation_failed": "No se pudo verificar la conexión. Compruebe la configuración y la disponibilidad del dispositivo."
+    },
+    "step": {
+      "user": {
+        "title": "Tipo de conexión",
+        "description": "Elige cómo conectarte a tu GoodWe wallbox.",
+        "data": {
+          "connection_type": "Tipo de conexión",
+          "remember_charge_mode": "Restaurar el modo elegido en HA antes de cargar"
+        },
+        "data_description": {
+          "remember_charge_mode": "Activado: antes de iniciar desde HA, restaurar y verificar el último modo elegido en HA. La preferencia guardada se conserva al recargar la integración y reiniciar HA. Sin preferencia guardada, mantener el modo indicado por el cargador. Desactivado: mantener el modo actual del cargador. SolarGo no sustituye la preferencia de HA. No se fuerza el modo al arrancar ni periódicamente. La protección del límite de potencia TCP permanece activa de forma independiente."
+        }
+      },
+      "cloud_credentials": {
+        "title": "Conectarse al portal SEMS",
+        "description": "Ingresa tus credenciales del portal SEMS. Tu wallbox se detectará automáticamente.",
+        "data": {
+          "username": "Username (e-mail)",
+          "password": "Password"
+        }
+      },
+      "modbus": {
+        "title": "Modbus TCP local",
+        "description": "Conéctate directamente al wallbox a través de tu red local usando Modbus TCP (no requiere la nube).",
+        "data": {
+          "modbus_host": "Dirección IP o hostname",
+          "modbus_port": "Puerto",
+          "modbus_device_id": "ID dispositivo Modbus (0 = auto-detect)"
+        },
+        "data_description": {
+          "modbus_device_id": "Deja en 0 para detectar automáticamente. El cargador GoodWe Wallbox Gen2 utiliza el 247 (0xF7)."
+        }
+      },
+      "plant": {
+        "title": "Seleccionar planta / estación",
+        "description": "Se encontraron varias plantas en tu cuenta. Selecciona la que contiene tu wallbox",
+        "data": {
+          "plant_id": "Planta / estación"
+        }
+      },
+      "charger": {
+        "title": "Escoger el wallbox",
+        "description": "Se encontraron varios cargadores de EV. Selecciona tu wallbox.",
+        "data": {
+          "wallbox_serial_No": "Wallbox"
+        }
+      },
+      "charger_manual": {
+        "title": "Ingresa el número de seerie de tu wallbox",
+        "description": "No se pudo detectar el wallbox automáticamente. Ingresa el número de serie manualmente (puedes encontrarlo en la aplicación SEMS o en la etiqueta del dispositivo).",
+        "data": {
+          "wallbox_serial_No": "Número de serie del Wallbox",
+          "plant_id": "ID Planta (opcional)"
+        }
+      },
+      "model": {
+        "title": "Modelo del producto",
+        "description": "No se pudo detectar el modelo automáticamente. Puedes encontrarlo en la aplicación SEMS o en la etiqueta del dispositivo (ej. GW11K-HCA). Deja este campo vacío para omitirlo; podrás ingresarlo más tarde en las opciones de la integración.",
+        "data": {
+          "product_model": "Modelo del producto (e.g. GW11K-HCA)"
+        }
+      },
+      "native": {
+        "title": "Native TCP connection",
+        "description": "Development: configure a reachable LAN listener. Setup does not redirect the wallbox. Use Local TCP connection to switch Socket A; switching it off or unloading restores the original cloud endpoint. Power is selectable in 0.1 kW steps within the identified model range. Native mode keeps HA charging preferences. A TCP-only entry has no cloud telemetry.\n\nSin un límite guardado se utiliza el mínimo del modelo (4,2 kW para GW11 HCA). Cambie el límite mediante la entidad de potencia de carga; se conserva al recargar y reiniciar.",
+        "data": {
+          "native_host": "Wallbox IPv4 address",
+          "native_advertised_host": "Home Assistant IPv4 address reachable from the wallbox",
+          "native_port": "TCP listener port",
+          "native_discover": "Verify identity using LAN discovery",
+          "wallbox_serial_No": "Serial number (optional with discovery)",
+          "native_ingress_peer": "Trusted TCP proxy IPv4 (optional; for Docker source NAT only)",
+          "native_auto_fallback": "Usar TCP automáticamente si falla la nube"
+        },
+        "data_description": {
+          "native_auto_fallback": "Requiere cuenta de nube. Cambio tras al menos tres fallos y 90 segundos desde el primero. Retorno tras 30 minutos en reposo y comprobación previa satisfactoria; datos recientes en 60 segundos. Los fallos aumentan el intervalo hasta dos horas. TCP manual persiste al recargar; retorno pausado hasta seleccionar nube. La selección manual de nube pausa el respaldo hasta recargar."
+        }
+      },
+      "reconfigure": {
+        "title": "Reconfigurar conexión",
+        "description": "Verifique el acceso al mismo cargador. Se conservan las entidades y las preferencias de modo y potencia. Al guardar se recarga la integración.",
+        "data": {
+          "username": "Nombre de usuario (correo electrónico)",
+          "password": "Nueva contraseña (dejar en blanco para conservar la actual)",
+          "modbus_host": "Dirección del dispositivo",
+          "modbus_port": "Puerto TCP Modbus",
+          "modbus_device_id": "ID del dispositivo Modbus",
+          "native_host": "Dirección IPv4 del cargador",
+          "native_advertised_host": "Dirección IPv4 de Home Assistant accesible desde el cargador",
+          "native_port": "Puerto de escucha TCP",
+          "native_ingress_peer": "IPv4 del proxy TCP de confianza (opcional; solo para NAT de origen de Docker)"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Volver a autenticar",
+        "description": "Introduzca credenciales con acceso al mismo cargador.",
+        "data": {
+          "username": "Nombre de usuario (correo electrónico)",
+          "password": "Nueva contraseña (dejar en blanco para conservar la actual)"
+        }
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "status": {
+        "name": "Estado",
+        "state": {
+          "charging": "Cargando",
+          "standby": "En espera",
+          "offline": "Desconectado",
+          "unknown": "Desconocido",
+          "starting": "Iniciando",
+          "waiting": "Esperando para cargar"
+        }
+      },
+      "workstate": {
+        "name": "Estado del Vehículo",
+        "state": {
+          "not_plugged_in": "No conectado",
+          "connected": "Conectado",
+          "finished_charging": "Carga finalizada",
+          "charged": "Cargado",
+          "dash": "--",
+          "unknown": "Desconocido"
+        }
+      },
+      "power": {
+        "name": "Potencia de carga"
+      },
+      "energy": {
+        "name": "Energía total cargada"
+      },
+      "set_charge_power_limit": {
+        "name": "Potencia de carga asignada"
+      },
+      "charge_duration": {
+        "name": "Duración de la carga"
+      },
+      "modbus_charging_status": {
+        "name": "Estado de la estación de carga",
+        "state": {
+          "idle_no_plug": "En reposo (No conectado)",
+          "idle_plugged": "En reposo (Conectado)",
+          "handshaking": "Sincronización",
+          "charging": "Cargando",
+          "charging_completed": "Carga completa",
+          "abnormal_alarm": "Anormal / Alarma",
+          "scheduled_start": "Inicio programado",
+          "maintenance": "Mantenimiento",
+          "start_failed": "Inicio fallido",
+          "upgrading": "Actualizacion de firmware",
+          "interrupted": "Interrumpido",
+          "unknown": "Desconocido"
+        }
+      },
+      "modbus_car_connection": {
+        "name": "Conexión del Vehículo",
+        "state": {
+          "disconnected": "Desconectado",
+          "half_connected": "Conexión parcial (sin bloqueo)",
+          "connected": "Conectado",
+          "unknown": "Desconocido"
+        }
+      },
+      "voltage_a": {
+        "name": "Voltaje fase A"
+      },
+      "voltage_b": {
+        "name": "Voltaje fase B"
+      },
+      "voltage_c": {
+        "name": "Voltaje fase C"
+      },
+      "current_a": {
+        "name": "Corriente Fase A"
+      },
+      "current_b": {
+        "name": "Corriente Fase B"
+      },
+      "current_c": {
+        "name": "Corriente Fase C"
+      },
+      "modbus_fault_state": {
+        "name": "Estado de falla",
+        "state": {
+          "ok": "OK",
+          "warning": "Advertencia",
+          "fault": "Falla"
+        }
+      },
+      "modbus_comm_status": {
+        "name": "Estado de la Conexión"
+      },
+      "modbus_start_mode": {
+        "name": "Modo de inicio de carga",
+        "state": {
+          "auth_card": "Tarjeta de Auten.",
+          "backend": "Backend",
+          "local_admin": "Admin local",
+          "vin": "VIN",
+          "wallet_card": "Tarjeta digital",
+          "plug_and_charge": "Conectar y cargar",
+          "scheduled": "Programado",
+          "bluetooth": "Bluetooth",
+          "unknown": "Desconocido"
+        }
+      },
+      "modbus_charging_strategy": {
+        "name": "Estrategia de carga",
+        "state": {
+          "auto_full": "Auto (carga completa)",
+          "fill_by_time": "Carga por horario",
+          "fixed_amount": "Cantidad fija",
+          "charge_by_energy": "Cargar por energía",
+          "unknown": "Desconocido"
+        }
+      },
+      "modbus_appointment_sign": {
+        "name": "Reservación",
+        "state": {
+          "no_reservation": "No reservado",
+          "reserved": "Reservado"
+        }
+      },
+      "modbus_power_source_sensor": {
+        "name": "Fuente de energía",
+        "state": {
+          "none": "Ninguna",
+          "grid": "Red eléctrica",
+          "pv": "PV",
+          "battery": "Batería",
+          "grid_pv": "Red eléctrica + PV",
+          "grid_battery": "Red eléctrica + batería",
+          "pv_battery": "PV + batería",
+          "grid_pv_battery": "Red eléctrica + PV + batería",
+          "unknown": "Desconocido"
+        }
+      },
+      "native_fault": {
+        "name": "Código de fallo"
+      },
+      "active_transport": {
+        "name": "Conexión activa",
+        "state": {
+          "cloud": "Nube",
+          "tcp": "TCP local",
+          "switching_to_tcp": "Cambiando a TCP local",
+          "switching_to_cloud": "Cambiando a la nube",
+          "waiting_for_cloud": "Esperando datos actualizados de la nube",
+          "recovery_required": "Es necesario recuperar la conexión",
+          "connection_unavailable": "Conexión no disponible"
+        }
+      },
+      "native_total_energy": {
+        "name": "Energía total del cargador"
+      },
+      "modbus_energy_total": {
+        "name": "Energía total (Modbus)"
+      }
+    },
+    "select": {
+      "charge_mode": {
+        "name": "Modo de carga",
+        "state": {
+          "fast": "Rápido",
+          "pv_priority": "Prioritario PV",
+          "pv_and_battery": "PV & batería"
+        }
+      },
+      "charge_duration": {
+        "name": "Duración de carga",
+        "state": {
+          "asap": "ASAP",
+          "1h": "1 hora",
+          "2h": "2 horas",
+          "3h": "3 horas",
+          "4h": "4 horas",
+          "5h": "5 horas",
+          "6h": "6 horas"
+        }
+      },
+      "modbus_charge_mode": {
+        "name": "Modo de carga",
+        "state": {
+          "fast": "Rápido",
+          "pv_priority": "Prioritario PV ",
+          "pv_and_battery": "PV & batería"
+        }
+      },
+      "modbus_charge_duration": {
+        "name": "Duración de carga",
+        "state": {
+          "asap": "ASAP",
+          "1h": "1 hora",
+          "2h": "2 horas",
+          "3h": "3 horas",
+          "4h": "4 horas",
+          "5h": "5 horas",
+          "6h": "6 horas"
+        }
+      }
+    },
+    "number": {
+      "charge_power": {
+        "name": "Potencia max. de carga"
+      },
+      "current_limit": {
+        "name": "Límite de corriente"
+      },
+      "max_session_energy": {
+        "name": "Energía max. por sesión"
+      },
+      "min_session_energy": {
+        "name": "Energía min. de sesión"
+      },
+      "charge_target_soc": {
+        "name": "SOC min. de batería"
+      },
+      "output_power_limit": {
+        "name": "Límite de potencia de salida"
+      },
+      "modbus_charge_power": {
+        "name": "Potencia max. de carga"
+      },
+      "modbus_max_capacity": {
+        "name": "Energía max. por sesión"
+      },
+      "modbus_min_capacity": {
+        "name": "Energía min. por sesión"
+      },
+      "modbus_bat_soc_limit": {
+        "name": "SOC min. de batería"
+      },
+      "modbus_current_limit": {
+        "name": "Límite de import. de corriente"
+      }
+    },
+    "switch": {
+      "start_charging": {
+        "name": "Cargando"
+      },
+      "ensure_minimum_charging_power": {
+        "name": "Potencia min. de carga"
+      },
+      "plug_and_charge": {
+        "name": "Conectar y cargar"
+      },
+      "dynamic_load_control": {
+        "name": "Gestión de carga dinámica"
+      },
+      "phase_switch": {
+        "name": "Cambio de fase"
+      },
+      "modbus_start_charging": {
+        "name": "Cargando"
+      },
+      "modbus_maintain_min_power": {
+        "name": "Potencia min. de carga"
+      },
+      "modbus_plug_charge": {
+        "name": "Conectar y cargar"
+      },
+      "modbus_dynamic_load": {
+        "name": "Gestión de carga dinámica"
+      },
+      "modbus_ems_dispatch": {
+        "name": "Modo de potencia minima EMS"
+      },
+      "modbus_phase_switch": {
+        "name": "Cambio de fase"
+      },
+      "native_connection": {
+        "name": "Conexión TCP local"
+      }
+    },
+    "button": {
+      "modbus_refresh": {
+        "name": "Refrescar"
+      }
+    },
+    "binary_sensor": {
+      "charging_active": {
+        "name": "Carga en curso",
+        "state": {
+          "on": "Cargando",
+          "off": "Sin cargar"
+        }
+      }
+    }
+  },
+  "selector": {
+    "connection_type": {
+      "options": {
+        "cloud": "API en la nube (SEMS Portal)",
+        "modbus": "Modbus TCP local (directo)",
+        "native_tcp": "TCP nativo Socket A (desarrollo)"
+      }
+    }
+  }
 }

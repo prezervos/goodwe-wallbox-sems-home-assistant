@@ -7,6 +7,8 @@ import importlib.util
 from unittest.mock import MagicMock
 import time
 
+import pytest
+
 # ---------------------------------------------------------------------------
 # All HA stubs are set up by conftest.py before this file is collected.
 # ---------------------------------------------------------------------------
@@ -271,13 +273,11 @@ class TestComputeIsOnGraceOff:
 # ===========================================================================
 
 class TestSemsSwitchProperties:
-    def test_unique_id(self):
+    def test_charging_switch_identity_contract(self):
         sw = _make_switch(CHARGING_DATA, current_is_on=True)
         assert sw.unique_id == f"{SAMPLE_SN}-switch-start-charging"
-
-    def test_translation_key(self):
-        sw = _make_switch(CHARGING_DATA)
         assert sw._attr_translation_key == "start_charging"
+
 
     def test_available_true(self):
         sw = _make_switch(CHARGING_DATA)
@@ -293,3 +293,62 @@ class TestSemsSwitchProperties:
         info = sw.device_info
         assert ("sems_wallbox", SAMPLE_SN) in info["identifiers"]
         assert info["manufacturer"] == "GoodWe"
+
+
+# Capability-gated controls must follow device declarations, not model guesses.
+
+
+@pytest.mark.parametrize("dashboard,controls,expected", [
+    ([], ["unrelated"], {"SemsSwitch"}),
+    (["plugAndCharge"], ["unrelated"], {"SemsSwitch", "SemsPlugAndChargeSwitch"}),
+    ([], ["Dynamic_Load_Control"], {"SemsSwitch", "SemsDynamicLoadSwitch"}),
+    ([], ["Phase_Switch"], {"SemsSwitch", "SemsPhaseSwitchSwitch"}),
+    ([], [], {"SemsSwitch", "SemsMinimumPowerSwitch"}),
+])
+async def test_cloud_switches_follow_declared_capabilities(dashboard, controls, expected):
+    api = MagicMock()
+    coordinator = _FakeCoordinator({SAMPLE_SN: STANDBY_DATA})
+    hass = types.SimpleNamespace(data={"sems_wallbox": {"test": {
+        "coordinator": coordinator, "connection_type": "cloud", "api": api,
+        "capabilities": {"dashboard_functions": dashboard, "more_device_controls": controls},
+    }}})
+    entities = []
+    unsubscribe = MagicMock()
+    coordinator.async_add_listener = MagicMock(return_value=unsubscribe)
+    entry = types.SimpleNamespace(entry_id="test", async_on_unload=MagicMock())
+    await _switch_mod.async_setup_entry(hass, entry, entities.extend)
+    coordinator.async_add_listener.assert_called_once()
+    entry.async_on_unload.assert_called_once_with(unsubscribe)
+    entry.async_on_unload.call_args.args[0]()
+    unsubscribe.assert_called_once_with()
+    assert {type(entity).__name__ for entity in entities} == expected
+    assert api.mock_calls == [], "Platform setup must not enable charger features"
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+async def test_rejected_command_clears_optimism_and_raises(enabled):
+    from homeassistant.exceptions import HomeAssistantError
+    observed = STANDBY_DATA if enabled else CHARGING_DATA
+    entity = _make_switch(observed, not enabled)
+    async def execute(function, *args):
+        return function(*args)
+    entity.hass.async_add_executor_job = execute
+    entity.async_write_ha_state = MagicMock()
+    entity.coordinator.schedule_delayed_refresh = MagicMock()
+    entity.api.change_status_gen2.return_value = False
+    with pytest.raises(HomeAssistantError) as failure:
+        await (entity.async_turn_on() if enabled else entity.async_turn_off())
+    assert failure.value.translation_key == ("start_unconfirmed" if enabled else "stop_unconfirmed")
+    assert entity._last_command_target is None
+    assert entity._attr_is_on is (not enabled)
+    entity.api.change_status_gen2.assert_called_once_with(SAMPLE_SN, "start" if enabled else "stop")
+    entity.coordinator.schedule_delayed_refresh.assert_called_once()
+
+
+@pytest.mark.parametrize("class_name,field", [
+    ("SemsDynamicLoadSwitch", "dynamicLoad"), ("SemsPhaseSwitchSwitch", "phaseSwitch"),
+])
+@pytest.mark.parametrize("reported", [None, False, True])
+def test_configuration_switch_keeps_unknown_distinct_from_off(class_name, field, reported):
+    entity = getattr(_switch_mod, class_name)(_FakeCoordinator({SAMPLE_SN: {field: reported}}), SAMPLE_SN, None)
+    assert entity.is_on is reported

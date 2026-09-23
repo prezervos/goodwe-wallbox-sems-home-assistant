@@ -7,18 +7,19 @@
 
 Home Assistant custom integration for the **GoodWe Wallbox**.
 
-Supports two independent connection modes:
+Supports cloud, local Modbus and optional native Socket A TCP connections:
 
 | Mode | Chargers | How it works | Internet required |
 |------|----------|-------------|-------------------|
 | **Local Modbus TCP** | gen 2 only | Connects directly to the wallbox over your LAN using Modbus TCP | No |
-| **SEMS cloud** | gen 1, gen2 | Polls the SEMS / SEMS Plus EU gateway API | Yes |
+| **SEMS cloud** | gen 1, gen2 | Polls the SEMS / SEMS Plus API using the account gateway | Yes |
+| **Native Socket A TCP** | GW11 HCA physically tested | Local TCP control with optional automatic cloud fallback; distinct from Modbus | No for local control |
 
 ---
 
 ## Features
 
-### Both modes
+### Cloud and Modbus modes
 
 | Entity | Type | Description |
 |--------|------|-------------|
@@ -30,9 +31,9 @@ Supports two independent connection modes:
 | Session energy | Sensor (kWh) | Energy delivered in current session |
 | Charge duration | Sensor (min) | Duration of current / last session |
 | Charge power limit | Number (kW) | Set max charge power |
-| Ensure minimum power | Switch | Keep charging when PV is insufficient (PV modes only) |
+| Ensure minimum power | Switch | Device minimum-power policy; availability and writable modes depend on model/transport. Tested original HCA changes require idle. |
 
-### Local Modbus TCP only
+### Additional Modbus entities
 
 | Entity | Type | Description |
 |--------|------|-------------|
@@ -54,13 +55,29 @@ Supports two independent connection modes:
 | Dynamic load management | Switch | Enable DLM current redistribution |
 | EMS minimum power mode | Switch | Force minimum power dispatch via EMS |
 
-All entities are translated -- Czech (`cs`) and English (`en`) are included.
+### Optional settings and transport support
+
+Cloud integrations also retain capability-dependent controls for grid current,
+output power, session energy targets, battery SOC, completion time, phase switching,
+dynamic load management and Plug & Charge. Availability depends on the model and
+actual API values; a successful API acknowledgement alone does not prove the
+wallbox applies a setting.
+
+Enabling native TCP keeps the core Start/Stop, mode, power and session-energy
+identities. Extended cloud-only settings become unavailable while TCP owns the
+connection. The verified original-HCA minimum-power control is an exception: its
+state is available in all modes, but writes require idle. On the tested HCA,
+cloud PV-mode writes and idle native writes are verified; the cloud Fast-mode
+setter is ineffective and reports a guarded error. SolarGo Auto start works on
+that device, but its portable cloud/TCP control is not established.
+
+Entity and service-error catalogs include English (`en`), Czech (`cs`), German (`de`) and Spanish (`es`). Hardware support is separate from translation coverage.
 
 ---
 
 ## Requirements
 
-- Home Assistant 2023.6 or newer
+- Tested baseline: Home Assistant 2026.9.2 with Python 3.14; production checked on 2026.9.3. Earlier versions are not currently validated.
 - GoodWe EV Charger
 - For **Modbus mode**: wallbox reachable on your LAN, port 502 open, must be enabled in SolarGo
 - For **SEMS cloud mode**: SEMS / SEMS Plus account with the wallbox registered
@@ -90,11 +107,11 @@ The first step asks you to choose a connection type.
 
 ---
 
-## Option A: Local Modbus TCP (recommended)
+## Option A: Local Modbus TCP (supported generation 2 models)
 
 This mode communicates directly with the wallbox over your local network. No cloud account is needed and it exposes more entities than the cloud mode.
 
-> It seems that only modbus or cloud can stay connected. if you find better solution, please contribute.
+Cloud and local connectivity depend on the model and its communication configuration. Native Socket A TCP is a separate option described below; do not enable Modbus on the assumption that it is the same protocol.
 
 ### Prerequisites
 
@@ -119,17 +136,15 @@ This mode communicates directly with the wallbox over your local network. No clo
 
 ## Option B: SEMS cloud
 
-This mode polls the SEMS / SEMS Plus EU gateway API. An internet connection and a SEMS account are required.
+This mode polls the SEMS / SEMS Plus API. An internet connection and a SEMS account are required; the client validates the regional gateway supplied during login.
 
-### Recommended: use a visitor account
+### Account permissions
 
-Create a **dedicated visitor account** in the SEMS app and use those credentials here (with grain of salt by AI):
-
-1. Open the **SEMS Plus** mobile app, log in with your **main** account.
-2. Go to your station (plant) → **Share** (or **Visitor Management**).
-3. Tap **Add visitor**, enter the visitor e-mail and set privileges to **Read and Modify**.
-4. Register the visitor account at [semsportal.com](https://www.semsportal.com) or in the app.
-5. Use the **visitor e-mail and password** when setting up this integration.
+Use an account that can view and control the registered wallbox. A shared/visitor
+account needs control permissions; read-only access does not establish Start/Stop
+support. Sharing menus and permissions vary by SEMS application and account.
+Cloud commands and optional MQTT discovery share the integration's session and
+login backoff. Separate HA installations and phone apps have their own sessions.
 
 ### Setup steps
 
@@ -164,19 +179,39 @@ logger:
 
 ## Development
 
-```bash
-# Install test dependencies
-pip install pytest pytest-asyncio requests pymodbus
+Run from the repository root in an isolated environment, not from inside
+`custom_components/sems_wallbox` (its `select.py` can shadow Python's standard library):
 
-# Run tests (must run from repo root, NOT from inside custom_components/)
-pytest tests/ -v
+```sh
+python -m pip install pytest pytest-asyncio requests voluptuous aiomqtt==2.5.1
+python -m pytest tests/ -q
 ```
 
-> On Windows, always run `pytest` from outside the project root to avoid the stdlib `select` module being shadowed by `custom_components/sems_wallbox/select.py`.
+See [development validation](docs/DEVELOPMENT.md) for real Home Assistant lifecycle,
+service, translation and loopback protocol tests. Unit tests use HA stubs and do
+not prove physical support for an untested charger.
 
----
+## Upgrade notes
+
+Read [the draft release notes](docs/RELEASE_NOTES_DRAFT.md) before installing this
+unreleased candidate. Both current upstream and this candidate use `sems_wallbox`.
+Historical `sems-wallbox` installations require separate migration. Entity IDs and
+custom names are preserved for the reviewed baseline, but default labels, categories,
+missing-data behavior and some state semantics changed. Check dependent templates;
+do not treat unavailable measurements as zero.
 
 ## Changelog
+
+### Unreleased
+
+- Opt-in native Socket A TCP control and automatic cloud-failure fallback.
+- Persistent native charging preferences, verified handovers and power supervision.
+- Shared cloud authentication, bounded login recovery and supplemental MQTT hints.
+- Native session energy, optional lifetime energy, truthful missing-data handling,
+  translated service errors and expanded lifecycle/protocol tests.
+
+See [release notes and migration caveats](docs/RELEASE_NOTES_DRAFT.md). No new
+release version or GitHub publication has been created yet.
 
 ### 2.0.0
 - **Local Modbus TCP mode**: connect directly to the wallbox without cloud or internet
@@ -221,3 +256,114 @@ pytest tests/ -v
 
 Based on the original work by [@prezervos](https://github.com/prezervos/goodwe-wallbox-sems-home-assistant),  
 which was itself inspired by [@TimSoethout/goodwe-sems-home-assistant](https://github.com/TimSoethout/goodwe-sems-home-assistant).
+
+## Remember charging preferences
+
+The optional **Restore the mode selected in HA before charging** setting captures
+the current reported mode when enabled on the final options page. If the current
+mode cannot be verified, enabling it is rejected. Later explicit HA mode selections
+update the saved preference; changes in SolarGo remain visible but do not replace it.
+Before an HA Start, the enabled policy restores and verifies the saved mode.
+Setup, reload and periodic polling never force a mode or start charging. With the
+option disabled, Start uses the current device mode. There is no separate initial-mode
+field in configuration.
+
+For entries with native TCP enabled, requested power is saved across reloads and
+restarts independently of the mode-restoration checkbox. Native TCP always uses
+that saved ceiling for its protection policy; without one it uses the
+identified model minimum (4.2 kW for the tested GW11 HCA, 1.4 kW for the 7 kW profiles).
+The 7/22 kW profiles have protocol tests, not equivalent physical validation.
+Legacy cloud-only and Modbus entries enable the saved mode/power policy through
+the mode-restoration option; they do not provide the same unconditional saved-power
+behavior as native-enabled entries.
+
+In the existing cloud path, changing the power number also selects Fast. In the
+native TCP path, the power number preserves the selected mode, and the saved
+power ceiling applies to Fast, PV priority and PV + battery. The number shows the
+requested value; `reported_power_limit` and the power sensor show the distinct
+device setpoint and actual consumption. These quantities need not be identical.
+
+## Option C: Native Socket A TCP (experimental, opt-in)
+
+Enable **Native TCP controls** in an existing cloud entry's options to keep its
+credentials and core entity identities. Alternatively, create a native-only entry.
+Supply the wallbox IPv4 address, the HA address reachable from the wallbox, and a
+published listener port (default 18899). Optional UDP discovery verifies the
+serial at the supplied address. No household address or serial is hard-coded.
+
+The **Local TCP connection** switch takes over Socket A; switching it off restores
+the recorded cloud destination. This is a manual transport selection, distinct
+from Modbus. Socket B must be disabled. An explicit TCP choice is remembered and
+restored after HA restart/reload; it does not wait for cloud availability. Selecting
+cloud clears that preference. Reload can still cause a short physical reconnect.
+When TCP came from automatic fallback instead, reload permits up to 60 seconds
+for fresh cloud data before retrying TCP, without the normal outage debounce.
+Native-only entries have no cloud telemetry until TCP is selected for the first
+time. Native controls retain charging preferences but never replay Start on reload.
+
+### Automatic fallback
+
+Open the entry's **Configure** dialog, enable **Native TCP controls (development)**
+on page 1, then continue to **TCP and automatic fallback (2/2)**. Enable
+**Automatically use TCP when cloud fails** and confirm page 2 to save both pages.
+This requires a cloud account and defaults to off.
+
+Normal automatic takeover requires at least three failed observations and 90 seconds
+from the first detected failure. Frozen but successful cloud reports have a separate
+freshness timeout, so this is not a universal 90-second outage guarantee. A rejected
+login requests reauthentication rather than triggering takeover. An unsent Start/Stop
+can use the separately verified control-failure fallback when opted in; uncertain
+commands are not blindly replayed.
+
+After 30 minutes on automatic TCP, an idle wallbox can attempt cloud return if the
+preliminary reachability/session check passes. Fresh wallbox data must then arrive
+within 60 seconds; failed trials back off up to two hours. During switching,
+measurements can be unavailable and Active transport shows progress. Core controls
+retain only the latest intent for each setting. Manual TCP stays selected and pauses
+automatic return. Selecting cloud manually pauses automatic fallback until reload.
+
+TCP Start/Stop is implemented for all three charging modes. Before Start and after
+a stopped mode change, TCP restores the saved power ceiling and verifies a fresh
+report. Stop before changing mode. Explicit power changes remain available during
+charging. Actual-load supervision follows the latest user request and requests
+Stop on excess load. It cannot protect a session after the HA host is lost.
+
+PV waiting is shown separately from measured charging. Preserving a PV mode and
+power ceiling does not establish solar-only charging when SEMS is disconnected;
+this integration does not calculate solar surplus or implement a PV regulator.
+
+Physical validation covers GW11 HCA Start/Stop and power changes in all modes.
+GW7 HCA/ACA and GW22 HCA have model-range/protocol tests, not equivalent hardware
+coverage. Automatic fallback is opt-in and requires cloud credentials. Bluetooth, history
+import and decoded fault meanings are not implemented in this path. Auxiliary settings are exposed when device capabilities and reported values support them. Cloud-only settings become unavailable in TCP; verified native minimum-power control is the exception. The existing session-energy sensor also reads verified HCA TCP telemetry in kWh; it resets to zero after Stop, as reported by the device. Cloud and TCP use their own observations, never an estimated integral or lifetime-counter difference.
+
+See [native TCP behavior and architecture](docs/NATIVE_TCP.md) for configuration,
+recovery, supervision limits and protocol details, and [development validation](docs/DEVELOPMENT.md)
+for reproducible checks.
+
+### Optional native lifetime energy
+
+Enable the diagnostic **Wallbox total energy** entity to read the verified native
+cumulative counter. It is disabled by default, uses kWh and `total_increasing`,
+and is independent of the legacy cloud session-energy sensor. Polling occurs
+only in idle TCP mode, at most every five minutes and after an observed session
+ends. Cloud/missing/invalid data is unavailable, never zero. Updates can arrive
+after a cloud interval or after charging ends, so do not use their timestamps for
+precise tariff allocation. Counter integrity and simulated reset behavior are
+tested; a physical factory reset has not been tested.
+
+State-class conventions: https://developers.home-assistant.io/docs/core/entity/sensor/
+
+### Supplemental cloud notifications
+
+Cloud connections automatically attempt the GoodWe MQTT event service over TLS.
+An event requests a fresh authoritative cloud read; it never supplies entity values
+or changes charging settings. Your polling intervals remain the baseline when
+notifications are unavailable or unverified. A recently verified telemetry stream
+can temporarily double the backup interval; silence for one original interval
+restores normal polling and triggers a read. No local MQTT broker or manual broker credentials
+are needed. Notifications are suspended while using local TCP. Download integration
+diagnostics to see whether the optional event connection is established.
+
+Delivery timing depends on GoodWe and is not guaranteed for every state change.
+See [validation and known limitations](docs/VALIDATION.md) for measured limitations.

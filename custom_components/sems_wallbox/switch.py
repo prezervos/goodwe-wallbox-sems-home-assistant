@@ -12,6 +12,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
+from .operation_budget import async_execute
 from .const import (
     DOMAIN,
     CONN_TYPE_MODBUS,
@@ -20,11 +21,13 @@ from .const import (
     CAP_PHASE_SWITCH,
     CAP_ENSURE_MIN_CHARGING_POWER,
 )
+from .charge_mode_policy import async_apply_policy, mode_setting_write
 from .coordinator import SemsUpdateCoordinator
+from .minimum_power import write_minimum_power
+from .ui_errors import operation_error
 
 _LOGGER = logging.getLogger(__name__)
 
-SWITCH_VERSION = "0.3.4"
 
 # How long after an ON command to ignore "Waiting/power=0" and keep optimistic ON (seconds)
 GRACE_ON_SECONDS = 130
@@ -42,6 +45,10 @@ async def async_setup_entry(
     runtime = hass.data[DOMAIN][config_entry.entry_id]
     coordinator = runtime["coordinator"]
     conn_type = runtime.get("connection_type", "cloud")
+    if conn_type == "native_tcp":
+        from .native_entities import setup_platform
+        setup_platform("switch", runtime["coordinator"], async_add_entities)
+        return
 
     if conn_type == CONN_TYPE_MODBUS:
         client = runtime["modbus_client"]
@@ -62,20 +69,25 @@ async def async_setup_entry(
     more_controls = caps.get("more_device_controls", [])
 
     _LOGGER.debug(
-        "Setting up SemsSwitch entities (version %s) for entry %s",
-        SWITCH_VERSION,
+        "Setting up SemsSwitch entities for entry %s",
+
         config_entry.entry_id,
     )
 
     entities: list[SemsSwitch] = []
+    minimum_registered = set()
     for sn, data in coordinator.data.items():
         start_status = data.get("startStatus")
         current_is_on = bool(start_status) if start_status is not None else False
         entities.append(SemsSwitch(coordinator, sn, api, current_is_on))
-        # Ensure minimum charging power: show when explicitly listed OR when capability list
-        # is empty (old entry, before capability detection was added).
-        if not more_controls or CAP_ENSURE_MIN_CHARGING_POWER in more_controls:
-            entities.append(SemsMinimumPowerSwitch(coordinator, sn, api))
+        # Retain explicit/legacy capabilities and accept an actual boolean report
+        # when the device omits this feature from its capability list.
+        if (not more_controls or CAP_ENSURE_MIN_CHARGING_POWER in more_controls
+                or (coordinator.last_update_success
+                    and type(data.get("ensure_minimum_charging_power")) is bool)):
+            entities.append(SemsMinimumPowerSwitch(
+                coordinator, sn, api, generation=caps.get("pile_generation")))
+            minimum_registered.add(sn)
         if CAP_PLUG_AND_CHARGE in dashboard:
             entities.append(SemsPlugAndChargeSwitch(coordinator, sn, api))
         if CAP_DYNAMIC_LOAD_CONTROL in more_controls:
@@ -84,6 +96,23 @@ async def async_setup_entry(
             entities.append(SemsPhaseSwitchSwitch(coordinator, sn, api))
 
     async_add_entities(entities)
+
+    @callback
+    def add_reported_minimum_power():
+        if not coordinator.last_update_success:
+            return
+        additions = []
+        for sn, data in coordinator.data.items():
+            if (sn not in minimum_registered
+                    and type(data.get("ensure_minimum_charging_power")) is bool):
+                additions.append(SemsMinimumPowerSwitch(
+                    coordinator, sn, api, generation=caps.get("pile_generation")))
+                minimum_registered.add(sn)
+        if additions:
+            async_add_entities(additions)
+
+    config_entry.async_on_unload(
+        coordinator.async_add_listener(add_reported_minimum_power))
 
 
 class SemsSwitch(CoordinatorEntity, SwitchEntity):
@@ -112,8 +141,8 @@ class SemsSwitch(CoordinatorEntity, SwitchEntity):
         self._last_command_target: bool | None = None
 
         _LOGGER.debug(
-            "Creating SemsSwitch (v%s) for Wallbox %s, initial is_on=%s",
-            SWITCH_VERSION,
+            "Creating SemsSwitch for Wallbox %s, initial is_on=%s",
+
             self.sn,
             self._attr_is_on,
         )
@@ -214,40 +243,43 @@ class SemsSwitch(CoordinatorEntity, SwitchEntity):
         return api_is_on
 
     async def async_turn_off(self, **kwargs):
-        """Turn off charging."""
-        _LOGGER.debug("Wallbox %s set to Off (optimistic UI + OFF grace)", self.sn)
-
-        self._last_command_target = False
-        self._last_command_ts = self.hass.loop.time()
-
-        # Optimistic state update
-        self._attr_is_on = False
-        self.async_write_ha_state()
-
-        # Optimistic immediate refresh, then a confirmed one 5 s after the command
-        self.hass.async_create_task(self.coordinator.async_request_refresh())
-
-        # Send command to SEMS API
-        await self.hass.async_add_executor_job(self.api.change_status_gen2, self.sn, "stop")
-        self.coordinator.schedule_delayed_refresh(5)
+        """Stop charging and expose a rejected command to HA callers."""
+        if not await async_apply_policy(self.coordinator, "stop"):
+            await self._async_command(False)
 
     async def async_turn_on(self, **kwargs):
-        """Turn on charging."""
-        _LOGGER.debug("Wallbox %s set to On (optimistic UI + ON grace)", self.sn)
+        """Start once; do not replay a command with an uncertain outcome."""
+        if not await async_apply_policy(self.coordinator, "start"):
+            await self._async_command(True)
 
-        self._last_command_target = True
+    async def _async_command(self, enabled: bool) -> None:
+        """Keep optimistic state only while an accepted command is pending."""
+        from .ui_errors import operation_error
+
+        action = "start" if enabled else "stop"
+        self._last_command_target = enabled
         self._last_command_ts = self.hass.loop.time()
-
-        # Optimistic state update
-        self._attr_is_on = True
+        self._attr_is_on = enabled
         self.async_write_ha_state()
-
-        # Optimistic immediate refresh, then a confirmed one 5 s after the command
-        self.hass.async_create_task(self.coordinator.async_request_refresh())
-
-        # Send command to SEMS API
-        await self.hass.async_add_executor_job(self.api.change_status_gen2, self.sn, "start")
-        self.coordinator.schedule_delayed_refresh(5)
+        try:
+            accepted = await async_execute(self.hass,
+                self.api.change_status_gen2, self.sn, action
+            )
+            if accepted is not True:
+                raise ValueError(
+                    "Start was not acknowledged; it was not retried" if enabled
+                    else "Stop was not acknowledged; check actual device state"
+                )
+        except (OSError, ValueError, RuntimeError) as error:
+            self._last_command_target = None
+            self._last_command_ts = None
+            self._attr_is_on = self._compute_is_on_from_data(
+                self.coordinator.data.get(self.sn, {}) or {}
+            )
+            self.async_write_ha_state()
+            raise operation_error(error) from error
+        finally:
+            self.coordinator.schedule_delayed_refresh(5)
 
     async def async_added_to_hass(self):
         """When entity is added to hass."""
@@ -319,9 +351,10 @@ class _SemsConfigSwitch(CoordinatorEntity, SwitchEntity):
         return self.coordinator.last_update_success
 
     @property
-    def is_on(self) -> bool:
+    def is_on(self) -> bool | None:
         data = self.coordinator.data.get(self.sn, {}) or {}
-        api_val = bool(data.get(self._data_key) == self._on_value or data.get(self._data_key))
+        reported = data.get(self._data_key)
+        api_val = reported if type(reported) is bool else None
         if self._pending_state is not None:
             if time.monotonic() - self._pending_set_at >= _CLOUD_CONFIG_PENDING_TIMEOUT:
                 self._pending_state = None
@@ -335,18 +368,21 @@ class _SemsConfigSwitch(CoordinatorEntity, SwitchEntity):
     def _handle_coordinator_update(self) -> None:
         self.async_write_ha_state()
 
+    @mode_setting_write
     async def _async_set(self, state: bool) -> None:
         self._pending_state = state
         self._pending_set_at = time.monotonic()
         self.async_write_ha_state()
         kwargs = self._set_config_on if state else self._set_config_off
-        ok = await self.hass.async_add_executor_job(
+        ok = await async_execute(self.hass,
             lambda: self.api.set_config_gen2(self.sn, **kwargs)
         )
         if not ok:
             _LOGGER.warning("%s: set_config failed, reverting optimistic state", self.unique_id)
             self._pending_state = None
             self.async_write_ha_state()
+            self.coordinator.schedule_delayed_refresh(3.0)
+            raise operation_error(RuntimeError("Device write was not confirmed"))
         else:
             self.coordinator.schedule_delayed_refresh(5.0)
 
@@ -358,13 +394,37 @@ class _SemsConfigSwitch(CoordinatorEntity, SwitchEntity):
 
 
 class SemsPlugAndChargeSwitch(_SemsConfigSwitch):
-    """Plug & Charge switch (chargedNow: 170=enabled, 0=disabled)."""
+    """Capability-gated Plug and Charge using SEMS+ 0/1 writes and readback."""
 
     _attr_translation_key = "plug_and_charge"
     _data_key = "plug_and_charge"
     _on_value = True
-    _set_config_on = {"chargedNow": 170}
+    _set_config_on = {"chargedNow": 1}
     _set_config_off = {"chargedNow": 0}
+
+    @mode_setting_write
+    async def _async_set(self, state: bool) -> None:
+        """Send one configuration write and retain only device-reported state."""
+        from .ui_errors import operation_error
+
+        try:
+            accepted = await async_execute(self.hass,
+                lambda: self.api.set_config_gen2(self.sn, chargedNow=int(state))
+            )
+            if not accepted:
+                raise ValueError("Plug and Charge setting was not acknowledged")
+        except (ConnectionError, TimeoutError, ValueError) as error:
+            raise operation_error(error) from error
+        finally:
+            # A timeout can leave an uncertain result. Read back without replaying
+            # the write or substituting the requested value for measured state.
+            self.coordinator.schedule_delayed_refresh(5.0)
+
+    @property
+    def is_on(self) -> bool | None:
+        """Show reported state only; an accepted command is not device readback."""
+        value = (self.coordinator.data.get(self.sn) or {}).get(self._data_key)
+        return value if isinstance(value, bool) else None
 
     @property
     def unique_id(self) -> str:
@@ -403,16 +463,45 @@ class SemsPhaseSwitchSwitch(_SemsConfigSwitch):
 
 
 class SemsMinimumPowerSwitch(_SemsConfigSwitch):
-    """Ensure minimum charging power switch (ensureMinimumChargingPower: 170=enabled, 0=disabled).
-
-    Uses the set-config endpoint so it is available in all charge modes.
-    """
+    """Control minimum grid support using the shared, generation-aware encoder."""
 
     _attr_translation_key = "ensure_minimum_charging_power"
     _data_key = "ensure_minimum_charging_power"
-    _on_value = True
-    _set_config_on = {"ensureMinimumChargingPower": 170}
-    _set_config_off = {"ensureMinimumChargingPower": 0}
+
+    def __init__(self, coordinator, sn, api, *, generation=None):
+        super().__init__(coordinator, sn, api)
+        self.generation = generation
+
+    @property
+    def available(self) -> bool:
+        return super().available
+
+    @property
+    def is_on(self) -> bool | None:
+        value = (self.coordinator.data.get(self.sn) or {}).get(self._data_key)
+        return value if type(value) is bool else None
+
+    @mode_setting_write
+    async def _async_set(self, state: bool) -> None:
+        """Read before writing and keep only reported state after acknowledgement."""
+        from .ui_errors import operation_error
+
+        try:
+            if not self.coordinator.last_update_success:
+                raise ValueError("Cloud configuration is unavailable")
+            reported = await async_execute(self.hass,
+                lambda: self.api.get_data_gen2(self.sn))
+            accepted = await async_execute(self.hass,
+                lambda: write_minimum_power(
+                    self.api, self.sn, self.generation, reported, state,
+                    observation=dict(self.coordinator.data.get(self.sn) or {})))
+            if not accepted:
+                raise ValueError("Minimum-power setting was not acknowledged")
+        except (ConnectionError, TimeoutError, ValueError) as error:
+            raise operation_error(error) from error
+        finally:
+            # Acknowledgement is not a measurement; do not replay uncertain writes.
+            self.coordinator.schedule_delayed_refresh(5.0)
 
     @property
     def unique_id(self) -> str:
@@ -459,14 +548,14 @@ class _ModbusSwitch(CoordinatorEntity, SwitchEntity):
     def available(self) -> bool:
         return self.coordinator.last_update_success
 
-    def _api_state(self) -> bool:
+    def _api_state(self) -> bool | None:
         raise NotImplementedError
 
     def _do_write(self, state: bool) -> bool:
         raise NotImplementedError
 
     @property
-    def is_on(self) -> bool:
+    def is_on(self) -> bool | None:
         api_val = self._api_state()
         if self._pending_state is not None:
             if time.monotonic() - self._pending_set_at >= _MODBUS_PENDING_TIMEOUT:
@@ -481,15 +570,18 @@ class _ModbusSwitch(CoordinatorEntity, SwitchEntity):
     def _handle_coordinator_update(self) -> None:
         self.async_write_ha_state()
 
+    @mode_setting_write
     async def _async_set(self, state: bool) -> None:
         self._pending_state = state
         self._pending_set_at = time.monotonic()
         self.async_write_ha_state()
-        ok = await self.hass.async_add_executor_job(self._do_write, state)
+        ok = await async_execute(self.hass, self._do_write, state)
         if not ok:
             _LOGGER.warning("%s: write failed, reverting optimistic state", self.unique_id)
             self._pending_state = None
             self.async_write_ha_state()
+            self.coordinator.schedule_delayed_refresh(3.0)
+            raise operation_error(RuntimeError("Device write was not confirmed"))
         else:
             self.coordinator.schedule_delayed_refresh(3.0)
 
@@ -513,6 +605,16 @@ class ModbusStartStopSwitch(_ModbusSwitch):
 
     _attr_translation_key = "modbus_start_charging"
 
+    async def async_turn_on(self, **kwargs):
+        """Apply the optional verified mode policy before Modbus Start."""
+        if not await async_apply_policy(self.coordinator, "start"):
+            await super().async_turn_on(**kwargs)
+
+    async def async_turn_off(self, **kwargs):
+        """Invalidate pending preparation before Modbus Stop."""
+        if not await async_apply_policy(self.coordinator, "stop"):
+            await super().async_turn_off(**kwargs)
+
     @property
     def unique_id(self) -> str:
         return f"{self.sn}_modbus_start_stop"
@@ -524,7 +626,7 @@ class ModbusStartStopSwitch(_ModbusSwitch):
         data = self.coordinator.data.get(self.sn, {}) or {}
         return bool(data.get("modbus_car_connected", 0))
 
-    def _api_state(self) -> bool:
+    def _api_state(self) -> bool | None:
         data = self.coordinator.data.get(self.sn, {}) or {}
         # car_connected=2 means the CP signal is at 6V (car actively drawing power).
         # car_connected=1 means CP is at 9V -- car is plugged in but not charging.
@@ -533,7 +635,7 @@ class ModbusStartStopSwitch(_ModbusSwitch):
         return data.get("modbus_car_connected") == 2
 
     @property
-    def is_on(self) -> bool:
+    def is_on(self) -> bool | None:
         """Like base class, but clears a stale optimistic ON on terminal states."""
         data = self.coordinator.data.get(self.sn, {}) or {}
         raw_status = data.get("modbus_status_raw")
@@ -569,9 +671,10 @@ class ModbusMaintainMinPowerSwitch(_ModbusSwitch):
         data = self.coordinator.data.get(self.sn, {}) or {}
         return data.get("chargeMode") in (1, 2)
 
-    def _api_state(self) -> bool:
+    def _api_state(self) -> bool | None:
         data = self.coordinator.data.get(self.sn, {}) or {}
-        return bool(data.get("ensure_minimum_charging_power", False))
+        value = data.get("ensure_minimum_charging_power")
+        return value if type(value) is bool else None
 
     def _do_write(self, state: bool) -> bool:
         return self._client.write_maintain_min_power(state)
@@ -587,9 +690,10 @@ class ModbusPlugChargeSwitch(_ModbusSwitch):
     def unique_id(self) -> str:
         return f"{self.sn}_modbus_plug_charge"
 
-    def _api_state(self) -> bool:
+    def _api_state(self) -> bool | None:
         data = self.coordinator.data.get(self.sn, {}) or {}
-        return bool(data.get("modbus_plug_charge_enabled", False))
+        value = data.get("modbus_plug_charge_enabled")
+        return value if type(value) is bool else None
 
     def _do_write(self, state: bool) -> bool:
         return self._client.write_plug_charge(state)
@@ -605,9 +709,10 @@ class ModbusDynamicLoadMgmtSwitch(_ModbusSwitch):
     def unique_id(self) -> str:
         return f"{self.sn}_modbus_dynamic_load"
 
-    def _api_state(self) -> bool:
+    def _api_state(self) -> bool | None:
         data = self.coordinator.data.get(self.sn, {}) or {}
-        return bool(data.get("modbus_dynamic_load", False))
+        value = data.get("modbus_dynamic_load")
+        return value if type(value) is bool else None
 
     def _do_write(self, state: bool) -> bool:
         return self._client.write_dynamic_load_mgmt(state)
@@ -623,9 +728,10 @@ class ModbusEmsDispatchSwitch(_ModbusSwitch):
     def unique_id(self) -> str:
         return f"{self.sn}_modbus_ems_dispatch"
 
-    def _api_state(self) -> bool:
+    def _api_state(self) -> bool | None:
         data = self.coordinator.data.get(self.sn, {}) or {}
-        return data.get("modbus_ems_dispatch", 0) == 1
+        value = data.get("modbus_ems_dispatch")
+        return value == 1 if type(value) is int and value in (0, 1) else None
 
     def _do_write(self, state: bool) -> bool:
         return self._client.write_ems_dispatch(state)
@@ -656,9 +762,10 @@ class ModbusPhaseSwitchSwitch(_ModbusSwitch):
         pile_type = data.get("modbus_pile_type")
         return pile_type == 0
 
-    def _api_state(self) -> bool:
+    def _api_state(self) -> bool | None:
         data = self.coordinator.data.get(self.sn, {}) or {}
-        return bool(data.get("modbus_phase_switch_enabled", False))
+        value = data.get("modbus_phase_switch_enabled")
+        return value if type(value) is bool else None
 
     def _do_write(self, state: bool) -> bool:
         return self._client.write_phase_switch(state)
