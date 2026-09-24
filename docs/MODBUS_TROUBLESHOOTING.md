@@ -58,3 +58,18 @@ still have reached the wallbox. Diagnostic collection never retries a control.
 Please include model, firmware, exact integration version, timestamps, the action
 used to start charging, whether other HA controls/automations were active, and
 both the diagnostics JSON and redacted debug log when reporting results.
+
+### Cloud import-current range warning after returning from Modbus
+
+The cloud `currentLimit` setting concerns the household incoming-current limit for
+load management, not the charger's vehicle output-current rating. The 3.0.3b3 prerelease
+fix replaces the incorrect 32 A cloud ceiling with the device's SEMS+ range and
+0–2000 A defaults when that metadata omits a bound. It preserves a reported 63 A;
+it does not clamp the value or write anything when loading the integration.
+
+If valid range metadata contradicts the reported value, or metadata is malformed,
+the control is unavailable and explicit writes are rejected. Inspect the original
+report and metadata in cached diagnostics. Refresh the entity or reload to retry
+discovery. A failed metadata request does not justify assuming the default range.
+See `CLOUD_CURRENT_LIMIT.md` for the official application evidence. Direct physical
+register equivalence and acceptance on the reporter's model remain unverified.

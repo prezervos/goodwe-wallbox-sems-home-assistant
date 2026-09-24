@@ -37,6 +37,7 @@ def owner():
         ),
         cloud=SimpleNamespace(
             get_data_gen2=Mock(),
+            fetch_device_info=Mock(return_value={"productModel": "MODEL"}),
             set_config_gen2=Mock(return_value=True),
             set_charge_mode_gen2=Mock(return_value=True),
         ),
@@ -500,3 +501,42 @@ async def test_accountless_minimum_write_uses_native_command_only():
     instance.transport.async_command.assert_awaited_once_with(
         "minimum_power", minimum_power=True, timeout=15)
     assert entity.is_on is False  # Wait for a real device report.
+
+
+@pytest.mark.asyncio
+async def test_saved_capabilities_still_discover_missing_current_range():
+    """A known model or local startup must not leave range metadata unresolved."""
+    instance = owner()
+    instance.cloud.get_data_gen2.return_value["controlItemRanges"] = False
+    ranges = {"charge_pile_dynamic_load_import_current_limit": {"min": 6, "max": 80}}
+    instance.cloud.fetch_device_info.return_value = {"controlItemRanges": ranges}
+    await instance.cloud_settings.refresh()
+    assert instance.cloud_settings.values["controlItemRanges"] == ranges
+    instance.cloud.fetch_device_info.assert_called_once_with("TEST")
+    instance.cloud.set_config_gen2.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_range_discovery_crossing_handover_is_discarded():
+    instance = owner()
+    instance.cloud.get_data_gen2.return_value["controlItemRanges"] = False
+    def discover(serial):
+        instance.routing_epoch += 1
+        return {"productModel": "MODEL"}
+    instance.cloud.fetch_device_info.side_effect = discover
+    await instance.cloud_settings.refresh()
+    assert not instance.cloud_settings.valid
+
+
+@pytest.mark.asyncio
+async def test_current_metadata_read_cannot_send_after_transport_change():
+    instance = owner()
+    def discover(serial):
+        instance.local = True
+        instance.routing_epoch += 1
+        return {"productModel": "MODEL"}
+    instance.cloud.fetch_device_info.side_effect = discover
+    descriptor = next(item for item in settings.SETTINGS if item.field == "currentLimit")
+    with pytest.raises(settings.ModeVerificationError):
+        await instance.cloud_settings.write(descriptor, 63)
+    instance.cloud.set_config_gen2.assert_not_called()

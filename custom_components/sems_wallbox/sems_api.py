@@ -131,6 +131,7 @@ class SemsApi:
         self._password = password
         self._web_request_lock = threading.RLock()
         self._closed = False
+        self._control_item_ranges = {}
         self._web_login_retry_at = 0.0
         self._web_login_delay = 30.0
         self._web_retry_after = 0.0
@@ -803,6 +804,9 @@ class SemsApi:
                 "charge_from_grid": _get("charge_from_grid", "chargeFromGrid", default=1),
                 "isOpen": _get("isOpen", "isConnected", default=False),
                 "currentLimit": _get("currentLimit", "currentLimitValue", default=None),
+                # Metadata is read at discovery and before explicit current writes,
+                # never fetched again for every telemetry poll.
+                "controlItemRanges": self._control_item_ranges.get(wallbox_sn, False),
                 # Per-mode charging targets (0 = unlimited / no target)
                 "max_energy": _get("maxEnergy", default=None),
                 "min_energy": _get("minEnergy", default=None),
@@ -1028,7 +1032,13 @@ class SemsApi:
             _LOGGER.debug("SEMS fetch_device_info raw: %s", rj)
             if str(rj.get("code") or "") not in ("00000", "0"):
                 return {}
-            return rj.get("data") or {}
+            info = rj.get("data")
+            if not isinstance(info, dict) or not info:
+                return {}
+            if info.get("sn") is not None and info["sn"] != wallbox_sn:
+                return {}
+            self._control_item_ranges[wallbox_sn] = info.get("controlItemRanges")
+            return info
         except (CloudAuthenticationError, CloudRateLimitedError, BudgetCancelled, TimeoutError):
             raise
         except Exception as exc:  # noqa: BLE001

@@ -68,6 +68,22 @@ dynamic load management and Plug & Charge. Availability depends on the model and
 actual API values; a successful API acknowledgement alone does not prove the
 wallbox applies a setting.
 
+The **Import current limit** number (A; Czech: **Limit proudu ze sítě**) sets
+the household incoming-current limit used by dynamic load management. It is
+distinct from **Max charge power** (kW), which limits vehicle charging, and
+**Phase A/B/C current** (A), which reports measurements. A 63 A household limit
+does not mean the vehicle can charge at 63 A.
+
+In prerelease 3.0.3b3, this control uses the device's SEMS+ range
+metadata, with 0–2000 A defaults for missing/null bounds in a successful response
+and a 0.01 A input step. These are accepted input bounds, not recommended breaker
+settings or proof of physical support on every model. Failed discovery, malformed
+metadata or contradictory reported values prevent writes; missing readings are
+never replaced with zero. The existing entity identity is preserved. This cloud
+setting does not gain native TCP support from the fix. Modbus uses its separate
+register contract (10026, integer 0–2000 A). See
+[cloud current-limit behavior and evidence](docs/CLOUD_CURRENT_LIMIT.md).
+
 Enabling native TCP keeps the core Start/Stop, mode, power and session-energy
 identities. Extended cloud-only settings become unavailable while TCP owns the
 connection. The verified original-HCA minimum-power control is an exception: its

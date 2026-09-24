@@ -66,6 +66,12 @@
     },
     "auto_start_schedule_changed": {
       "message": "La programación del wallbox cambió durante la actualización del inicio automático. Compruebe los ajustes antes de volver a intentarlo."
+    },
+    "current_limit_range_unverified": {
+      "message": "Los datos de la nube sobre el rango de corriente no son válidos o contradicen el valor informado. Actualice los datos del dispositivo antes de cambiar este ajuste."
+    },
+    "current_limit_invalid": {
+      "message": "Introduzca una corriente dentro del rango admitido con un máximo de dos decimales."
     }
   },
   "options": {

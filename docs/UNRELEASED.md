@@ -57,3 +57,27 @@ it does not claim those interruptions are fixed. See [the test procedure](MODBUS
   and safe hardware validation; missing data must remain unknown/unavailable.
 - Natural token expiry and continuous MQTT telemetry coverage remain unverified.
   Preserve HTTP fallback and do not treat an MQTT connection as full coverage.
+
+## Cloud household import-current range (issue #21)
+
+- Fix the cloud import-current entity's incorrect 32 A ceiling. Use the official
+  SEMS+ per-device `controlItemRanges` minimum/maximum; missing/null bounds use
+  the official current client defaults of 0–2000 A. A reported 63 A now displays
+  normally and remains editable within the device range, without artificial locks.
+- This setting is the household incoming-current limit for dynamic load control,
+  not the charger's output-current rating. Entity identities and existing names
+  remain unchanged. Modbus and native TCP protocol writes are unchanged.
+- Both cloud implementations share validation, preserve two-decimal requests,
+  and reject invalid values without rounding or clamping. Recheck fresh metadata
+  and device identity before explicit writes. An ACK never replaces telemetry.
+- Invalid metadata or a report contradicting valid bounds makes the control
+  unavailable; the original report remains in cached diagnostic data. No automatic
+  corrective write is made. Missing metadata in a successful response differs from
+  a failed metadata request, which does not authorize a write using broad defaults.
+- Cache discovery per serial; do not add a metadata request to each telemetry poll.
+  Refresh it before explicit current-limit writes. Native cloud settings also resolve
+  missing metadata after local startup or reload with saved capabilities. Legacy
+  entities retry discovery on explicit entity update or integration reload.
+- Add shared regressions for both paths, API metadata propagation/caching and real
+  HA platform tests. English, Czech, German and Spanish errors updated consistently.
+  See `CLOUD_CURRENT_LIMIT.md` for evidence and remaining hardware validation limits.

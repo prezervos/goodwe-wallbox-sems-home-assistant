@@ -66,6 +66,12 @@
     },
     "auto_start_schedule_changed": {
       "message": "Der Ladezeitplan der Wallbox hat sich während der Auto-Start-Änderung geändert. Prüfen Sie die Einstellungen vor einem erneuten Versuch."
+    },
+    "current_limit_range_unverified": {
+      "message": "Die Cloud-Daten zum Stromgrenzbereich sind ungültig oder widersprechen dem gemeldeten Wert. Aktualisieren Sie vor einer Änderung die Gerätedaten."
+    },
+    "current_limit_invalid": {
+      "message": "Geben Sie einen Strom im unterstützten Bereich mit höchstens zwei Dezimalstellen ein."
     }
   },
   "options": {
