@@ -105,10 +105,18 @@ class ChargeModePolicy:
         await self.store.async_save(data)
 
     async def async_seed_power(self, value):
-        """Import the existing HA limit once; telemetry never replaces saved intent."""
-        if self.desired_power is None and value is not None:
-            self.desired_power = self._valid_power(value)
-            await self._save_intent()
+        """Seed a valid initial limit without promoting invalid telemetry to intent."""
+        if self.desired_power is not None or value is None:
+            return
+        try:
+            power = self._valid_power(value)
+        except ModeVerificationError:
+            # Idle/uninitialized registers may report zero. Keep the preference
+            # unset; this optional observation must not prevent integration setup.
+            # Stored preferences and explicit user writes still validate strictly.
+            return
+        self.desired_power = power
+        await self._save_intent()
 
     def invalidate(self, *, cancel_start=True):
         """Invalidate preparation; power-only changes retain explicit Start intent."""
