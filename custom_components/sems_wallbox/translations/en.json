@@ -66,6 +66,12 @@
     },
     "auto_start_schedule_changed": {
       "message": "The wallbox schedule changed during the Auto start update. Check its settings before trying again."
+    },
+    "current_limit_range_unverified": {
+      "message": "The cloud current-limit metadata is invalid or conflicts with the reported value. Refresh the device data before changing this setting."
+    },
+    "current_limit_invalid": {
+      "message": "Enter a current within the supported range using at most two decimal places."
     }
   },
   "options": {

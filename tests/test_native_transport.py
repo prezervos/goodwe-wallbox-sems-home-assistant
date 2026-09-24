@@ -1644,3 +1644,124 @@ async def test_stop_supersedes_inconsistent_idle_retry(monkeypatch):
         await start
     assert writes == ["stop"]
     assert sum(c.args == ("status",) for c in fake.async_command.call_args_list) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("initial_state,initial_power", [(1, 0), (2, 38)])
+async def test_explicit_stop_rechecks_delayed_transition_without_replaying_stop(initial_state, initial_power):
+    """A transitional early reply must not strand a Stop awaiting passive telemetry."""
+    class DelayedStopDevice(Device):
+        def __init__(self):
+            super().__init__("ignore_stops")
+            self.state, self.power = initial_state, initial_power
+            self.stop_at = None
+            self.status_reads = 0
+
+        async def status(self):
+            self.status_reads += 1
+            if 5 in self.writes:
+                if self.stop_at is None:
+                    self.stop_at = time.monotonic() + 0.8
+                if time.monotonic() >= self.stop_at:
+                    self.state, self.power = 0, 0
+            await super().status()
+
+    server = transport.NativeTransport(SERIAL, "127.0.0.1")
+    await server.async_listen("127.0.0.1", 0)
+    device = DelayedStopDevice()
+    await device.connect(server.port)
+    task = asyncio.create_task(device.run())
+    try:
+        await ready(server)
+        result = await server.async_command("stop", timeout=4)
+        assert result.stopped
+        assert device.writes == [5]
+        assert device.status_reads >= 4
+        assert server.available
+        assert server.session_guard.phase == "stopped"
+    finally:
+        await server.async_close()
+        await device.close()
+        await task
+
+
+@pytest.mark.asyncio
+async def test_explicit_stop_with_fresh_nonterminal_reports_is_bounded():
+    """Repeated telemetry is not Stop confirmation and must not trigger replay."""
+    server = transport.NativeTransport(SERIAL, "127.0.0.1")
+    await server.async_listen("127.0.0.1", 0)
+    device = Device("ack_only")
+    device.state = 1
+    await device.connect(server.port)
+    task = asyncio.create_task(device.run())
+    try:
+        await ready(server)
+        with pytest.raises(TimeoutError):
+            await server.async_command("stop", timeout=3)
+        assert device.writes == [5]
+        assert device.state == 1
+        async with asyncio.timeout(1):
+            while server.available:
+                await asyncio.sleep(0.01)
+        assert server.session_guard.phase != "stopped"
+    finally:
+        await server.async_close()
+        await device.close()
+        await task
+
+
+@pytest.mark.asyncio
+async def test_queued_status_timeout_does_not_break_pending_stop_or_receive_loop():
+    """A status-query queue timeout is distinct from lost TCP telemetry."""
+    server = transport.NativeTransport(SERIAL, "127.0.0.1")
+    await server.async_listen("127.0.0.1", 0)
+    device = Device("ack_only")
+    device.state = 1
+    await device.connect(server.port)
+    peer_task = asyncio.create_task(device.run())
+    stop_task = None
+    try:
+        await ready(server)
+        stop_task = asyncio.create_task(server.async_command("stop", timeout=4))
+        async with asyncio.timeout(1):
+            while 5 not in device.writes:
+                await asyncio.sleep(0.01)
+        with pytest.raises(TimeoutError):
+            await server.async_command("status", timeout=0.1)
+        assert not stop_task.done()
+        assert server.available
+        observed_before = server.observed_at
+        device.state = 0
+        await device.status()
+        result = await stop_task
+        assert result.stopped and server.available
+        assert server.observed_at > observed_before
+        assert device.writes == [5]
+    finally:
+        if stop_task is not None and not stop_task.done():
+            stop_task.cancel()
+            await asyncio.gather(stop_task, return_exceptions=True)
+        await server.async_close()
+        await device.close()
+        await peer_task
+
+
+@pytest.mark.asyncio
+async def test_closing_peer_is_unavailable_before_receive_cleanup_runs():
+    """A fresh cached report must not make a fenced socket appear usable."""
+    server = transport.NativeTransport(SERIAL, "127.0.0.1")
+    await server.async_listen("127.0.0.1", 0)
+    device = Device()
+    await device.connect(server.port)
+    task = asyncio.create_task(device.run())
+    try:
+        await ready(server)
+        assert server.available
+        server._writer.close()
+        # Do not yield: verify the interval before _serve clears cached state.
+        assert server.latest is not None
+        assert not server.available
+    finally:
+        await server.async_close()
+        await device.close()
+        await task

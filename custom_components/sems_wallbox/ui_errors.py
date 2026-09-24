@@ -11,6 +11,8 @@ from .cloud_rate_limit import CloudRateLimitedError
 _LOGGER = logging.getLogger(__name__)
 
 _MESSAGES = {
+    "Cloud current-limit metadata is invalid or contradicts the reported value": "current_limit_range_unverified",
+    "Cloud current limit is outside the supported range or precision": "current_limit_invalid",
     "Disable the wallbox schedule before changing Auto start": "auto_start_schedule",
     "Auto start change was not confirmed by the wallbox": "auto_start_unconfirmed",
     "Wallbox schedule changed during Auto start update": "auto_start_schedule_changed",

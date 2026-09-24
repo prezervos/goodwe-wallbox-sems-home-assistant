@@ -410,3 +410,35 @@ def test_sensor_identity_contract(entity_type, unique_id, key):
     entity = entity_type(_make_coordinator(), SAMPLE_SN)
     assert entity.unique_id == unique_id
     assert entity._attr_translation_key == key
+
+
+@pytest.mark.parametrize("connection,workstate,expected", [
+    (1, "available_gun_no_insered", "connected"),
+    (0, "available_gun_insered", "not_plugged_in"),
+    (1, "suspended_ev", "connected"),
+    (1, "suspended_evse", "connected"),
+    (0, "suspended_ev", "not_plugged_in"),
+    (0, "suspended_evse", "not_plugged_in"),
+    (1, "finish", "finished_charging"),
+    (0, "finish", "not_plugged_in"),
+    (2, "available_gun_no_insered", None),
+    (None, "available_gun_no_insered", None),
+    (True, "available_gun_no_insered", None),
+    ("1", "available_gun_no_insered", None),
+])
+def test_explicit_cable_observation_overrides_stale_cloud_text(connection, workstate, expected):
+    """Use the same verified mapping in cloud-only and native cloud entities."""
+    data = {"status": "available", "workstate": workstate, "vehConnStu": connection,
+            "power": 4.2, "startStatus": True, "last_charge_work_status": 8}
+    assert sensor_mod.vehicle_state(data, local=False) == expected
+    entity = SemsWorkStateSensor(_make_coordinator(data), SAMPLE_SN)
+    assert entity.native_value == (expected or "unknown")
+
+
+@pytest.mark.parametrize("workstate", ["suspended_ev", "suspended_evse"])
+def test_interruption_without_cable_observation_does_not_claim_completion(workstate):
+    """Shared and cloud-only vehicle sensors must not mislabel Modbus aliases."""
+    data = {"status": "waiting", "workstate": workstate, "last_charge_work_status": 8}
+    assert sensor_mod.vehicle_state(data, local=False) is None
+    entity = SemsWorkStateSensor(_make_coordinator(data), SAMPLE_SN)
+    assert entity.native_value == "unknown"

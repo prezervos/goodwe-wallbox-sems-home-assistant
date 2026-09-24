@@ -63,6 +63,31 @@ class NativeEntity(CoordinatorEntity):
     def values(self):
         return (self.coordinator.data or {}).get(self.coordinator.serial, {})
 
+    @property
+    def reported_power_limit(self):
+        """Read the transport's observed configuration, never the HA preference."""
+        owner = self.coordinator
+        if not owner.last_update_success or getattr(owner, "transitioning", False):
+            return None
+        if getattr(owner, "_closed", False):
+            return None
+        if owner.local:
+            value = self.values.get("set_charge_power")
+        else:
+            # V3 telemetry can retain an old ceiling after a successful SEMS+
+            # write. Reuse the bounded configuration poll and shared session.
+            settings = getattr(owner, "cloud_settings", None)
+            if settings is None or not settings.cloud_ready or not settings.valid:
+                return None
+            value = settings.values.get("set_charge_power")
+        if isinstance(value, bool) or value is None:
+            return None
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            return None
+        return value if isfinite(value) and value >= 0 else None
+
     async def invoke(self, operation, *, refresh=True):
         try:
             await operation()
@@ -90,6 +115,20 @@ class ControlEntity(NativeEntity):
         )
 
     async def submit(self, key, value, operation):
+        if key in ("power", "mode"):
+            original_operation = operation
+
+            async def update_setting():
+                try:
+                    await original_operation()
+                finally:
+                    # Refresh even after an uncertain write, including deferred
+                    # commands. An ACK must not become a reported configuration.
+                    settings = getattr(self.coordinator, "cloud_settings", None)
+                    if settings is not None and not self.coordinator.local:
+                        settings.invalidate()
+
+            operation = update_setting
         control = getattr(self.coordinator, "control_fallback", None)
         if key == "charging" and control is not None and control.submit(
             value, lambda: self.invoke(operation)
@@ -285,7 +324,7 @@ class ChargePowerNumber(ControlEntity, NumberEntity):
     @property
     def extra_state_attributes(self):
         return {
-            "reported_power_limit": self.values.get("set_charge_power"),
+            "reported_power_limit": self.reported_power_limit,
             "native_power_min": power_bounds(self.coordinator.serial)[0],
             "native_power_max": power_bounds(self.coordinator.serial)[1],
         }
@@ -454,13 +493,16 @@ class ValueSensor(NativeEntity, SensorEntity):
             "last_charge_work_status", "last_charge_power",
             "last_charge_duration_minutes",
         ):
-            if self.values.get(key) is not None:
-                attributes[key] = self.values[key]
+            value = self.reported_power_limit if key == "set_charge_power" else self.values.get(key)
+            if value is not None:
+                attributes[key] = value
         return attributes
 
     @property
     def native_value(self):
         value = self.values.get(self.field)
+        if self.field == "set_charge_power":
+            return self.reported_power_limit
         if self.field == "workstate":
             return vehicle_state(self.values, local=self.coordinator.local)
         if self.field == "session_seconds":

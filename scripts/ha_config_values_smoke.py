@@ -143,6 +143,118 @@ async def check_modbus_zero_power_setup(hass):
     print("PASS: Modbus zero-limit setup loads entities, performs no writes and preserves intent on reload")
 
 
+async def check_fast_power_preparation(hass):
+    """Verify real HA exposes writable PV-mode intent without device writes."""
+    import logging
+    from datetime import timedelta
+    from homeassistant.helpers.entity_platform import EntityPlatform
+    from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
+    from custom_components.sems_wallbox.number import SemsNumber, ModbusMaxChargePowerNumber
+    from custom_components.sems_wallbox.charge_mode_policy import ChargeModePolicy
+
+    for modbus in (False, True):
+        owner = DataUpdateCoordinator(hass, logging.getLogger(__name__), name="Power fixture", config_entry=None)
+        serial = "POWER-FIXTURE"
+        owner.data = {serial: {"sn": serial, "chargeMode": 1, "set_charge_power": 0,
+                              "modbus_max_charging_power": 0, "modbus_power_spec": 1,
+                              "min_charge_power": 4.2, "max_charge_power": 11}}
+        owner.last_update_success = True
+        owner.schedule_delayed_refresh = Mock()
+        store = SimpleNamespace(async_load=AsyncMock(return_value=None), async_save=AsyncMock())
+        client = Mock()
+        owner.charge_mode_policy = ChargeModePolicy(Mock(), store, enabled=False)
+        entity = ModbusMaxChargePowerNumber(owner, serial, client) if modbus else SemsNumber(owner, serial, client, None)
+        platform = EntityPlatform(hass=hass, logger=logging.getLogger(__name__), domain="number",
+                                  platform_name="sems_wallbox", platform=None,
+                                  scan_interval=timedelta(seconds=60), entity_namespace=None)
+        await platform.async_add_entities([entity])
+        assert entity.available
+        await entity.async_set_native_value(4.2)
+        entity.async_write_ha_state()
+        state = hass.states.get(entity.entity_id)
+        assert state.state == "4.2", state
+        assert state.attributes["reported_power_limit"] == 0, state
+        assert owner.data[serial]["chargeMode"] == 1
+        assert owner.data[serial]["set_charge_power"] == 0
+        assert not client.mock_calls, client.mock_calls
+        assert store.async_save.call_args.args[0]["power"] == 4.2
+        await platform.async_remove_entity(entity.entity_id)
+        hass.states.async_remove(entity.entity_id)
+    print("PASS: real HA cloud and Modbus numbers stage PV power without hardware writes")
+
+
+async def check_cloud_current_limit(hass):
+    """Validate real HA number state/range serialization without cloud access."""
+    import logging
+    from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
+    from homeassistant.exceptions import HomeAssistantError
+    from custom_components.sems_wallbox.number import SemsCurrentLimitNumber
+    from custom_components.sems_wallbox.native_cloud_settings import (
+        CloudSettings, CloudSettingNumber, SETTINGS,
+    )
+
+    owner = DataUpdateCoordinator(hass, logging.getLogger(__name__), name="Current fixture", config_entry=None)
+    owner.serial = "CURRENT-FIXTURE"
+    owner.data = {owner.serial: {"sn": owner.serial, "currentLimit": 63}}
+    owner.last_update_success = True
+    owner.schedule_delayed_refresh = Mock()
+    owner.local = owner.transitioning = owner._closed = False
+    owner.cloud_restored_at = None
+    owner.entry = SimpleNamespace(data={})
+    owner.routing_epoch = 0
+    async def serialized(operation, **kwargs):
+        return await operation()
+    owner.charge_mode_policy = SimpleNamespace(enabled=True, async_setting_write=serialized)
+    owner.cloud = Mock()
+    owner.cloud.fetch_device_info.return_value = {"productModel": "MODEL"}
+    owner.cloud.get_data_gen2.return_value = {"sn": owner.serial, "currentLimit": 63}
+    owner.cloud.set_config_gen2.return_value = True
+    owner.cloud_settings = CloudSettings(owner)
+    owner.cloud_settings.valid = True
+    owner.cloud_settings.values = {"currentLimit": 63}
+    descriptor = next(item for item in SETTINGS if item.field == "currentLimit")
+    entities = [SemsCurrentLimitNumber(owner, owner.serial, owner.cloud),
+                CloudSettingNumber(owner, descriptor)]
+    from datetime import timedelta
+    from homeassistant.helpers.entity_platform import EntityPlatform
+    platform = EntityPlatform(
+        hass=hass, logger=logging.getLogger(__name__), domain="number",
+        platform_name="sems_wallbox", platform=None,
+        scan_interval=timedelta(seconds=60), entity_namespace=None,
+    )
+    for entity in entities:
+        await platform.async_add_entities([entity])
+        entity.async_write_ha_state()
+        state = hass.states.get(entity.entity_id)
+        assert float(state.state) == 63, state
+        assert (state.attributes["min"], state.attributes["max"], state.attributes["step"]) == (0, 2000, 0.01), state
+        assert state.attributes["write_supported"] is True, state
+        for value in (2001, 63.001):
+            try:
+                await entity.async_set_native_value(value)
+            except HomeAssistantError as error:
+                assert error.translation_key == "current_limit_invalid", error
+            else:
+                raise AssertionError("Unsupported cloud current write accepted")
+        owner.cloud.set_config_gen2.assert_not_called()
+        owner.cloud.get_data_gen2.assert_not_called()
+        await entity.async_set_native_value(63.25)
+        owner.cloud.set_config_gen2.assert_called_once_with(owner.serial, currentLimit=63.25)
+        entity.async_write_ha_state()
+        assert float(hass.states.get(entity.entity_id).state) == 63
+        raw = owner.data[owner.serial] if isinstance(entity, SemsCurrentLimitNumber) else owner.cloud_settings.values
+        raw["controlItemRanges"] = {"charge_pile_dynamic_load_import_current_limit": {"min": 0, "max": 32}}
+        entity.async_write_ha_state()
+        state = hass.states.get(entity.entity_id)
+        assert state.state == "unavailable", state
+        assert raw["currentLimit"] == 63  # Retained in cached diagnostics; HA hides extra attributes while unavailable.
+        raw["controlItemRanges"] = None
+        owner.cloud.reset_mock()
+        await platform.async_remove_entity(entity.entity_id)
+        hass.states.async_remove(entity.entity_id)
+    print("PASS: both cloud current entities serialize 63 A, preserve decimal writes and disable conflicting metadata in real HA")
+
+
 async def main(folder):
     """Exercise setup consumers and polling against simulated cloud data."""
     hass = HomeAssistant(folder)
@@ -153,6 +265,8 @@ async def main(folder):
     from custom_components.sems_wallbox import config_flow
     from custom_components.sems_wallbox.native_coordinator import NativeCoordinator
 
+    await check_fast_power_preparation(hass)
+    await check_cloud_current_limit(hass)
     await check_modbus_forms(hass)
     await check_modbus_zero_power_setup(hass)
     results = {}

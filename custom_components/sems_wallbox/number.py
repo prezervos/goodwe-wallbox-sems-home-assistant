@@ -20,9 +20,12 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .operation_budget import async_execute
 from .const import DOMAIN, CONN_TYPE_MODBUS, CAP_OUTPUT_POWER_SETTING, CAP_DYNAMIC_LOAD_CONTROL
-from .charge_mode_policy import mode_setting_write
+from .charge_mode_policy import mode_setting_write, prepare_fast_power
 from .coordinator import SemsUpdateCoordinator
 from .wallbox_modbus import BREAKER_CURRENT_MIN, BREAKER_CURRENT_MAX
+from .cloud_current_limit import (
+    current_attributes, current_bounds, current_writable, observed_current, validate_current_write,
+)
 from .ui_errors import operation_error
 
 _LOGGER = logging.getLogger(__name__)
@@ -79,6 +82,14 @@ async def async_setup_entry(
         if CAP_DYNAMIC_LOAD_CONTROL in more_controls:
             entities.append(SemsOutputPowerLimitNumber(coordinator, sn, api))
         # Current limit: always add (virtually all wallboxes support it)
+        try:
+            info = await async_execute(hass, api.fetch_device_info, sn)
+        except (OSError, ValueError, RuntimeError) as error:
+            _LOGGER.debug("Current-limit metadata discovery failed: %s", error)
+            info = None
+        data["controlItemRanges"] = (
+            info.get("controlItemRanges") if isinstance(info, dict) and info else False
+        )
         entities.append(SemsCurrentLimitNumber(coordinator, sn, api))
 
     async_add_entities(entities)
@@ -112,7 +123,7 @@ class SemsNumber(CoordinatorEntity, NumberEntity):
     def native_value(self):
         """Expose saved HA intent separately from reported device power."""
         policy = getattr(self.coordinator, "charge_mode_policy", None)
-        if policy is not None and policy.enabled and policy.desired_power is not None:
+        if policy is not None and policy.desired_power is not None:
             return policy.desired_power
         return self._attr_native_value
 
@@ -198,11 +209,11 @@ class SemsNumber(CoordinatorEntity, NumberEntity):
 
     @property
     def available(self) -> bool:
-        """Available only in Fast mode (chargeMode=0) -- the entity controls Fast-mode power."""
+        """Allow preparing a Fast limit while a supported PV mode is selected."""
         if not self.coordinator.last_update_success:
             return False
         data = self.coordinator.data.get(self.sn, {}) or {}
-        return data.get("chargeMode", 0) == 0
+        return data.get("chargeMode") in (0, 1, 2)
 
     @callback
     def _handle_coordinator_update(self) -> None:
@@ -247,6 +258,7 @@ class SemsNumber(CoordinatorEntity, NumberEntity):
         """Manual update from HA."""
         await self.coordinator.async_request_refresh()
 
+    @prepare_fast_power
     @mode_setting_write(desired_mode=0, remember_power=True)
     @optimistic_write
     async def async_set_native_value(self, value: float) -> None:
@@ -399,33 +411,22 @@ class SemsOutputPowerLimitNumber(CoordinatorEntity, NumberEntity):
 
 
 class SemsCurrentLimitNumber(CoordinatorEntity, NumberEntity):
-    """Cloud entity for setting the import current limit (A) via set-config.
-
-    This is the maximum current the wallbox draws from the grid per phase,
-    analogous to the breaker rating. Typical values: 6–32 A.
-    The API field is ``currentLimit`` in the detail response.
-    """
+    """Expose the household import-current limit using SEMS+ device bounds."""
 
     _attr_should_poll = False
     _attr_has_entity_name = True
     _attr_translation_key = "current_limit"
     _attr_device_class = NumberDeviceClass.CURRENT
     _attr_native_unit_of_measurement = UnitOfElectricCurrent.AMPERE
-    _attr_native_min_value = 0.0
-    _attr_native_max_value = 32.0
-    _attr_native_step = 1.0
+    _attr_native_step = 0.01
     _attr_entity_category = EntityCategory.CONFIG
     _attr_mode = "box"
-
-    _PENDING_TIMEOUT = 60.0
 
     def __init__(self, coordinator: SemsUpdateCoordinator, sn: str, api) -> None:
         super().__init__(coordinator)
         self.coordinator = coordinator
         self.sn = sn
         self.api = api
-        self._pending_value: float | None = None
-        self._pending_until: float = 0.0
 
     @property
     def unique_id(self) -> str:
@@ -442,43 +443,70 @@ class SemsCurrentLimitNumber(CoordinatorEntity, NumberEntity):
 
     @property
     def available(self) -> bool:
-        return self.coordinator.last_update_success
+        return self.coordinator.last_update_success and current_writable(self.native_value, self.range_metadata)
 
     @property
     def native_value(self) -> float | None:
-        data = self.coordinator.data.get(self.sn, {}) or {}
-        api_val_raw = data.get("currentLimit")
+        return observed_current((self.coordinator.data.get(self.sn) or {}).get("currentLimit"))
+
+    @property
+    def range_metadata(self):
+        return (self.coordinator.data.get(self.sn) or {}).get("controlItemRanges")
+
+    @property
+    def native_min_value(self):
         try:
-            api_val = float(api_val_raw) if api_val_raw is not None else None
-        except (TypeError, ValueError):
-            api_val = None
-        now = time.monotonic()
-        if self._pending_value is not None:
-            if now >= self._pending_until:
-                self._pending_value = None
-            elif api_val is not None and abs(api_val - self._pending_value) < 0.5:
-                self._pending_value = None
-            else:
-                return self._pending_value
-        return api_val
+            return current_bounds(self.range_metadata)[0]
+        except ValueError:
+            return 0.0  # HA requires numeric capabilities even while unavailable.
+
+    @property
+    def native_max_value(self):
+        try:
+            return current_bounds(self.range_metadata)[1]
+        except ValueError:
+            return 2000.0
+
+    @property
+    def extra_state_attributes(self):
+        return current_attributes(self.native_value, self.range_metadata)
+
+    async def async_update(self):
+        """Refresh metadata on explicit user update without changing device settings."""
+        info = await async_execute(self.hass, self.api.fetch_device_info, self.sn)
+        if isinstance(info, dict) and info and info.get("sn", self.sn) == self.sn:
+            self.coordinator.data[self.sn]["controlItemRanges"] = info.get("controlItemRanges")
+        await super().async_update()
 
     @callback
     def _handle_coordinator_update(self) -> None:
         self.async_write_ha_state()
 
     @mode_setting_write
-    @optimistic_write
     async def async_set_native_value(self, value: float) -> None:
-        self._pending_value = value
-        self._pending_until = time.monotonic() + self._PENDING_TIMEOUT
-        self.async_write_ha_state()
-        ok = await async_execute(self.hass,
-            lambda: self.api.set_config_gen2(self.sn, currentLimit=int(value))
-        )
-        if not ok:
-            _LOGGER.warning("SemsCurrentLimitNumber %s: set_config failed", self.sn)
-            raise operation_error(RuntimeError("Device write was not confirmed"))
-        else:
+        try:
+            value = validate_current_write(self.native_value, value, self.range_metadata)
+            if not self.available:
+                raise ConnectionError("Cloud configuration is unavailable")
+            # Recheck metadata before the device read; neither a stale UI range
+            # nor an unsuccessful metadata request may authorize a write.
+            info = await async_execute(self.hass, self.api.fetch_device_info, self.sn)
+            if not isinstance(info, dict) or not info or info.get("sn", self.sn) != self.sn:
+                raise ValueError("Missing or mismatched cloud configuration")
+            fresh = await async_execute(self.hass, self.api.get_data_gen2, self.sn)
+            if not isinstance(fresh, dict) or fresh.get("sn") != self.sn:
+                raise ValueError("Missing or mismatched cloud configuration")
+            self.coordinator.data[self.sn]["controlItemRanges"] = info.get("controlItemRanges")
+            value = validate_current_write(fresh.get("currentLimit"), value, info.get("controlItemRanges"))
+            ok = await async_execute(self.hass,
+                lambda: self.api.set_config_gen2(self.sn, currentLimit=value)
+            )
+            if not ok:
+                raise RuntimeError("Device write was not confirmed")
+        except (ValueError, OSError, RuntimeError) as error:
+            raise operation_error(error) from error
+        finally:
+            # Keep observed state; an ACK is not a confirmed device setting.
             self.coordinator.schedule_delayed_refresh(5.0)
 
 
@@ -682,7 +710,7 @@ class _ModbusNumber(CoordinatorEntity, NumberEntity):
     def native_value(self) -> float | None:
         policy = getattr(self.coordinator, "charge_mode_policy", None)
         if (getattr(self, "_remember_charge_power", False) and policy is not None
-                and policy.enabled and policy.desired_power is not None):
+                and policy.desired_power is not None):
             return policy.desired_power
         api_val = self._api_value()
         now = time.monotonic()
@@ -780,11 +808,22 @@ class ModbusMaxChargePowerNumber(_ModbusNumber):
         return self._client.write_max_charge_power(value)
 
     @property
+    def extra_state_attributes(self):
+        """Expose the actual register separately from saved Fast-mode intent."""
+        data = self.coordinator.data.get(self.sn, {}) or {}
+        return {"reported_power_limit": data.get("set_charge_power")}
+
+    @prepare_fast_power
+    async def async_set_native_value(self, value: float) -> None:
+        """Stage PV-mode requests; write immediately only in Fast mode."""
+        await super().async_set_native_value(value)
+
+    @property
     def available(self) -> bool:
         if not self.coordinator.last_update_success:
             return False
         data = self.coordinator.data.get(self.sn, {}) or {}
-        return data.get("chargeMode") == 0  # Fast mode only
+        return data.get("chargeMode") in (0, 1, 2)
 
 
 class ModbusMaxChargeCapacityNumber(_ModbusNumber):

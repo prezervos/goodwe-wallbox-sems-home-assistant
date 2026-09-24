@@ -39,7 +39,8 @@ def test_cloud_vehicle_only_known_reports(values, expected):
         ({}, None),
         ({"connection": 1, "raw_state": 0, "power": 0, "currents_a": [0, 0, 0]}, "connected"),
         ({"raw_state": 2, "power": 4, "currents_a": [6, 6, 6]}, "connected"),
-        ({"raw_state": 2, "power": 0, "currents_a": [0, 0, 0]}, None),
+        # Captured after owner-confirmed target reduction; also possible during Start.
+        ({"raw_state": 2, "connection": 1, "power": 0, "currents_a": [0, 0, 0]}, "connected"),
     ],
 )
 def test_native_connector_codes_are_not_guessed(values, expected):
@@ -57,6 +58,7 @@ def test_native_connector_codes_are_not_guessed(values, expected):
         ({"raw_state": 0, "power": 0, "currents_a": [0, 0, 0]}, True, False),
         ({"raw_state": 0, "power": 3, "currents_a": [4, 4, 4]}, True, None),
         ({"raw_state": 2, "power": 3, "currents_a": [4, 4, 4]}, True, True),
+        ({"raw_state": 2, "connection": 1, "power": 0, "currents_a": [0, 0, 0]}, True, None),
     ],
 )
 def test_activity_is_not_start_intent(values, local, expected):
@@ -95,7 +97,8 @@ async def test_diagnostics_never_copies_secrets_or_free_text():
         transitioning=False,
         endpoint=SimpleNamespace(journal={"endpoint": "192.0.2.5"}),
         cloud_restored_at=None,
-        transport=SimpleNamespace(available=True, observed_at=0, session_guard=guard),
+        transport=SimpleNamespace(available=True, observed_at=0, session_guard=guard,
+                                  fault_diagnostics=lambda **kwargs: {"received": False}),
         charge_mode_policy=SimpleNamespace(desired_mode=0, desired_power=4.2),
     )
     coordinator.cloud_push = SimpleNamespace(
@@ -135,7 +138,7 @@ def test_verified_idle_connector_values(connection, expected):
 
 
 @pytest.mark.parametrize("overrides", [
-    {"raw_state": 3}, {"raw_state": 7}, {"power": 1},
+    {"raw_state": 3}, {"raw_state": 4}, {"raw_state": 7}, {"power": 1},
     {"currents_a": [1, 0, 0]}, {"currents_a": None},
 ])
 def test_idle_connector_mapping_rejects_unverified_or_conflicting_reports(overrides):

@@ -37,6 +37,7 @@ def owner():
         ),
         cloud=SimpleNamespace(
             get_data_gen2=Mock(),
+            fetch_device_info=Mock(return_value={"productModel": "MODEL"}),
             set_config_gen2=Mock(return_value=True),
             set_charge_mode_gen2=Mock(return_value=True),
         ),
@@ -500,3 +501,140 @@ async def test_accountless_minimum_write_uses_native_command_only():
     instance.transport.async_command.assert_awaited_once_with(
         "minimum_power", minimum_power=True, timeout=15)
     assert entity.is_on is False  # Wait for a real device report.
+
+
+@pytest.mark.asyncio
+async def test_saved_capabilities_still_discover_missing_current_range():
+    """A known model or local startup must not leave range metadata unresolved."""
+    instance = owner()
+    instance.cloud.get_data_gen2.return_value["controlItemRanges"] = False
+    ranges = {"charge_pile_dynamic_load_import_current_limit": {"min": 6, "max": 80}}
+    instance.cloud.fetch_device_info.return_value = {"controlItemRanges": ranges}
+    await instance.cloud_settings.refresh()
+    assert instance.cloud_settings.values["controlItemRanges"] == ranges
+    instance.cloud.fetch_device_info.assert_called_once_with("TEST")
+    instance.cloud.set_config_gen2.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_range_discovery_crossing_handover_is_discarded():
+    instance = owner()
+    instance.cloud.get_data_gen2.return_value["controlItemRanges"] = False
+    def discover(serial):
+        instance.routing_epoch += 1
+        return {"productModel": "MODEL"}
+    instance.cloud.fetch_device_info.side_effect = discover
+    await instance.cloud_settings.refresh()
+    assert not instance.cloud_settings.valid
+
+
+@pytest.mark.asyncio
+async def test_current_metadata_read_cannot_send_after_transport_change():
+    instance = owner()
+    def discover(serial):
+        instance.local = True
+        instance.routing_epoch += 1
+        return {"productModel": "MODEL"}
+    instance.cloud.fetch_device_info.side_effect = discover
+    descriptor = next(item for item in settings.SETTINGS if item.field == "currentLimit")
+    with pytest.raises(settings.ModeVerificationError):
+        await instance.cloud_settings.write(descriptor, 63)
+    instance.cloud.set_config_gen2.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_reported_limit_uses_configuration_not_legacy_telemetry_or_intent():
+    entities = importlib.import_module(PACKAGE + ".native_entities")
+    instance = owner()
+    instance.serial = "5011KHCA00000000"
+    instance.data = {instance.serial: {"set_charge_power": 4.2, "status": "charging"}}
+    instance.cloud.get_data_gen2.return_value["sn"] = instance.serial
+    instance.charge_mode_policy.desired_power = 6
+    sensor = entities.ValueSensor(instance, "limit", "limit", "set_charge_power")
+    control = entities.ChargePowerNumber(instance, "power", "power")
+    status = entities.ValueSensor(instance, "status", "status", "status")
+    assert sensor.native_value is None
+    await instance.cloud_settings.refresh()
+    assert sensor.native_value == 11
+    assert control.native_value == 6
+    assert control.extra_state_attributes["reported_power_limit"] == 11
+    assert status.extra_state_attributes["set_charge_power"] == 11
+    instance.local = True
+    assert sensor.native_value == 4.2
+    assert control.extra_state_attributes["reported_power_limit"] == 4.2
+    instance.local = False
+    instance.cloud.get_data_gen2.return_value = None
+    await instance.cloud_settings.refresh()
+    assert sensor.native_value is None
+    assert control.extra_state_attributes["reported_power_limit"] is None
+    assert "set_charge_power" not in status.extra_state_attributes
+
+
+@pytest.mark.parametrize("raw", [None, True, "", "bad", -1, float("nan"), float("inf")])
+@pytest.mark.asyncio
+async def test_reported_limit_rejects_missing_or_invalid_cloud_values(raw):
+    entities = importlib.import_module(PACKAGE + ".native_entities")
+    instance = owner()
+    instance.cloud.get_data_gen2.return_value["set_charge_power"] = raw
+    await instance.cloud_settings.refresh()
+    sensor = entities.ValueSensor(instance, "limit", "limit", "set_charge_power")
+    assert sensor.native_value is None
+
+
+@pytest.mark.parametrize("attribute,value", [
+    ("transitioning", True), ("cloud_restored_at", 123),
+    ("last_update_success", False), ("_closed", True),
+])
+@pytest.mark.asyncio
+async def test_reported_limit_hides_unverified_configuration(attribute, value):
+    entities = importlib.import_module(PACKAGE + ".native_entities")
+    instance = owner()
+    await instance.cloud_settings.refresh()
+    setattr(instance, attribute, value)
+    sensor = entities.ValueSensor(instance, "limit", "limit", "set_charge_power")
+    assert sensor.native_value is None
+
+
+@pytest.mark.asyncio
+async def test_configuration_read_started_before_write_invalidation_is_discarded():
+    instance = owner()
+
+    async def execute(function, *args):
+        result = function(*args)
+        instance.cloud_settings.invalidate()
+        return result
+
+    instance.hass.async_add_executor_job = execute
+    await instance.cloud_settings.refresh()
+    assert not instance.cloud_settings.valid
+    assert instance.cloud_settings.next_refresh == 0
+
+
+@pytest.mark.parametrize("key", ["power", "mode"])
+@pytest.mark.parametrize("failed", [False, True])
+@pytest.mark.asyncio
+async def test_control_write_invalidates_configuration_before_telemetry_refresh(key, failed):
+    entities = importlib.import_module(PACKAGE + ".native_entities")
+    instance = owner()
+    await instance.cloud_settings.refresh()
+    invalidated = []
+
+    async def refresh():
+        invalidated.append(not instance.cloud_settings.valid)
+        await instance.cloud_settings.refresh()
+
+    instance.async_refresh = refresh
+    entity = entities.ControlEntity(instance, "control", "control")
+
+    async def write():
+        instance.cloud.get_data_gen2.return_value["set_charge_power"] = 5
+        if failed:
+            raise RuntimeError("Uncertain write")
+
+    if failed:
+        with pytest.raises(RuntimeError, match="Uncertain write"):
+            await entity.submit(key, 6, write)
+    else:
+        await entity.submit(key, 6, write)
+    assert invalidated == [True]
+    assert entity.reported_power_limit == 5

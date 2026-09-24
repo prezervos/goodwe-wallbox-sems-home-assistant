@@ -75,6 +75,9 @@ async def async_get_config_entry_diagnostics(hass, entry):
             "supervised_limit_kw": _number(guard.limit),
             "protection_issue": bool(guard.error),
         }
+        result["native"]["fault_details"] = transport.fault_diagnostics(
+            active=bool(coordinator.local and not coordinator.transitioning)
+        )
     fallback = getattr(coordinator, "automatic_fallback", None)
     if fallback is not None:
         result["automatic_fallback"] = fallback.diagnostics()

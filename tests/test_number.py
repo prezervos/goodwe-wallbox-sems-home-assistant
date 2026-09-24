@@ -150,13 +150,13 @@ class TestAvailability:
         entity = _make_entity(chargeMode=0)
         assert entity.available is True
 
-    def test_unavailable_in_pv_priority(self):
+    def test_available_in_pv_priority(self):
         entity = _make_entity(chargeMode=1)
-        assert entity.available is False
+        assert entity.available is True
 
-    def test_unavailable_in_pv_and_battery(self):
+    def test_available_in_pv_and_battery(self):
         entity = _make_entity(chargeMode=2)
-        assert entity.available is False
+        assert entity.available is True
 
     def test_unavailable_when_coordinator_failed(self):
         entity = _make_entity(chargeMode=0)
@@ -249,16 +249,6 @@ class TestSetNativeValue:
         entity.coordinator.schedule_delayed_refresh.assert_called_once_with(3.0)
 
 
-    @pytest.mark.asyncio
-    async def test_slider_from_pv_mode_switches_to_fast(self):
-        """Moving the slider from PV mode should switch to Fast mode (0)."""
-        entity = _make_entity(chargeMode=2, set_charge_power=5.6)
-
-        entity.api.set_charge_mode_gen2 = MagicMock(return_value=True)
-        await entity.async_set_native_value(9.0)
-
-        entity.api.set_charge_mode_gen2.assert_called_once_with(SAMPLE_SN, 0, 9.0, None)
-        assert entity.native_value == 9.0
 
 
 # ---------------------------------------------------------------------------
@@ -289,7 +279,7 @@ class TestCoordinatorUpdate:
         assert entity.available is True
         entity.coordinator.data[SAMPLE_SN]["chargeMode"] = 1
         entity._handle_coordinator_update()
-        assert entity.available is False
+        assert entity.available is True
 
     def test_pv_mode_shows_api_allocated_power(self):
         """In PV mode the entity shows the dynamically allocated power from the API."""
@@ -572,7 +562,7 @@ def test_number_identity_contract(factory, unique_id, key):
 
 @pytest.mark.parametrize("mode", [0, 1, 2])
 @pytest.mark.parametrize("enabled,desired,expected", [
-    (True, 4.2, 4.2), (False, 4.2, 5.6), (True, None, 5.6),
+    (True, 4.2, 4.2), (False, 4.2, 4.2), (True, None, 5.6),
 ])
 def test_public_power_separates_saved_intent_from_report(mode, enabled, desired, expected):
     """A report must not silently replace the active user's power preference."""

@@ -1,3 +1,35 @@
+# 3.0.3 — Cloud state, power controls and TCP reliability
+
+This maintenance release fixes cloud status and authentication inconsistencies, restores Fast-mode selection from PV modes, and improves native TCP Stop verification. It includes the fixes previously tested in 3.0.3b1–b3.
+
+## Fixed
+
+- **Cloud authentication (#21):** timestamped telemetry now shares the existing SEMS+ web session instead of performing a separate Android login. Session renewal is bounded and a telemetry-only rejection does not repeatedly invalidate working controls.
+- **Vehicle connection state (#21):** prefer the verified SEMS+ connection flag over contradictory “not plugged in” text. Preserve explicit completion reports; suspended sessions and zero power alone do not imply completion.
+- **Fast mode from PV modes (#21):** cloud-only and Modbus users can save a valid power preference while in PV mode without sending a device write. Selecting Fast applies and verifies the saved limit. Invalid initial zero-limit reports no longer prevent setup.
+- **Household import-current limits (#21):** use device-provided cloud ranges and the documented Modbus range instead of an assumed 32 A maximum. Preserve reported values such as 63 A without clamping or changing the installation setting on load.
+- **Cloud reported power limit:** native-capable entries read the diagnostic limit from verified SEMS+ configuration rather than the V3 field that could retain an older value. Related attributes use the same source; missing or invalid readback stays unknown. TCP readback is unchanged.
+- **Native TCP Stop:** actively verify stopped telemetry and handle a queued status-query timeout only when a newer valid report arrives on the same live connection. Closed or stale sessions cannot falsely confirm success.
+- **Charging activity:** the optional cloud/native activity sensor reflects valid measured energy flow. Zero load is Off; missing, stale or contradictory data is unknown. Charging-session controls retain their separate safety checks.
+
+## Diagnostics and documentation
+
+- Add bounded Modbus connection/read/write tracing to downloaded diagnostics without extra polling or credentials.
+- Add passive native fault-detail diagnostics with session isolation, unknown-bit reporting and explicit limits on firmware-label coverage.
+- Expand regression coverage, physical validation notes and matching English, Czech, German and Spanish error translations.
+
+## Upgrade
+
+Requires **Home Assistant 2026.9.2 or newer**, unchanged from 3.0.2. Restart Home Assistant after updating. Existing entity identities, units and saved preferences are preserved. Native TCP and automatic fallback remain opt-in.
+
+## Validation and known limits
+
+Physical original-GW11K-HCA validation covered cable connection changes, cloud/native short charging sessions, live power increases/reductions and verified Stops. Cloud diagnostic limit readback was also checked without charging. Requested power is a ceiling, not an exact consumption target.
+
+**The separately reported Modbus charging interruption is not claimed fixed.** The reporter's model/firmware and Australian cloud account still require confirmation. This update does not add speculative EMS takeover writes or automatic charging retries. Other-model native fault mappings, natural token expiry and continuous MQTT telemetry remain outside the verified scope.
+
+Thanks to @GregoryDC for the detailed reports and beta validation in #21, and to all previous contributors.
+
 # 3.0.2 — Login compatibility, Modbus fixes and TCP Auto start
 
 This update fixes cloud login compatibility and Modbus setup, removes an unsolicited Modbus Stop, and completes verified Auto start control over native TCP for original HCA wallboxes. Existing entity identities, units and saved settings are preserved.

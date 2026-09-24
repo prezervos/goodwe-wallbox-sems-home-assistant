@@ -1,9 +1,12 @@
 """Read-only actual charging activity, independent of a requested Start."""
 
+import time
+
 from homeassistant.components.binary_sensor import BinarySensorEntity
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .observed_state import charging_active
+from .native_fallback import report_age
+from .observed_state import energy_flow_active
 
 
 async def async_setup_entry(hass, entry, async_add_entities):
@@ -28,5 +31,25 @@ class ChargingActiveSensor(CoordinatorEntity, BinarySensorEntity):
 
     @property
     def is_on(self):
-        values = (self.coordinator.data or {}).get(self.coordinator.serial, {})
-        return charging_active(values, local=self.coordinator.local)
+        """Keep unknown/stale measurements distinct from a confirmed zero."""
+        owner = self.coordinator
+        if (not owner.last_update_success or owner.transitioning or owner._closed
+                or not owner.local and owner.cloud_restored_at is not None):
+            return None
+        values = (owner.data or {}).get(owner.serial, {})
+        if values.get("transport") != ("tcp" if owner.local else "cloud"):
+            return None
+        if owner.local:
+            if (not owner.transport.available
+                    or values.get("observed_at") != owner.transport.observed_at):
+                return None
+        else:
+            try:
+                age = report_age(values, owner.hass.config.time_zone, time.time())
+            except (ValueError, TypeError, OverflowError):
+                return None
+            # Match the coordinator's existing frozen-cloud-report ceiling,
+            # including when automatic TCP fallback is disabled.
+            if age > 600:
+                return None
+        return energy_flow_active(values, local=owner.local)

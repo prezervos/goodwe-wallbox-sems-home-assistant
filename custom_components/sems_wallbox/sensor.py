@@ -20,7 +20,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN, CONN_TYPE_MODBUS
 from .coordinator import SemsUpdateCoordinator
-from .observed_state import charging_active
+from .observed_state import vehicle_state
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -194,27 +194,10 @@ class SemsWorkStateSensor(CoordinatorEntity, SensorEntity):
     def native_value(self) -> str:
         """Return the workstate of the device as a human-readable string."""
         data = self.coordinator.data.get(self.sn, {})
-        # Last-session workStu=8 also follows manual Stop and can outlive the
-        # connection. It must not replace the current vehicle observation.
-        if charging_active(data, local=False) is True:
-            return "connected"
-        workstate = data.get("workstate")
-
-        # Old semsportal.com API values
-        if workstate == "EVDetail_Status_Waiting_Stat00":
-            return "not_plugged_in"
-        if workstate == "EVDetail_Status_Waiting_Stat01":
-            return "connected"
-        if workstate == "EVDetail_Status_Waiting_Stat02":
-            return "finished_charging"
-        # Gen2 EU gateway values
-        if workstate in ("available_gun_no_insered", "available_gun_no_inserted"):
-            return "not_plugged_in"
-        if workstate in ("available_gun_insered", "available_gun_inserted", "prepare"):
-            return "connected"
-        if workstate in ("finishing", "finish", "suspended_evse", "suspended_ev"):
-            return "finished_charging"
-        if workstate == "":
+        state = vehicle_state(data, local=False)
+        if state is not None:
+            return state
+        if "vehConnStu" not in data and data.get("workstate") == "":
             return "dash"
         return "unknown"
 

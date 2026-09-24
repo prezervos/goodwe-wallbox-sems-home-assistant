@@ -1,7 +1,7 @@
 """Unit tests for sems_api.SemsApi."""
 
 import json
-from unittest.mock import MagicMock, patch, PropertyMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -739,3 +739,101 @@ def test_secondary_failure_never_starts_a_third_login(failure):
                 assert not api._ensure_web_token()
         assert post.call_count == 2
     assert api._web_token is None
+
+
+@pytest.mark.parametrize("region", ["eu", "au"])
+def test_timestamped_reader_reuses_working_original_web_login(region):
+    """Mode verification must not create the failing Android login from #21."""
+    api = _make_api()
+    token = {"token": "shared", "uid": "fixture", "client": "semsPlusWeb"}
+    report = {"sn": "TEST", "lastUpdate": "2026-09-24T10:00:00Z", "power": "0"}
+    telemetry_reply = _data_response(report)
+    telemetry_reply.json.return_value["code"] = "0"
+    with patch("requests.post", return_value=_login_response(token, region=region)) as login, patch.object(
+        api._observation_reader._session, "post", return_value=telemetry_reply
+    ) as telemetry:
+        assert api.test_authentication()
+        assert api.fetch_status_observation("TEST") == report
+        assert api.fetch_status_observation("TEST") == report
+        assert api._ensure_web_token()
+    assert login.call_count == 1
+    assert login.call_args.args[0] == sems_api_module._LOGIN_URLS["original"]
+    assert telemetry.call_count == 2
+    assert all(json.loads(call.kwargs["headers"]["token"])["token"] == "shared"
+               for call in telemetry.call_args_list)
+    assert all(json.loads(call.kwargs["headers"]["token"])["client"] == "semsPlusWeb"
+               for call in telemetry.call_args_list)
+    assert api._web_api_base == f"https://{region}-gateway.semsportal.com/web/sems"
+    api.close()
+
+
+@pytest.mark.parametrize("persistent", [False, True])
+def test_timestamped_expiry_renews_shared_session_once(persistent):
+    api = _make_api()
+    api._web_token = {"token": "old", "client": "semsPlusWeb"}
+    expired = _data_response(None)
+    expired.json.return_value["code"] = "100001"
+    fresh = _data_response({"sn": "TEST", "lastUpdate": "2026-09-24T10:00:00Z"})
+    with patch("requests.post", return_value=_login_response({"token": "new", "client":"semsPlusWeb"})) as login, patch.object(
+        api._observation_reader._session, "post", side_effect=[expired, expired if persistent else fresh]
+    ) as telemetry:
+        if persistent:
+            with pytest.raises(ConnectionError, match="session renewal"):
+                api.fetch_status_observation("TEST")
+        else:
+            assert api.fetch_status_observation("TEST")["sn"] == "TEST"
+    assert login.call_count == 1
+    assert telemetry.call_count == 2
+    assert api._web_token["token"] == "new"
+    assert api.session_recovery_attempts == 1
+    api.close()
+
+
+def test_timestamped_reader_shares_failed_login_backoff_without_status_requests():
+    api = _make_api()
+    bad = _login_response(None, code=100)
+    with patch("requests.post", return_value=bad) as login, patch.object(
+        api._observation_reader._session, "post"
+    ) as telemetry:
+        for _ in range(2):
+            with pytest.raises(ConnectionError, match="Shared SEMS session"):
+                api.fetch_status_observation("TEST")
+        assert not api._ensure_web_token()
+    assert login.call_count == 1
+    telemetry.assert_not_called()
+    api.close()
+
+
+def test_timestamped_reader_preserves_explicit_credential_rejection():
+    api = _make_api()
+    rejected = _login_response(None)
+    rejected.status_code = 401
+    with patch("requests.post", return_value=rejected) as login, patch.object(
+        api._observation_reader._session, "post"
+    ) as telemetry:
+        for _ in range(2):
+            with pytest.raises(sems_api_module.CloudAuthenticationError):
+                api.fetch_status_observation("TEST")
+    assert login.call_count == 1
+    telemetry.assert_not_called()
+    api.close()
+
+
+@pytest.mark.parametrize("fields", [{}, {"vehConnStu": 0}, {"vehConnStu": 1},
+                                   {"vehConnStu": None}, {"vehConnStu": 2}])
+def test_detail_preserves_explicit_vehicle_connection(fields):
+    """Do not discard a connection flag or invent one for older responses."""
+    api = _make_api()
+    api._ensure_plant_id = MagicMock(return_value="PLANT")
+    api._ensure_web_token = MagicMock(return_value=True)
+    api._build_web_headers = MagicMock(return_value={})
+    response = MagicMock(status_code=200)
+    response.json.return_value = {"code": "00000", "data": {
+        "sn": "TEST", "workState": "available_gun_no_insered", **fields,
+    }}
+    with patch.object(sems_api_module.requests, "post", return_value=response):
+        result = api.get_data_gen2("TEST")
+    assert ("vehConnStu" in result) == ("vehConnStu" in fields)
+    if fields:
+        assert result["vehConnStu"] == fields["vehConnStu"]
+    assert result["workstate"] == "available_gun_no_insered"

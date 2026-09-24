@@ -400,9 +400,23 @@ class NativeCoordinator(DataUpdateCoordinator):
             if not self.transport.available:
                 raise UpdateFailed("Native wallbox telemetry is unavailable")
             if time.monotonic() - self.transport.observed_at >= 1:
+                observed_before = self.transport.observed_at
+                session_epoch = self.transport.epoch
                 try:
                     await self.transport.async_command("status", timeout=10)
-                except (ConnectionError, TimeoutError, ValueError) as exc:
+                except TimeoutError as exc:
+                    # A queued query can expire while another command owns the
+                    # lock. Accept only a newer valid report from the same live
+                    # session, received independently during this refresh.
+                    if not (
+                        self.transport.available
+                        and self.transport.epoch == session_epoch
+                        and self.transport.observed_at > observed_before
+                    ):
+                        raise UpdateFailed(
+                            "Fresh native wallbox telemetry is unavailable"
+                        ) from exc
+                except (ConnectionError, ValueError) as exc:
                     raise UpdateFailed(
                         "Fresh native wallbox telemetry is unavailable"
                     ) from exc

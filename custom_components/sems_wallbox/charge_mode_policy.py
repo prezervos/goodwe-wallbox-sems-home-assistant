@@ -412,7 +412,10 @@ async def async_apply_policy(coordinator, operation, *args):
     from .ui_errors import operation_error
 
     try:
-        if not policy.enabled:
+        if not policy.enabled and not (
+            operation == "select_mode" and args == (0,)
+            and policy.desired_power is not None
+        ):
             if operation == "select_mode":
                 await policy.async_remember_mode(*args)
             return False
@@ -436,7 +439,8 @@ def mode_setting_write(function=None, *, desired_mode=None, remember_power=False
         from .ui_errors import operation_error
 
         try:
-            if policy is None or not policy.enabled:
+            power_write = remember_power or getattr(entity, "_remember_charge_power", False)
+            if policy is None or (not policy.enabled and not power_write):
                 return await function(entity, *args, **kwargs)
             return await policy.async_setting_write(
                 lambda: function(entity, *args, **kwargs),
@@ -447,5 +451,38 @@ def mode_setting_write(function=None, *, desired_mode=None, remember_power=False
             )
         except (ModeVerificationError, CloudRateLimitedError) as err:
             raise operation_error(err) from err
+
+    return wrapped
+
+
+def prepare_fast_power(function):
+    """Save a Fast-mode power request in PV modes without changing hardware.
+
+    The persistent request is applied by the verified mode-selection path, even
+    when automatic mode restoration before Start is disabled. Reported device
+    data must remain unchanged while a request is only staged.
+    """
+    @wraps(function)
+    async def wrapped(entity, value):
+        policy = getattr(entity.coordinator, "charge_mode_policy", None)
+        data = entity.coordinator.data.get(entity.sn, {}) or {}
+        mode = data.get("chargeMode")
+        if mode not in (1, 2):
+            return await function(entity, value)
+        from .ui_errors import operation_error
+
+        try:
+            if policy is None or not entity.coordinator.last_update_success:
+                raise ModeVerificationError("Device did not report a valid charging mode")
+            power = policy._valid_power(value)
+            if not entity.native_min_value <= power <= entity.native_max_value:
+                raise ModeVerificationError("Invalid saved power limit")
+
+            async def staged():
+                entity.async_write_ha_state()
+
+            await policy.async_setting_write(staged, desired_power=power)
+        except (ModeVerificationError, CloudRateLimitedError) as error:
+            raise operation_error(error) from error
 
     return wrapped
