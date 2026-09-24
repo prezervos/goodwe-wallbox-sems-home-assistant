@@ -11,6 +11,10 @@ from .cloud_rate_limit import CloudRateLimitedError
 _LOGGER = logging.getLogger(__name__)
 
 _MESSAGES = {
+    "Disable the wallbox schedule before changing Auto start": "auto_start_schedule",
+    "Auto start change was not confirmed by the wallbox": "auto_start_unconfirmed",
+    "Wallbox schedule changed during Auto start update": "auto_start_schedule_changed",
+    "Auto start is available only over TCP on this wallbox": "auto_start_tcp_only",
     "Cloud minimum-power changes are not supported in Fast mode": "minimum_power_cloud_fast",
     "Minimum-power write requires an idle wallbox": "minimum_power_stop_first",
     "Minimum-power write requires idle mode with a known flag": "minimum_power_stop_first",

@@ -7,8 +7,9 @@
 
 Home Assistant custom integration for the **GoodWe Wallbox**.
 
-The 3.0.1 maintenance update improves cloud HTTP compatibility, control ordering
-and failed-setting recovery. It requires **Home Assistant 2026.9.2 or newer**.
+The 3.0.2 update fixes cloud login compatibility and Modbus setup, removes
+unsolicited Modbus Stop writes, and completes original-HCA native TCP Auto start.
+It requires **Home Assistant 2026.9.2 or newer**.
 See [release notes](docs/RELEASE_NOTES.md) for upgrade details and validation limits.
 
 Supports cloud, local Modbus and optional native Socket A TCP connections:
@@ -72,8 +73,16 @@ identities. Extended cloud-only settings become unavailable while TCP owns the
 connection. The verified original-HCA minimum-power control is an exception: its
 state is available in all modes, but writes require idle. On the tested HCA,
 cloud PV-mode writes and idle native writes are verified; the cloud Fast-mode
-setter is ineffective and reports a guarded error. SolarGo Auto start works on
-that device, but its portable cloud/TCP control is not established.
+setter is ineffective and reports a guarded error. Original-HCA Auto start now
+has a native TCP write with independent configuration readback, preserving the
+existing Plug & Charge entity identity. It requires no Bluetooth adapter. Two
+OFF/ON/OFF cycles were confirmed by TCP; the owner also confirmed both states in
+SolarGo. A subsequent real-HA test confirmed reading and switching Auto start
+ON/OFF during charging (up to 4.0 kW), without interrupting the session. This does
+not establish support on other models. Active schedules block enabling Auto start
+because enabling it can clear the wallbox schedule; disabling remains possible.
+Failed or uncertain writes never produce an optimistic state or a blind retry.
+Original-HCA cloud Auto start support remains unproven.
 
 Entity and service-error catalogs include English (`en`), Czech (`cs`), German (`de`) and Spanish (`es`). Hardware support is separate from translation coverage.
 
@@ -116,6 +125,13 @@ The first step asks you to choose a connection type.
 This mode communicates directly with the wallbox over your local network. No cloud account is needed and it exposes more entities than the cloud mode.
 
 Cloud and local connectivity depend on the model and its communication configuration. Native Socket A TCP is a separate option described below; do not enable Modbus on the assumption that it is the same protocol.
+
+Modbus polling only reads telemetry. Conflicting charging and car-connection
+registers do not automatically trigger Stop; use the Charging control or an
+automation to stop a session explicitly. The wallbox may continue reporting a
+stale charging state or session timer until stopped. Some HCA-20 users also
+report interruptions caused by Modbus connections themselves ([issue #16](https://github.com/prezervos/goodwe-wallbox-sems-home-assistant/issues/16)); removing the integration's automatic Stop does not establish a fix for that separate behavior.
+
 
 ### Prerequisites
 
@@ -161,6 +177,18 @@ login backoff. Separate HA installations and phone apps have their own sessions.
 
 ---
 
+### Cloud login compatibility
+
+The integration first uses the original SEMS+ web login with the shared
+Mozilla-format compatibility header. If that endpoint is unavailable or returns
+an eligible protocol failure, it can try Common/CrossLogin once under the same
+login deadline. Explicit authentication rejection, rate limiting and untrusted
+regional routing never trigger that alternate attempt. Both paths feed the same
+SEMS+ session used by controls, configuration reads and MQTT discovery; they do not
+create competing SEMS+ sessions. Timestamped v3 telemetry remains a separate API
+path. This login preference addresses issue #21, where Common/CrossLogin reported
+success without a session token while the original login succeeded.
+
 ## Update interval
 
 Default polling: **60 s** idle, **30 s** while charging. Adjust via
@@ -204,6 +232,23 @@ missing-data behavior and some state semantics changed. Check dependent template
 do not treat unavailable measurements as zero.
 
 ## Changelog
+
+### 3.0.2
+
+- Prefer the original SEMS+ login with bounded alternate-endpoint recovery,
+  including successful responses missing a token; improve safe diagnostics (#21).
+- Fix Modbus setup/reconfiguration forms and remove unsolicited Stop writes
+  triggered by contradictory telemetry (#21, #16).
+- Complete original-HCA Auto start over native TCP with independent readback,
+  active-charging support, schedule protection and English/Czech/German/Spanish errors.
+- Preserve entity identities and cloud capability gates; see release notes for
+  hardware limits and validation scope.
+
+### 3.0.1
+
+- Unify Mozilla-format HTTP User-Agent, shared cooldowns and control ordering.
+- Improve native idle reconciliation, error translations and optional diagnostics.
+- Require the tested Home Assistant 2026.9.2 minimum.
 
 ### 3.0.0
 

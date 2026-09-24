@@ -430,7 +430,6 @@ async def test_every_creation_path_rejects_existing_serial(flow_module, monkeypa
 @pytest.mark.parametrize("values,valid", [
     ({"modbus_host": " 192.0.2.1 ", "modbus_port": 502, "modbus_device_id": 0}, True),
     ({"modbus_host": "wallbox.local", "modbus_port": 65535, "modbus_device_id": 255}, True),
-    ({"modbus_host": " ", "modbus_port": 502, "modbus_device_id": 1}, False),
     ({"modbus_host": "192.0.2.1", "modbus_port": -1, "modbus_device_id": 1}, False),
     ({"modbus_host": "192.0.2.1", "modbus_port": 65536, "modbus_device_id": 1}, False),
     ({"modbus_host": "192.0.2.1", "modbus_port": 502, "modbus_device_id": 256}, False),
@@ -440,7 +439,7 @@ def test_modbus_setup_and_reconfigure_share_validation(flow_module, values, vali
         {"connection_type": "modbus", "modbus_host": "192.0.2.1"}, reauth=False)]
     for schema in schemas:
         if valid:
-            assert schema(values)["modbus_host"] == values["modbus_host"].strip()
+            assert schema(values)["modbus_host"] == values["modbus_host"]
         else:
             with pytest.raises(vol.Invalid):
                 schema(values)

@@ -1,3 +1,35 @@
+# 3.0.2 — Login compatibility, Modbus fixes and TCP Auto start
+
+This update fixes cloud login compatibility and Modbus setup, removes an unsolicited Modbus Stop, and completes verified Auto start control over native TCP for original HCA wallboxes. Existing entity identities, units and saved settings are preserved.
+
+## Fixed
+
+- **Cloud authentication (#21):** prefer the original SEMS+ web login, with one Common/CrossLogin alternate attempt for eligible endpoint/protocol failures, including an explicit success response without a usable token. Keep endpoint-specific request signatures and regional routing. Explicit credential rejection and throttling do not trigger repeated alternate logins; shared session, deadline and cooldown protections remain in place.
+- **Modbus setup and reconfiguration (#21):** fix Home Assistant form serialization, normalize host input in the flow handler, and reject blank hosts before attempting a connection.
+- **Unsolicited Modbus Stop (#16):** remove the timer that could send Stop after contradictory charging/vehicle-connection reports. Polling is read-only; explicit Start/Stop controls remain available. This does not claim to resolve every firmware-related interruption when a Modbus client connects.
+
+## Completed: native TCP Auto start
+
+- Read and change Auto start on verified original HCA hardware, including while charging. Preserve the existing Plug & Charge entity identity.
+- Confirm changes by reading configuration back from the wallbox. Failed or uncertain writes never become a falsely confirmed On/Off state and are not blindly replayed.
+- Reject enabling Auto start when a charging schedule is active; disabling and already-satisfied requests remain possible. Detect unexpected schedule changes during confirmation.
+- Serialize configuration and cumulative-energy reads, reject stale/late responses, and respect superseding Stop requests before an Auto start write is sent. Cumulative-energy reads retain their idle-only restriction.
+- Keep capability-based cloud support for other models. On the tested original HCA, Auto start is usable over native TCP and unavailable in cloud mode; accepted cloud API writes did not establish physical support.
+
+## Diagnostics and translations
+
+- Add credential-free login failure metadata (endpoint, response shape, HTTP/business result and token presence) without logging token values or credentials through these diagnostics.
+- Include matching English, Czech, German and Spanish errors for Auto start verification and schedule conflicts.
+- Document native TCP limitations, observed behavior and regression coverage.
+
+## Upgrade and validation
+
+Home Assistant **2026.9.2 or newer** is required, unchanged from 3.0.1. Restart Home Assistant after updating. Native TCP remains opt-in; no transport or Auto start setting is enabled automatically by this update.
+
+Independent Astra review found no unresolved runtime blocker. Offline regression and real-HA validation results are recorded in [VALIDATION.md](https://github.com/prezervos/goodwe-wallbox-sems-home-assistant/blob/master/docs/VALIDATION.md). Physical Auto start validation covers the original GW11 HCA; other models/firmware are not implied. Authentication and regional reads were confirmed with the issue #21 reporter's Australian account; MQTT connection alone does not establish full telemetry coverage.
+
+Thanks to [@GregoryDC](https://github.com/GregoryDC) for the diagnostic logs and Australian-account verification, and to all previous integration contributors.
+
 # 3.0.1 — Cloud compatibility and reliable controls
 
 Maintenance update to 3.0.0. Existing entity IDs, saved settings, units and native

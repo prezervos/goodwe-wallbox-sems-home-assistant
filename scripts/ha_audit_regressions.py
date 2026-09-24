@@ -385,12 +385,69 @@ async def modbus_fields_and_services():
             with pytest.raises(HomeAssistantError):
                 await hass.services.async_call("audit", "write", {}, blocking=True)
             assert getattr(current.entity, pending) is None, cls.__name__
+        # An explicit Stop must still reach the client exactly once, even when
+        # telemetry is contradictory and the switch already appears off.
+        client.write_start_stop.reset_mock(return_value=True)
+        client.write_start_stop.return_value = True
+        owner.data[SERIAL].update(modbus_status_raw=3, modbus_car_connected=1, modbus_power=3.3)
+        current.entity = switch.ModbusStartStopSwitch(owner, SERIAL, client)
+        current.entity.hass = hass
+        current.entity.async_write_ha_state = Mock()
+        current.action, current.argument = "async_turn_off", None
+        await hass.services.async_call("audit", "write", {}, blocking=True)
+        client.write_start_stop.assert_called_once_with(False)
         owner._cancel_delayed_refresh()
         await owner.async_shutdown()
         await hass.async_stop(force=True)
         print(
-            "PASS: Modbus identity, optional-block unknown state, rejected HA Stop service"
+            "PASS: Modbus identity, unknown optional data, refused and successful explicit HA Stop"
         )
+
+
+async def modbus_polling_is_read_only():
+    """Contradictory telemetry and read gaps never become unsolicited controls."""
+    from homeassistant.helpers.update_coordinator import UpdateFailed
+    from custom_components.sems_wallbox import modbus_coordinator as module
+
+    with tempfile.TemporaryDirectory(prefix="goodwe-modbus-read-only-") as folder:
+        hass = HomeAssistant(folder)
+        entry = ConfigEntry(
+            version=1, minor_version=1, domain="sems_wallbox", title="Read-only polling",
+            unique_id=SERIAL, source="user", discovery_keys={}, subentries_data=[],
+            options={}, data={"wallbox_serial_No": SERIAL},
+        )
+        # Keep HA's event-loop clock real; only advance the old coordinator timer.
+        clock = SimpleNamespace(monotonic=lambda: 100.0)
+        try:
+            for power, car, gap in ((3.3, 1, False), (0.0, 1, False),
+                                    (0.0, None, False), (0.0, 1, True)):
+                report = {"sn": SERIAL, "modbus_status_raw": 3,
+                          "modbus_power": power, "modbus_cp_state_name": "9V"}
+                if car is not None:
+                    report["modbus_car_connected"] = car
+                client = Mock()
+                client.read_all.return_value = report
+                owner = module.ModbusUpdateCoordinator(hass, entry, client)
+                try:
+                    with patch.object(module, "time", clock, create=True):
+                        clock.monotonic = lambda: 100.0
+                        assert await owner._async_update_data() == {SERIAL: report}
+                        if gap:
+                            client.read_all.return_value = None
+                            with pytest.raises(UpdateFailed):
+                                await owner._async_update_data()
+                            client.read_all.return_value = report
+                        for now in (131.0, 200.0):
+                            clock.monotonic = lambda: now
+                            assert await owner._async_update_data() == {SERIAL: report}
+                    # Include all client methods, not just Stop: polling is read-only.
+                    assert all(call[0] == "read_all" for call in client.mock_calls), client.mock_calls
+                finally:
+                    owner._cancel_delayed_refresh()
+                    await owner.async_shutdown()
+        finally:
+            await hass.async_stop(force=True)
+    print("PASS: Modbus polling retains telemetry without writes across contradictions and read failures")
 
 
 async def cancelled_cleanup():
@@ -450,6 +507,7 @@ async def main():
         await cancelled_cleanup()
         await modbus_wire_checks()
         await modbus_fields_and_services()
+        await modbus_polling_is_read_only()
 
 
 if __name__ == "__main__":

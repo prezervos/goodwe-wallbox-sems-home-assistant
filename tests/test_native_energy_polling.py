@@ -10,6 +10,7 @@ import pytest
 from tests.test_native_energy import energy, PACKAGE
 
 module = importlib.import_module(PACKAGE + ".native_energy_polling")
+idle_module = importlib.import_module(PACKAGE + ".native_idle_polling")
 
 
 def subject():
@@ -32,14 +33,14 @@ async def test_disabled_entity_does_not_read():
 @pytest.mark.asyncio
 async def test_idle_interval_and_session_end_refresh():
     poller=subject();poller.enabled=True
-    with patch.object(module.time,"monotonic",return_value=10):
+    with patch.object(idle_module.time,"monotonic",return_value=10):
         await poller.tick();await poller.tick()
     assert poller.available and poller.value.energy_kwh==100
     poller.owner.transport.async_read_energy.assert_awaited_once()
     poller.owner.transport.latest.stopped=False
     await poller.tick()
     poller.owner.transport.latest.stopped=True
-    with patch.object(module.time,"monotonic",return_value=20):await poller.tick()
+    with patch.object(idle_module.time,"monotonic",return_value=20):await poller.tick()
     assert poller.owner.transport.async_read_energy.await_count==2
 
 

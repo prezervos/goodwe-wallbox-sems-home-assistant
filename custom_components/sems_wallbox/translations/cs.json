@@ -54,6 +54,18 @@
     },
     "minimum_power_stop_first": {
       "message": "Toto nastavení lze změnit pouze v klidu wallboxu. Zastavte nabíjení a počkejte na potvrzení."
+    },
+    "auto_start_schedule": {
+      "message": "Před zapnutím automatického nabíjení vypněte časový plán wallboxu."
+    },
+    "auto_start_unconfirmed": {
+      "message": "Wallbox nepotvrdil změnu Auto startu. Stav není známý; před dalším pokusem jej znovu načtěte."
+    },
+    "auto_start_tcp_only": {
+      "message": "Auto start je u tohoto wallboxu dostupný pouze přes místní TCP připojení."
+    },
+    "auto_start_schedule_changed": {
+      "message": "Během změny automatického nabíjení se změnil časový plán wallboxu. Před dalším pokusem zkontrolujte jeho nastavení."
     }
   },
   "options": {

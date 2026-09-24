@@ -18,6 +18,7 @@ from .native_connection_intent import ConnectionIntent
 from .native_cloud_settings import CloudSettings
 from .native_endpoint import EndpointManager
 from .native_energy_polling import NativeEnergyPolling
+from .native_configuration_polling import NativeConfigurationPolling
 from .native_fallback import AutomaticFallback, report_age
 from .native_intent import LatestIntent
 from .native_control_fallback import ControlFallback
@@ -153,6 +154,7 @@ class NativeCoordinator(DataUpdateCoordinator):
         self.pending_intent = LatestIntent(self)
         self.control_fallback = ControlFallback(self)
         self.energy_polling = NativeEnergyPolling(self)
+        self.configuration_polling = NativeConfigurationPolling(self)
         from .native_power_limits import power_bounds
 
         self.initial_power = power_bounds(self.serial)[0]
@@ -179,6 +181,7 @@ class NativeCoordinator(DataUpdateCoordinator):
                 }
             )
             self.energy_polling.wake()
+            self.configuration_polling.wake()
 
     def _async_protection_changed(self):
         """Immediately expose and notify protective actions independently of polling."""
@@ -377,6 +380,7 @@ class NativeCoordinator(DataUpdateCoordinator):
             self.automatic_fallback.local_observation(True)
             # Status command has released its transport lock at this point.
             self.energy_polling.wake()
+            self.configuration_polling.wake()
         if not self.local and epoch == self.routing_epoch:
             await self.connection_intent.async_automatic(False)
             if self._closed or self.transitioning or epoch != self.routing_epoch:
@@ -512,6 +516,7 @@ class NativeCoordinator(DataUpdateCoordinator):
             await push.close()
         await self.cloud_settings.close()
         await self.energy_polling.close()
+        await self.configuration_polling.close()
         await self.control_fallback.close()
         await self.automatic_fallback.close()
         await self.charge_mode_policy.async_setting_write(
@@ -528,7 +533,7 @@ class NativeCoordinator(DataUpdateCoordinator):
         if (push := getattr(self, "cloud_push", None)) is not None:
             operations.append(push.close)
         operations.extend((
-            self.cloud_settings.close, self.energy_polling.close,
+            self.cloud_settings.close, self.energy_polling.close, self.configuration_polling.close,
             self.control_fallback.close, self.automatic_fallback.close,
             self.charge_mode_policy.async_close, self.transport.async_close,
             super().async_shutdown,

@@ -236,3 +236,23 @@ async def test_listener_reconnect_renews_shared_session_and_resubscribes(
             await push.close()
     assert all(client.closed for client in clients)
     assert not push.connected and push.task is None
+
+
+def test_mqtt_discovery_reuses_default_original_login_session():
+    """Discovery uses the same original-login token and returned regional gateway."""
+    import json
+    from tests.test_sems_api import _login_response, sems_api_module
+
+    api = _make_api()
+    login = _login_response({"token": "shared-session", "client": "semsPlusWeb"}, region="au")
+    mqtt = credentials(brokerUrl="wss://netty-wss-au.iot.goodwe-power.com:8885/mqtt")
+    with patch("requests.post", return_value=login) as post, patch(
+        "requests.get", return_value=response(mqtt)
+    ) as get:
+        assert api.test_authentication()
+        assert api.fetch_mqtt_settings() == mqtt
+    post.assert_called_once()
+    assert post.call_args.args[0] == sems_api_module._LOGIN_URLS["original"]
+    assert get.call_args.args[0].startswith("https://au-gateway.semsportal.com/web/sems/")
+    assert json.loads(get.call_args.kwargs["headers"]["token"])["token"] == "shared-session"
+    api.close()
