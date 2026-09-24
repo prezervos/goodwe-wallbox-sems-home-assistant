@@ -7,6 +7,10 @@
 
 Home Assistant custom integration for the **GoodWe Wallbox**.
 
+The 3.0.1 maintenance update improves cloud HTTP compatibility, control ordering
+and failed-setting recovery. It requires **Home Assistant 2026.9.2 or newer**.
+See [release notes](docs/RELEASE_NOTES.md) for upgrade details and validation limits.
+
 Supports cloud, local Modbus and optional native Socket A TCP connections:
 
 | Mode | Chargers | How it works | Internet required |
@@ -77,7 +81,7 @@ Entity and service-error catalogs include English (`en`), Czech (`cs`), German (
 
 ## Requirements
 
-- Tested baseline: Home Assistant 2026.9.2 with Python 3.14; production checked on 2026.9.3. Earlier versions are not currently validated.
+- Minimum required Home Assistant: **2026.9.2** (declared in HACS). Tested with Python 3.14; production checked on 2026.9.3. Earlier versions are not supported by this update.
 - GoodWe EV Charger
 - For **Modbus mode**: wallbox reachable on your LAN, port 502 open, must be enabled in SolarGo
 - For **SEMS cloud mode**: SEMS / SEMS Plus account with the wallbox registered
@@ -159,7 +163,7 @@ login backoff. Separate HA installations and phone apps have their own sessions.
 
 ## Update interval
 
-Default polling: **60 s** idle, **30 s** while charging. Adjust via  
+Default polling: **60 s** idle, **30 s** while charging. Adjust via
 **Settings → Devices & Services → GoodWe Wallbox → Configure**.
 
 ---
@@ -377,6 +381,12 @@ tested; a physical factory reset has not been tested.
 State-class conventions: https://developers.home-assistant.io/docs/core/entity/sensor/
 
 ### Supplemental cloud notifications
+
+Polling intervals govern scheduled status reads, not a global HTTP request cap.
+Accepted MQTT hints and user operations can trigger earlier reads. Bursts are
+coalesced and repeated event IDs are ignored. Native-enabled cloud entries also
+refresh configuration separately (normally every five minutes, or after an
+observed mode change); an update is therefore not always exactly one API request.
 
 Cloud connections automatically attempt the GoodWe MQTT event service over TLS.
 An event requests a fresh authoritative cloud read; it never supplies entity values

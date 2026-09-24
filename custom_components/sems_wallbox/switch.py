@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from .optimistic_write import optimistic_write
+
 import logging
 import time
 
@@ -369,6 +371,7 @@ class _SemsConfigSwitch(CoordinatorEntity, SwitchEntity):
         self.async_write_ha_state()
 
     @mode_setting_write
+    @optimistic_write
     async def _async_set(self, state: bool) -> None:
         self._pending_state = state
         self._pending_set_at = time.monotonic()
@@ -379,9 +382,6 @@ class _SemsConfigSwitch(CoordinatorEntity, SwitchEntity):
         )
         if not ok:
             _LOGGER.warning("%s: set_config failed, reverting optimistic state", self.unique_id)
-            self._pending_state = None
-            self.async_write_ha_state()
-            self.coordinator.schedule_delayed_refresh(3.0)
             raise operation_error(RuntimeError("Device write was not confirmed"))
         else:
             self.coordinator.schedule_delayed_refresh(5.0)
@@ -571,6 +571,7 @@ class _ModbusSwitch(CoordinatorEntity, SwitchEntity):
         self.async_write_ha_state()
 
     @mode_setting_write
+    @optimistic_write
     async def _async_set(self, state: bool) -> None:
         self._pending_state = state
         self._pending_set_at = time.monotonic()
@@ -578,9 +579,6 @@ class _ModbusSwitch(CoordinatorEntity, SwitchEntity):
         ok = await async_execute(self.hass, self._do_write, state)
         if not ok:
             _LOGGER.warning("%s: write failed, reverting optimistic state", self.unique_id)
-            self._pending_state = None
-            self.async_write_ha_state()
-            self.coordinator.schedule_delayed_refresh(3.0)
             raise operation_error(RuntimeError("Device write was not confirmed"))
         else:
             self.coordinator.schedule_delayed_refresh(3.0)

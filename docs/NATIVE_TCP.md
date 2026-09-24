@@ -322,8 +322,14 @@ pending settings. Settings precede Start; cloud power is applied before mode bec
 the legacy cloud power operation selects Fast, while TCP applies mode before power.
 Normal validation and active-charging mode restrictions remain in force. In-flight
 preparation is fenced when new choices arrive. Failed or uncertain Start is never
-replayed; a newer Stop can still be executed. Errors/expiry produce a translated
-persistent notification. Restart/unload discards pending requests without replay.
+replayed; a newer Stop can still be executed. Errors/expiry remain in logs and pending-intent diagnostics without persistent
+notifications. Routine cloud-control preflight and TCP-ready transitions are logged,
+not posted as persistent notifications; protection-triggered Stop alerts remain separate.
+A duplicate Start is a no-op only after matching charging is confirmed; cloud reports
+must advance before that confirmation. An explicit Start after a newer Stop is a new
+intent. Known pre-delivery supersession preserves the latest settings, while an
+uncertain transmitted Start is never replayed. Restart/unload discards pending requests
+without replay.
 
 Unit tests cover bursts, supersession, prerequisite ordering, expiry, shutdown,
 failed prerequisites and uncertain Start. Real HA loopback tests exercise deferred
@@ -356,3 +362,14 @@ polling or helper sensor is needed. The device resets its native value after Sto
 missing data is not converted to zero. Cloud/TCP observations remain separate.
 Physical handover, Stop, return and Recorder sums passed on the original GW11 HCA.
 See [validation and limitations](VALIDATION.md) for the tested scope.
+
+
+### Failed controls and optimistic presentation
+
+Deferred failures remain visible in diagnostics and logs. They do not create
+persistent notifications for routine control or transport errors. Protective
+alerts for failed safety stops remain separate. A newer explicit Stop survives
+failure of an earlier setting or Start; uncertain writes are never replayed.
+Failed/cancelled settings clear their pending presentation and schedule readback,
+without overwriting newer requests or reports. A pending mode is presented by the
+select entity only; dependent entities continue to use reported device data.

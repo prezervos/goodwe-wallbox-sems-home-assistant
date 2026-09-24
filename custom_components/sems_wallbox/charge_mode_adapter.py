@@ -90,6 +90,14 @@ class ModeTransportAdapter:
             else status in ("charging", "preparing", "evdetail_status_title_charging")
             or data.get("startStatus") is True
         )
+        if self.modbus:
+            cp_state = data.get("modbus_car_connected")
+            measured = _number(data.get("modbus_power"))
+            if cp_state == 1 and measured == 0 and data.get("modbus_status_raw") == 3:
+                # Firmware can retain raw Charging after CP has returned to 9V.
+                active = False
+            elif cp_state == 2 or (measured is not None and measured > 0):
+                active = True
         if (
             not self.modbus
             and getattr(self.client, "supports_timestamped_observation", False) is True
@@ -144,6 +152,12 @@ class ModeTransportAdapter:
             marker,
             not self.modbus,
             active,
+            charging=(
+                data.get("modbus_car_connected") == 2
+                and (_number(data.get("modbus_power")) or 0) > 0
+                if self.modbus else charging_active(data, local=False) is True
+                and (_number(data.get("power")) or 0) > 0
+            ),
         )
 
     async def write_mode(self, mode, before):

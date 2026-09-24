@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 
 from .charge_mode_policy import (
@@ -15,10 +16,15 @@ from .native_transport import (
     NativeStartSuperseded,
     NativeTransport,
 )
+from .operation_budget import request_timeout
 
 
 class NativeModeAdapter:
     """Use independent TCP observations for every charging-policy operation."""
+
+    IDLE_READ_RETRIES = 2
+    IDLE_READ_INTERVAL = 1.0
+    IDLE_READ_TIMEOUT = 2.0
 
     def __init__(self, transport: NativeTransport) -> None:
         self.transport = transport
@@ -44,9 +50,35 @@ class NativeModeAdapter:
                 str(exc) or "Native command could not be verified"
             ) from exc
 
+    async def _read_consistent_status(self):
+        """Recheck idle/zero-power reports with residual current before acting.
+
+        Only status reads are retried. Active states, nonzero power and a pending
+        supervised Start remain authoritative. Two bounded reads allow transient
+        phase measurements to settle without accepting an inconsistent idle report.
+        """
+        state = await self._command("status")
+        for _ in range(self.IDLE_READ_RETRIES):
+            phase = getattr(getattr(self.transport, "session_guard", None), "phase", None)
+            if (
+                state.stopped
+                or state.state not in (0, 3)
+                or state.power_kw != 0
+                or not any(state.currents_a)
+                or phase in ("starting", "waiting")
+            ):
+                break
+            # A newer Stop/power intent must fence the next read as well as Start.
+            request_timeout(self.IDLE_READ_TIMEOUT)
+            await asyncio.sleep(self.IDLE_READ_INTERVAL)
+            state = await self._command(
+                "status", timeout=request_timeout(self.IDLE_READ_TIMEOUT)
+            )
+        return state
+
     async def read(self) -> ModeObservation:
         """Request fresh native telemetry without consulting optimistic HA state."""
-        state = await self._command("status")
+        state = await self._read_consistent_status()
         return ModeObservation(
             state.mode,
             state.limit_kw,
@@ -57,6 +89,7 @@ class NativeModeAdapter:
             not state.stopped
             or getattr(getattr(self.transport, "session_guard", None), "phase", None)
             in ("starting", "waiting"),
+            charging=state.state == 2 and state.power_kw > 0 and any(state.currents_a),
         )
 
     preserves_power_all_modes = True
@@ -75,12 +108,12 @@ class NativeModeAdapter:
 
     async def start(self, *, power: float | None = None, start_allowed=None) -> bool:
         """Preserve the selected mode and restore the explicit saved ceiling."""
-        before = await self._command("status")
+        before = await self._read_consistent_status()
         requested = before.limit_kw if power is None else power
-        if not before.stopped or before.mode not in (0, 1, 2):
-            raise ModeVerificationError(
-                "Start requires a stopped wallbox and a supported mode"
-            )
+        if not before.stopped:
+            raise ModeVerificationError("Wallbox stop state not confirmed; Start was not sent")
+        if before.mode not in (0, 1, 2):
+            raise ModeVerificationError("Start requires a supported charging mode")
         values = {"tenths_kw": self._power_tenths(requested)}
         await self._command(
             "start",

@@ -8,6 +8,7 @@ import time
 from dataclasses import dataclass, replace
 from functools import wraps
 
+from .cloud_rate_limit import CloudRateLimitedError
 from .operation_budget import BudgetCancelled, CURRENT_BUDGET, OperationBudget
 
 CONF_REMEMBER_MODE = "remember_charge_mode"
@@ -33,6 +34,7 @@ class ModeObservation:
     report_marker: str | None = None
     requires_advance: bool = False
     active: bool = False
+    charging: bool = False
 
 
 class ChargeModePolicy:
@@ -73,6 +75,8 @@ class ChargeModePolicy:
         self._starting = False
         self._active_start_intent = None
         self._lock = asyncio.Lock()
+        self._start_lock = asyncio.Lock()
+        self._pending_start_intents = set()
         self._budget = None
 
     async def async_load(self):
@@ -156,10 +160,6 @@ class ChargeModePolicy:
             target = before.mode
         if type(target) is not int or target not in MODE_OPTIONS:
             raise ModeVerificationError("Device did not report a valid charging mode")
-        if before.active and not allow_active:
-            raise ModeVerificationError(
-                "Wallbox already active; automatic mode change refused"
-            )
         preserve_power = (
             target == 0
             or getattr(self.adapter, "preserves_power_all_modes", False) is True
@@ -176,6 +176,11 @@ class ChargeModePolicy:
                 before.power is None or abs(before.power - self.desired_power) >= 0.001
             )
         )
+        already_charging = before.charging and before.mode == target and not power_mismatch
+        if before.active and not allow_active and not already_charging:
+            raise ModeVerificationError(
+                "Wallbox stop state not confirmed; Start was not sent"
+            )
         if before.mode != target or power_mismatch:
             if await self.adapter.write_mode(target, requested) is not True:
                 raise ModeVerificationError(
@@ -183,7 +188,7 @@ class ChargeModePolicy:
                 )
             self._check(version)
         elif not before.requires_advance:
-            return
+            return already_charging
         while time.monotonic() < deadline:
             observed = await self.adapter.read()
             self._check(version)
@@ -196,10 +201,6 @@ class ChargeModePolicy:
                 == before.report_marker.split(":", 1)[0]
                 and observed.report_marker > before.report_marker
             )
-            if observed.active and not allow_active:
-                raise ModeVerificationError(
-                    "Wallbox became active during mode verification"
-                )
             power_preserved = (
                 not preserve_power
                 or requested.power is None
@@ -208,8 +209,13 @@ class ChargeModePolicy:
                     and abs(observed.power - requested.power) < 0.001
                 )
             )
-            if observed.mode == target and advanced and power_preserved:
-                return
+            matches = observed.mode == target and power_preserved
+            if observed.active and not allow_active and not (observed.charging and matches):
+                raise ModeVerificationError(
+                    "Wallbox stop state not confirmed; Start was not sent"
+                )
+            if matches and advanced:
+                return observed.charging
             await asyncio.sleep(self.interval)
         raise ModeVerificationError(
             "No fresh confirmation of charging mode; Start was not sent"
@@ -268,11 +274,24 @@ class ChargeModePolicy:
             await self._verify(mode, version, allow_active=True)
 
     async def async_start(self):
-        """Verify saved mode and send one Start, rejecting duplicate requests."""
-        if self._starting:
-            raise ModeVerificationError("A Start request is already pending")
-        self._starting = True
+        """Coalesce only identical intent; retain a new explicit Start after Stop."""
+        if self._closed:
+            raise RequestSuperseded("Charging request superseded; Start was not sent")
         start_intent = self._start_intent_version
+        if start_intent in self._pending_start_intents:
+            return
+        self._pending_start_intents.add(start_intent)
+        try:
+            async with self._start_lock:
+                if self._closed or start_intent != self._start_intent_version:
+                    raise RequestSuperseded("Charging request superseded; Start was not sent")
+                await self._async_start_intent(start_intent)
+        finally:
+            self._pending_start_intents.discard(start_intent)
+
+    async def _async_start_intent(self, start_intent):
+        """Execute one still-valid explicit Start, serialized against earlier Starts."""
+        self._starting = True
         self._active_start_intent = start_intent
         deadline = time.monotonic() + self.timeout
         try:
@@ -284,10 +303,12 @@ class ChargeModePolicy:
                             raise RequestSuperseded(
                                 "Charging request superseded; Start was not sent"
                             )
-                        await self._verify(
+                        already_charging = await self._verify(
                             self.desired_mode if self.remember_mode else None, version
                         )
                         self._check(version)
+                        if already_charging:
+                            return
                         # Keep cancellation active through executor and shared-lock waits,
                         # including the last check before the mutating request.
                         if await self._run_budgeted(self.adapter.start) is not True:
@@ -388,7 +409,7 @@ async def async_apply_policy(coordinator, operation, *args):
                 await policy.async_remember_mode(*args)
             return False
         await getattr(policy, "async_" + operation)(*args)
-    except ModeVerificationError as err:
+    except (ModeVerificationError, CloudRateLimitedError) as err:
         raise operation_error(err) from err
     coordinator.schedule_delayed_refresh(1.0)
     return True
@@ -404,11 +425,11 @@ def mode_setting_write(function=None, *, desired_mode=None, remember_power=False
     @wraps(function)
     async def wrapped(entity, *args, **kwargs):
         policy = getattr(entity.coordinator, "charge_mode_policy", None)
-        if policy is None or not policy.enabled:
-            return await function(entity, *args, **kwargs)
         from .ui_errors import operation_error
 
         try:
+            if policy is None or not policy.enabled:
+                return await function(entity, *args, **kwargs)
             return await policy.async_setting_write(
                 lambda: function(entity, *args, **kwargs),
                 desired_mode=desired_mode,
@@ -416,7 +437,7 @@ def mode_setting_write(function=None, *, desired_mode=None, remember_power=False
                 if (remember_power or getattr(entity, "_remember_charge_power", False))
                 else None,
             )
-        except ModeVerificationError as err:
+        except (ModeVerificationError, CloudRateLimitedError) as err:
             raise operation_error(err) from err
 
     return wrapped

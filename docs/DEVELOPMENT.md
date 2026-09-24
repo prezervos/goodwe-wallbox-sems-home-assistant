@@ -91,9 +91,9 @@ Adapt scenarios to verified GoodWe capabilities; do not copy Peblar command sema
   reload/unload, packet validation, endpoint ownership and diagnostic redaction.
 
 RFID, firmware update and socket-lock tests are not applicable without implemented
-GoodWe capabilities. Plug and Charge and energy continuity scenarios become release requirements when
-those features are implemented. The current suite must not claim those pending
-behaviors are already supported. Latest-intent buffering is covered below; a
+GoodWe capabilities. A portable cloud/native Auto start setter remains unverified
+on original HCA; do not generalize existing Modbus controls to that device. Session
+energy continuity and optional native lifetime reads have separate coverage below. Latest-intent buffering is covered below; a
 physical deferred Stop passed after the shared-session correction, as recorded in
 `VALIDATION.md`. Earlier failures remain in `VALIDATION.md`.
 
@@ -157,6 +157,7 @@ Adaptive polling checks:
 ```sh
 python -m pytest -q tests/test_cloud_push_polling.py tests/test_cloud_push.py tests/test_observed_state_diagnostics.py
 python scripts/ha_cloud_push_polling_smoke.py /workspaces/sems-wallbox/custom_components
+python scripts/ha_cloud_push_polling_smoke.py /workspaces/sems-wallbox/custom_components --cooldown-only
 ```
 
 The smoke test uses real HA scheduling and simulated reports with no wallbox or
@@ -206,3 +207,137 @@ See [validation](VALIDATION.md) for tested versions, coverage and remaining limi
 The MQTT reconnect test exercises the actual listener/shared-session broker discovery
 with HTTP/MQTT I/O replaced. It checks credentials, subscriptions, transient failure,
 polling and cleanup; it does not establish natural expiry at the actual broker.
+
+## Dependency compatibility
+
+The manifest pins `pymodbus==3.13.1`, matching the built-in Modbus integration
+in the tested Home Assistant 2026.9.2 runtime. Our client uses `device_id=`,
+introduced in pymodbus 3.10; the former `>=3.0.0` requirement admitted incompatible
+older clients and untested future API changes. Pymodbus minor versions can change
+its API. When updating this pin, check the target HA Modbus requirement too and
+run the existing `scripts/ha_audit_regressions.py` wire checks with the actual
+package. They verify identity reads, writes, uncertain Start without replay and
+closed-client rejection against a loopback server. Do not replace these checks
+with mocks of pymodbus's call signatures.
+
+Version 3.13.1 passed the focused wire checks in HA 2026.9.2; 3.15.0 passed the
+previous release checkpoint. No physical Modbus hardware is claimed as tested.
+The MQTT dependency remains pinned to the tested `aiomqtt==2.5.1`.
+`requests` is supplied explicitly by Home Assistant core (2.34.2 in the tested
+runtime); a separate integration pin would unnecessarily duplicate that contract.
+
+## Transient native idle reports
+
+NativeModeAdapter rechecks only stopped-state reports with zero measured power
+and residual phase current. Two extra status reads, one second apart and bounded
+by two seconds each, preserve the existing operation deadline/cancellation fence.
+The same check applies to policy verification and the final adapter read before
+Start. Active charging, nonzero power or a pending supervised Start are not retried.
+Only reads repeat; Start delivery and protective semantics are unchanged.
+
+Focused coverage in test_native_transport exercises the observed0kW/2.7A case
+settling in both preparation stages, persistent contradictions, active charging,
+nonzero power, pending Start, read timeout and Stop invalidation during the delay.
+Existing loopback transport and handover tests retain wire-level coverage.
+
+## Cloud session diagnostics
+
+The cached diagnostic export includes login_attempts, successful_logins,
+session_recovery_attempts and last_login_age_seconds. Login attempts count logical
+login cycles, including an eligible endpoint fallback as one cycle, not HTTP calls.
+Recovery attempts count explicit C0602 responses that initiate bounded renewal;
+they do not distinguish natural expiry from another client invalidating the session.
+MQTT subscription_count increments only after subscriptions succeed;
+last_subscription_age_seconds describes that event, not message freshness.
+
+Counters are in-memory, scoped to the API/listener instance and reset on recreation.
+Export contains no token, token hash, username, broker password or login response.
+Reading diagnostics never forces login, MQTT reconnect or cloud polling. A successful
+second login does not by itself prove that the first session became invalid. Compare
+recovery/login deltas and subsequent successful normal polling; MQTT may remain
+connected across HTTP session renewal and must still be assessed independently.
+
+## Interpreting live recovery evidence
+
+The 2026-09-23 live checks verified forced HTTP-token rejection/recovery, MQTT
+network-outage reconnection, and actual charging events after resubscription.
+See VALIDATION.md for outcomes and limitations. Do not repeat physical charging
+for documentation-only edits. Natural expiry, continuous MQTT telemetry, exact
+HTTP request cadence and a live qualified-stream fallback remain separate checks.
+
+Network fault injection belongs in disposable development tooling, not the
+integration. Scope it to the broker in the development network namespace, verify
+HTTP API addresses are unaffected, and provide independent timed cleanup. Physical
+Start/Stop testing additionally needs a bounded Stop guard and ownership restoration.
+A watchdog command must be included when interpreting event/command counts.
+
+## HTTP request cadence without physical charging
+
+The existing ha_cloud_push_polling_smoke.py also exercises NativeCoordinator and
+SemsApi with real HA scheduling at60s idle/30s charging. Only the requests session
+network boundary is replaced; responses change simulated state without any Start,
+Stop or setting operation. Unexpected methods/endpoints fail the test. Credentials
+are fictional and cached to isolate steady-state polling from authentication tests.
+
+It counts telemetry and configuration HTTP calls separately, checks idle/charging
+spacing, coalesces20distinct MQTT hints to one read, rejects a repeated event ID,
+and confirms the normal scheduler continues after push loss. HA aligns scheduled
+callbacks to clock boundaries, so assertions allow its subsecond rounding and a
+small execution margin. Run through a non-loopback network guard in development.
+This complements, rather than repeats, the existing simulated adaptive-polling
+qualification check. It is not a live GoodWe traffic measurement.
+
+## MQTT and delayed HTTP response races
+
+The existing cloud-push tests cover pending hints and listener lifecycle changes.
+The in-flight refresh scenario additionally gates an awaited read:20new hints
+share that task, completion allows future hints, and unload drains/cancels it.
+A replacement listener must operate without reviving the old instance.
+
+For a focused real-HA executor/publication check, run:
+
+```sh
+python scripts/ha_cloud_push_polling_smoke.py /workspaces/sems-wallbox/custom_components --races-only
+```
+
+It holds a cloud response in an executor until a newer TCP observation has been
+published, then verifies epoch rejection prevents data replacement. A stale refresh
+may mark availability failed until the next current observation; the test does not
+promise continuous availability through a handover. Existing configuration-response
+and native lifecycle tests cover their separate races; do not duplicate them here.
+
+## Shared cloud cooldown
+
+`CloudRequestGate` serializes HTTP dispatch across a SemsApi instance and its v3
+observation reader. This includes settings, controls, MQTT credential discovery
+and login. HTTP429 honors a numeric/date Retry-After, or uses 30/60/120/240/300s
+backoff when missing/invalid. HTTP503 honors valid Retry-After. A successful HTTP
+response resets the headerless backoff. Other HTTP failures retain their existing
+classification. Deadlines use monotonic time; an expired HTTP date is invalid.
+
+No worker sleeps through a cooldown and no command is queued or replayed by the
+gate. A typed error reaches the translated service boundary. A rejected optimistic
+setting is cleared. Existing opt-in TCP preflight fallback remains available;
+uncertain cloud command delivery does not justify replay. Cancellation and
+operation budgets also apply while waiting for the HTTP serialization lock.
+
+The gate is per configured API instance, not a cross-process account lock. It does
+not coordinate other HA instances, SolarGo or the official web application. A new
+API instance starts with no remembered server cooldown. Login-specific rejection
+and fallback rules remain separate, but known throttling blocks HTTP dispatch.
+
+`tests/test_cloud_rate_limit.py` verifies request counts, deadlines, concurrent
+callers and shared web/telemetry/login blocking with mocked HTTP only. Existing
+command, fallback and policy tests cover no replay and localized entity errors.
+
+Run the integrated recovery smoke separately (real HA, mocked HTTP/MQTT and a
+loopback native peer; no physical control):
+
+```sh
+python scripts/ha_cloud_push_polling_smoke.py /absolute/path/to/custom_components --cooldown-only
+```
+
+It verifies cloud-only recovery and automatic TCP fallback/return together with
+MQTT reconnection, polling and freshness guards. Scheduler/supervisor delays are
+shortened explicitly; Retry-After uses real elapsed time. Existing cadence and
+race smoke modes remain separate so targeted checks do not rerun long waits.

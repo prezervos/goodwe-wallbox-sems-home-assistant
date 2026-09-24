@@ -85,6 +85,11 @@ async def async_get_config_entry_diagnostics(hass, entry):
     if cloud is not None and hasattr(cloud, "_web_login_retry_at"):
         result["cloud_login"] = {
             "session_cached": cloud._web_token is not None,
+            "login_attempts": _number(getattr(cloud, "login_attempts", None)),
+            "successful_logins": _number(getattr(cloud, "successful_logins", None)),
+            "session_recovery_attempts": _number(getattr(cloud, "session_recovery_attempts", None)),
+            "last_login_age_seconds": max(0, time.monotonic() - cloud.last_login_at)
+            if getattr(cloud, "last_login_at", None) is not None else None,
             "retry_in_seconds": max(0, round(cloud._web_login_retry_at - time.monotonic())),
             "authentication_rejected": cloud._web_login_auth_error,
         }
@@ -103,6 +108,9 @@ async def async_get_config_entry_diagnostics(hass, entry):
     if push is not None:
         result["cloud_push"] = {
             "connected": bool(push.connected),
+            "subscription_count": _number(getattr(push, "subscription_count", None)),
+            "last_subscription_age_seconds": max(0, time.monotonic() - push.last_subscription_at)
+            if getattr(push, "last_subscription_at", None) is not None else None,
             "polling": push.polling.diagnostics(),
             "refresh_count": push.refresh_count,
             "telemetry_events": push.event_counts["telemetry"],

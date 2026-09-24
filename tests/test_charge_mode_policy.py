@@ -156,10 +156,13 @@ async def test_uncertain_start_is_not_replayed():
     assert adapter.calls.count("start") == 1
 
 
-async def test_active_device_blocks_automatic_mode_change():
-    adapter = Adapter(Observation(1, active=True))
-    with pytest.raises(Error, match="already active"):
+@pytest.mark.parametrize("mode", [0, 1])
+async def test_active_device_blocks_start_with_specific_ui_error(mode):
+    adapter = Adapter(Observation(mode, active=True))
+    with pytest.raises(Error, match="stop state not confirmed") as caught:
         await make_policy(adapter).async_start()
+    errors = importlib.import_module(PACKAGE + ".ui_errors")
+    assert errors.operation_error(caught.value).translation_key == "start_requires_idle"
     assert adapter.calls == ["read"]
 
 
@@ -373,6 +376,7 @@ async def test_real_modbus_select_uses_same_persistence():
     from tests.test_select import _select_mod
 
     coordinator = types.SimpleNamespace(
+        data={"SN": {"chargeMode": 0}},
         charge_mode_policy=make_policy(Adapter(Observation(0), Observation(2))),
         schedule_delayed_refresh=MagicMock(),
         async_request_refresh=AsyncMock(),
@@ -483,7 +487,7 @@ async def test_start_waits_for_earlier_power_write_to_complete():
     assert adapter.calls == ["power_written", "read", "start"]
 
 
-async def test_duplicate_start_is_rejected_without_replay():
+async def test_duplicate_start_is_coalesced_without_replay():
     adapter = Adapter(Observation(0))
     policy = make_policy(adapter)
     entered = asyncio.Event()
@@ -498,8 +502,7 @@ async def test_duplicate_start_is_rejected_without_replay():
     adapter.read = read
     pending = asyncio.create_task(policy.async_start())
     await entered.wait()
-    with pytest.raises(Error, match="already pending"):
-        await policy.async_start()
+    await policy.async_start()
     release.set()
     await pending
     assert adapter.calls.count("start") == 1
@@ -1001,3 +1004,90 @@ async def test_failed_mode_adoption_preserves_existing_intent(failure):
     assert store.saved == {"mode":2,"power":7.0}
     assert policy.desired_mode == 2
     assert adapter.calls == ["read"]
+
+
+@pytest.mark.parametrize("cloud", [False, True])
+async def test_confirmed_matching_charge_makes_start_idempotent(cloud):
+    adapter = Adapter(
+        Observation(0, power=4.2, active=True, charging=True,
+                    report_marker="test:001", requires_advance=cloud),
+        Observation(0, power=4.2, active=True, charging=True,
+                    report_marker="test:002", requires_advance=cloud),
+    )
+    policy = make_policy(adapter)
+    policy.desired_power = 4.2
+    await policy.async_start()
+    assert adapter.calls == (["read", "read"] if cloud else ["read"])
+
+
+@pytest.mark.parametrize("mode,power", [(1, 4.2), (0, 11.0), (0, None)])
+async def test_active_mismatch_never_writes_or_claims_start_success(mode, power):
+    adapter = Adapter(Observation(mode, power=power, active=True, charging=True))
+    policy = make_policy(adapter)
+    policy.desired_power = 4.2
+    with pytest.raises(Error, match="stop state not confirmed"):
+        await policy.async_start()
+    assert adapter.calls == ["read"]
+
+
+async def test_stale_cloud_charging_does_not_fulfil_duplicate_start():
+    adapter = Adapter(Observation(0, power=4.2, active=True, charging=True,
+                                  report_marker="test:001", requires_advance=True))
+    policy = make_policy(adapter)
+    policy.desired_power = 4.2
+    with pytest.raises(Error, match="fresh confirmation"):
+        await policy.async_start()
+    assert set(adapter.calls) == {"read"}
+
+
+@pytest.mark.parametrize("close", [False, True])
+async def test_new_start_after_stop_is_not_an_old_duplicate(close):
+    adapter = Adapter(Observation(0, power=4.2))
+    policy = Policy(adapter, Store(), enabled=True, initial_mode=0, timeout=2)
+    entered, release = asyncio.Event(), asyncio.Event()
+    original = adapter.read
+
+    async def read():
+        entered.set()
+        await release.wait()
+        return await original()
+
+    adapter.read = read
+    first = asyncio.create_task(policy.async_start())
+    await entered.wait()
+    stop = asyncio.create_task(policy.async_stop())
+    await asyncio.sleep(0)
+    last = asyncio.create_task(policy.async_start())
+    await asyncio.sleep(0)
+    closing = asyncio.create_task(policy.async_close()) if close else None
+    await asyncio.sleep(0)
+    release.set()
+    results = await asyncio.gather(first, stop, last, return_exceptions=True)
+    if closing:
+        await closing
+    assert isinstance(results[0], policy_module.RequestSuperseded)
+    assert results[1] is None
+    if close:
+        assert isinstance(results[2], policy_module.RequestSuperseded)
+        assert "start" not in adapter.calls
+    else:
+        assert results[2] is None
+        assert adapter.calls == ["read", "stop", "read", "start"]
+    assert not policy._pending_start_intents
+
+
+@pytest.mark.parametrize("cp,power,result", [(1, 0, "start"), (2, 4.2, "already"), (None, 0, "error"), (1, None, "error")])
+async def test_modbus_raw_charging_requires_independent_cp_and_power(cp, power, result):
+    adapter, client = transport(dict(sn="SN", chargeMode=0, set_charge_power=4.2,
+                                    modbus_status_raw=3, modbus_car_connected=cp,
+                                    modbus_power=power), modbus=True)
+    client.write_start_stop.return_value = True
+    policy = make_policy(adapter)
+    policy.desired_power = 4.2
+    if result == "error":
+        with pytest.raises(Error):
+            await policy.async_start()
+    else:
+        await policy.async_start()
+    assert client.write_start_stop.call_count == (result == "start")
+    client.write_charge_mode.assert_not_called()

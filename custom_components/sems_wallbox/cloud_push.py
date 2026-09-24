@@ -46,6 +46,8 @@ class CloudPush:
         self._seen = OrderedDict()
         self._last_refresh = 0.0
         self.connected = False
+        self.subscription_count = 0
+        self.last_subscription_at = None
         self.last_event_at = None
         self.refresh_count = 0
         self.event_counts = {"telemetry": 0, "charging": 0}
@@ -166,6 +168,8 @@ class CloudPush:
         ) as client:
             await client.subscribe([(topic, 0) for topic in self.topics])
             self.connected = True
+            self.subscription_count += 1
+            self.last_subscription_at = time.monotonic()
             _LOGGER.debug("Cloud event subscription established")
             async for message in client.messages:
                 self.event(

@@ -1,6 +1,9 @@
 {
   "title": "GoodWe Wallbox",
   "exceptions": {
+    "cloud_rate_limited": {
+      "message": "GoodWe has temporarily limited cloud requests. Try again in {seconds} seconds. The command was not retried."
+    },
     "set_charge_mode_failed_fast": {
       "message": "Switching to Fast mode could not be confirmed. Check the actual wallbox mode before retrying."
     },
@@ -28,6 +31,9 @@
     "stop_before_mode": {
       "message": "Stop charging before changing the charging mode."
     },
+    "start_requires_idle": {
+      "message": "Start was not sent because the wallbox has not confirmed it is stopped. Check the charging state and try again once it is idle."
+    },
     "start_pending": {
       "message": "A charging start is already in progress. Wait for its result."
     },
@@ -43,26 +49,11 @@
     "start_unconfirmed": {
       "message": "Start was not confirmed and was not retried. Check the actual charging state."
     },
-    "pending_controls_expired": {
-      "message": "Pending controls expired because the connection could not be verified in time. Check actual charging state and submit a new request."
-    },
-    "pending_controls_failed": {
-      "message": "Pending wallbox controls could not be completed. Check the connection and actual charging state before issuing a new request."
-    },
     "minimum_power_cloud_fast": {
       "message": "Cloud control of this setting is not supported in Fast mode on this wallbox. Stop charging and wait for the wallbox to become idle, then use local TCP or SolarGo to change it. The reported state remains visible."
     },
     "minimum_power_stop_first": {
       "message": "This setting can only be changed while the wallbox is idle. Stop charging and wait for confirmation."
-    },
-    "cloud_control_switching": {
-      "message": "Cloud control is unavailable. Switching to local TCP before sending the latest charging request."
-    },
-    "cloud_control_tcp_ready": {
-      "message": "Local TCP is ready. The latest charging request will now be processed; check the charging state for its outcome."
-    },
-    "cloud_control_failed": {
-      "message": "Cloud control or the switch to TCP failed. Pending requests were discarded; check the wallbox state before retrying."
     }
   },
   "options": {

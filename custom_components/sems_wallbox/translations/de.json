@@ -1,6 +1,9 @@
 {
   "title": "GoodWe Wallbox",
   "exceptions": {
+    "cloud_rate_limited": {
+      "message": "GoodWe hat Cloud-Anfragen vorübergehend begrenzt. Versuchen Sie es in {seconds} Sekunden erneut. Der Befehl wurde nicht wiederholt."
+    },
     "set_charge_mode_failed_fast": {
       "message": "Der Wechsel in den Modus Schnell konnte nicht bestätigt werden. Prüfen Sie vor einem erneuten Versuch den tatsächlichen Modus der Wallbox."
     },
@@ -28,6 +31,9 @@
     "stop_before_mode": {
       "message": "Beenden Sie den Ladevorgang, bevor Sie den Lademodus ändern."
     },
+    "start_requires_idle": {
+      "message": "Der Startbefehl wurde nicht gesendet, weil die Wallbox den Stillstand nicht bestätigt hat. Prüfen Sie den Ladestatus und versuchen Sie es erneut, sobald die Wallbox nicht mehr lädt."
+    },
     "start_pending": {
       "message": "Ein Ladestart läuft bereits. Warten Sie auf das Ergebnis."
     },
@@ -43,26 +49,11 @@
     "start_unconfirmed": {
       "message": "Der Start wurde nicht bestätigt und nicht wiederholt. Prüfen Sie den tatsächlichen Ladezustand."
     },
-    "pending_controls_expired": {
-      "message": "Ausstehende Befehle sind abgelaufen, da die Verbindung nicht rechtzeitig bestätigt wurde. Prüfen Sie den tatsächlichen Ladezustand und senden Sie eine neue Anforderung."
-    },
-    "pending_controls_failed": {
-      "message": "Ausstehende Wallbox-Befehle konnten nicht abgeschlossen werden. Prüfen Sie Verbindung und tatsächlichen Ladezustand, bevor Sie eine neue Anforderung senden."
-    },
     "minimum_power_cloud_fast": {
       "message": "Die Cloud-Steuerung dieser Einstellung wird bei dieser Wallbox im Schnellmodus nicht unterstützt. Beenden Sie den Ladevorgang und warten Sie auf den Ruhezustand. Ändern Sie die Einstellung dann über lokales TCP oder SolarGo. Der gemeldete Zustand bleibt sichtbar."
     },
     "minimum_power_stop_first": {
       "message": "Diese Einstellung kann nur im Ruhezustand der Wallbox geändert werden. Beenden Sie den Ladevorgang und warten Sie auf die Bestätigung."
-    },
-    "cloud_control_switching": {
-      "message": "Die Cloud-Steuerung ist nicht verfügbar. Vor dem Senden der letzten Ladeanforderung wird auf lokales TCP umgeschaltet."
-    },
-    "cloud_control_tcp_ready": {
-      "message": "Lokales TCP ist bereit. Die letzte Ladeanforderung wird jetzt verarbeitet. Prüfen Sie den Ladestatus, um das Ergebnis zu bestätigen."
-    },
-    "cloud_control_failed": {
-      "message": "Die Cloud-Steuerung oder der Wechsel zu TCP ist fehlgeschlagen. Ausstehende Anforderungen wurden verworfen. Prüfen Sie vor einem erneuten Versuch den Status der Wallbox."
     }
   },
   "options": {

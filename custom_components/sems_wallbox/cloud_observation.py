@@ -13,6 +13,8 @@ import threading
 
 import requests
 
+from .cloud_http import SEMS_USER_AGENT
+from .cloud_rate_limit import CloudRequestGate
 from .operation_budget import request_timeout, serialized_request
 
 LOGIN_URL = "https://www.semsportal.com/api/v3/Common/CrossLogin"
@@ -26,7 +28,8 @@ class CloudAuthenticationError(ConnectionError):
 class CloudObservationReader:
     """Supply report freshness that the SEMS Plus configuration endpoint lacks."""
 
-    def __init__(self, username, password, *, session=None):
+    def __init__(self, username, password, *, session=None, request_gate=None):
+        self._request_gate = request_gate if request_gate is not None else CloudRequestGate()
         self._username = username
         self._password = password
         self._owns_session = session is None
@@ -36,9 +39,10 @@ class CloudObservationReader:
         self._lock = threading.Lock()
 
     def _login(self):
-        response = self._session.post(
+        response = self._request_gate.request(self._session.post,
             LOGIN_URL,
             headers={
+                "User-Agent": SEMS_USER_AGENT,
                 "Content-Type": "application/json",
                 "Accept": "application/json",
                 "token": json.dumps(
@@ -71,9 +75,10 @@ class CloudObservationReader:
             for attempt in range(2):
                 if self._token is None:
                     self._login()
-                response = self._session.post(
+                response = self._request_gate.request(self._session.post,
                     STATUS_URL,
                     headers={
+                        "User-Agent": SEMS_USER_AGENT,
                         "Content-Type": "application/json",
                         "Accept": "application/json",
                         "token": json.dumps(self._token),

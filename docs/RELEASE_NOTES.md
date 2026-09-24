@@ -1,3 +1,76 @@
+# 3.0.1 — Cloud compatibility and reliable controls
+
+Maintenance update to 3.0.0. Existing entity IDs, saved settings, units and native
+TCP/cloud selection are preserved. No production deployment is implied by these
+release-preparation files.
+
+## Upgrade requirement
+
+**Home Assistant 2026.9.2 or newer is required.** HACS now enforces the tested
+minimum. Upgrade Home Assistant first if needed. The Modbus dependency is pinned
+to `pymodbus==3.13.1`, matching the checked HA 2026.9.x constraints; MQTT remains
+on `aiomqtt==2.5.1`. Earlier HA/dependency combinations are not supported by this
+update. Restart Home Assistant after updating the integration.
+
+## Fixed
+
+- Use one Mozilla-format User-Agent for all GoodWe HTTP login, telemetry, control
+  and MQTT configuration discovery requests ([#19](https://github.com/prezervos/goodwe-wallbox-sems-home-assistant/issues/19)).
+  Version 3.0.0 already fixed the original SEMS+ fallback login; this update makes
+  the header consistent on the other HTTP paths. It does not establish a fix for
+  every intermittent disconnect or timeout. Token client identities are unchanged.
+- Respect shared HTTP 429 cooldowns and HTTP 503 responses with Retry-After across
+  cloud operations. Surface a translated retry-later error instead of hammering
+  the service or replaying uncertain controls.
+- Coalesce repeated Start requests without losing a new Start after Stop. Treat
+  freshly confirmed charging in the requested mode/power as already fulfilled.
+  Uncertain or mismatched charging reports retain their existing safeguards.
+- Preserve the latest mode/power choice when an older Start preparation is
+  superseded before delivery. Keep a newer explicit Stop after an earlier command
+  fails, without replaying the failed command or another uncertain Start.
+- Recheck brief contradictory native idle reports with bounded status reads.
+  Only reads repeat; a persistent contradiction still refuses Start.
+- Require independent CP and measured-power evidence before treating a Modbus
+  wallbox as already charging; a stale charging status alone is insufficient.
+- Restore the displayed setting after failed/cancelled writes without overwriting
+  newer user choices or fresh reports. Pending mode selections no longer replace
+  reported coordinator data. Overlapping mode/power writes are covered.
+- Remove persistent notifications for routine deferred-control failures and
+  fallback progress. Diagnostics/logs retain failure details. Protective alerts
+  for failed safety stops remain enabled.
+- Clarify refused-Start and rate-limit messages, with matching English, Czech,
+  German and Spanish translations.
+
+## Diagnostics and documentation
+
+- Add credential-free login, session-recovery and MQTT subscription counters.
+  These counters make no extra cloud requests and are not proof of event delivery.
+- Explain how scheduled polling, MQTT hints, user commands and configuration
+  refreshes affect HTTP traffic. HTTP polling remains necessary on hardware where
+  only charging-event hints have been observed.
+- Expand regression coverage for control ordering, rollback, request cooldowns,
+  native idle reconciliation and MQTT/HTTP lifecycle races.
+
+## Validation and limits
+
+Validation passed on Home Assistant 2026.9.2 / Python 3.14.5 with pymodbus 3.13.1:
+**1,079 unit/regression tests and 14 isolated real-HA smoke invocations**. Independent
+Astra review found one additional cooldown-message gap, which was fixed and
+rechecked with regression tests. No unresolved blocker remained in the reviewed
+scope. See `docs/VALIDATION.md` for limits; these checks do not establish physical
+behavior on every model or firmware. GitHub CI/HACS/hassfest for the proposed
+release commit still need to run before publication.
+
+This update adds no new native TCP mappings for extended settings and no portable
+cloud/native Auto start implementation. Natural token expiry and continuous MQTT
+telemetry coverage remain unverified. Existing hardware limitations still apply.
+
+## Thanks
+
+Thanks to [@pedrodivisez](https://github.com/pedrodivisez) for the independent
+User-Agent reproduction and earlier wallbox work, and to all previous integration
+contributors. The full historical credits remain in the README and 3.0.0 notes.
+
 # 3.0.0 — Native TCP control and cloud reliability
 
 ## Features and behavior
@@ -80,7 +153,7 @@
 - SolarGo Auto start was physically demonstrated, but no portable verified
   cloud/native setter plus readback is established for the tested original HCA.
   Accepted cloud writes alone do not establish hardware support.
-- Dependencies currently declare pymodbus>=3.0.0 and aiomqtt==2.5.1. Actual Modbus
+- Release 3.0.0 declared pymodbus>=3.0.0 and aiomqtt==2.5.1. Actual Modbus
   wire regression used pymodbus 3.15.0; the broad lower bound is not evidence that
   every allowed dependency version was tested.
 

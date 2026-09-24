@@ -135,10 +135,10 @@ class TestSelectOption:
     @pytest.mark.parametrize(
         ("requested", "expected"), [(6.0, 6.0), (None, 4.2), (1.0, 4.2)]
     )
-    async def test_switch_to_fast_uses_valid_power_and_publishes_it(
+    async def test_switch_to_fast_sends_valid_power_without_fabricating_report(
         self, requested, expected
     ):
-        """The cloud command and shared state use the same validated limit."""
+        """The command uses a valid limit while telemetry awaits confirmation."""
         entity = _make_entity(
             chargeMode=1, set_charge_power=requested,
             min_charge_power=4.2, max_charge_power=11.0,
@@ -147,7 +147,7 @@ class TestSelectOption:
         entity.api.set_charge_mode_gen2.assert_called_once_with(
             SAMPLE_SN, 0, expected
         )
-        assert entity.coordinator.data[SAMPLE_SN]["set_charge_power"] == expected
+        assert entity.coordinator.data[SAMPLE_SN]["set_charge_power"] == requested
 
 
     @pytest.mark.asyncio
@@ -155,17 +155,17 @@ class TestSelectOption:
         ("option", "mode", "power"),
         [("fast", 0, 7.4), ("pv_priority", 1, None), ("pv_and_battery", 2, None)],
     )
-    async def test_selection_publishes_mode_and_sends_cloud_command(
+    async def test_selection_presents_pending_mode_and_sends_cloud_command(
         self, option, mode, power
     ):
-        """Selecting a mode updates dependent entities without waiting for a poll."""
+        """The select presents intent without fabricating shared device data."""
         entity = _make_entity(chargeMode=1 if mode == 0 else 0, set_charge_power=7.4)
         await entity.async_select_option(option)
         entity.api.set_charge_mode_gen2.assert_called_once_with(SAMPLE_SN, mode, power)
         assert entity._attr_current_option == option
         entity.async_write_ha_state.assert_called()
-        assert entity.coordinator.data[SAMPLE_SN]["chargeMode"] == mode
-        assert len(entity.coordinator._set_updated_data_calls) == 1
+        assert entity.coordinator.data[SAMPLE_SN]["chargeMode"] == (1 if mode == 0 else 0)
+        assert not entity.coordinator._set_updated_data_calls
 
 
     @pytest.mark.asyncio
@@ -278,6 +278,7 @@ class TestSelectOption:
         HomeAssistantError is raised so HA shows a toast notification."""
         entity = _make_entity(chargeMode=0, set_charge_power=6.0)  # currently Fast
         entity.api.set_charge_mode_gen2 = MagicMock(return_value=False)
+        entity.coordinator.schedule_delayed_refresh = MagicMock()
         with pytest.raises(Exception):  # HomeAssistantError
             await entity.async_select_option("pv_priority")
         # _attr_current_option must be reverted to "fast" (chargeMode=0 in coordinator)
@@ -285,7 +286,7 @@ class TestSelectOption:
         # _pending_mode must be cleared so poll-based guard works correctly
         assert entity._pending_mode is None
         # A refresh must be scheduled so the UI catches up with the real device
-        entity.hass.async_create_task.assert_called_once()
+        entity.coordinator.schedule_delayed_refresh.assert_called_once_with(3.0)
 
     @pytest.mark.asyncio
     async def test_mode_switch_revert_calls_write_ha_state_on_failure(self):
@@ -350,10 +351,8 @@ class TestPendingMode:
         assert entity._attr_current_option == "pv_priority"
 
     @pytest.mark.asyncio
-    async def test_poll_with_old_mode_restores_coordinator_data(self):
-        """When the poll returns the old mode, coordinator.data must be patched
-        back to the pending chargeMode so other entities (e.g. number) also
-        see the correct state."""
+    async def test_poll_with_old_mode_preserves_reported_coordinator_data(self):
+        """Pending presentation must not overwrite authoritative telemetry."""
         entity = _make_entity(chargeMode=0)
         await entity.async_select_option("pv_priority")  # _pending_mode = 1
 
@@ -361,10 +360,8 @@ class TestPendingMode:
         entity.coordinator._set_updated_data_calls.clear()
         entity._handle_coordinator_update()
 
-        # coordinator.data must be restored to chargeMode=1
-        assert entity.coordinator.data[SAMPLE_SN]["chargeMode"] == 1
-        # async_set_updated_data must have been called to notify other entities
-        assert len(entity.coordinator._set_updated_data_calls) == 1
+        assert entity.coordinator.data[SAMPLE_SN]["chargeMode"] == 0
+        assert not entity.coordinator._set_updated_data_calls
 
     @pytest.mark.asyncio
     async def test_poll_confirming_pending_mode_clears_pending(self):
@@ -395,14 +392,6 @@ class TestPendingMode:
         assert entity._pending_mode is None
         assert entity._attr_current_option == "fast"
 
-    def test_restoring_flag_prevents_reentrant_processing(self):
-        """When _restoring=True, _handle_coordinator_update returns immediately."""
-        entity = _make_entity(chargeMode=0)
-        entity._restoring = True
-        entity.coordinator.data[SAMPLE_SN]["chargeMode"] = 1
-        entity._handle_coordinator_update()
-        # async_write_ha_state must NOT have been called (early return)
-        entity.async_write_ha_state.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -551,3 +540,36 @@ async def test_duration_does_not_zero_an_unknown_energy_target():
     with pytest.raises(HomeAssistantError):
         await entity.async_select_option("2h")
     entity.api.set_charge_mode_gen2.assert_not_called()
+
+
+@pytest.mark.parametrize("policy_enabled", [None, False])
+@pytest.mark.parametrize("resend", [False, True])
+async def test_legacy_mode_cooldown_is_translated_without_replay(policy_enabled, resend):
+    """Both initial and reconciliation writes report a localized cooldown."""
+    import importlib
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    rates = importlib.import_module(_select_mod.__package__ + ".cloud_rate_limit")
+    policy_module = importlib.import_module(_select_mod.__package__ + ".charge_mode_policy")
+    entity = _make_entity(chargeMode=0, set_charge_power=7.4)
+    entity.coordinator.schedule_delayed_refresh = MagicMock()
+    if policy_enabled is False:
+        entity.coordinator.charge_mode_policy = policy_module.ChargeModePolicy(
+            None, SimpleNamespace(async_save=AsyncMock()), enabled=False, initial_mode=0
+        )
+    calls = []
+    def write(*args):
+        calls.append(args)
+        if resend and len(calls) == 1:
+            entity.coordinator.data[SAMPLE_SN]["set_charge_power"] = 6.0
+            return True
+        raise rates.CloudRateLimitedError(60)
+    entity.api.set_charge_mode_gen2 = write
+    with pytest.raises(_select_mod.HomeAssistantError) as caught:
+        await entity.async_select_option("fast" if resend else "pv_priority")
+    assert caught.value.translation_key == "cloud_rate_limited"
+    assert caught.value.translation_placeholders == {"seconds": "60"}
+    assert len(calls) == (2 if resend else 1)
+    assert entity._pending_mode is None
+    assert entity._attr_current_option == "fast"
+    entity.coordinator.schedule_delayed_refresh.assert_called_once_with(3.0)

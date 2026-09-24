@@ -7,6 +7,8 @@ from dataclasses import dataclass
 import logging
 import time
 
+from .charge_mode_policy import RequestSuperseded
+
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -32,6 +34,8 @@ class LatestIntent:
         self.pending = {}
         self.task = None
         self.executing = None
+        self._executing_request = None
+        self._executing_version = None
         self.error = None
         self.closed = False
         self.version = 0
@@ -69,6 +73,15 @@ class LatestIntent:
             return False
         if key not in ("charging", "mode", "power"):
             raise ValueError("Unknown deferred control")
+        existing = self.pending.get(key)
+        if existing is not None and existing.value == value:
+            return True
+        if (key == "charging" and value is True and self.executing == key
+                and self._executing_request is not None
+                and self._executing_request.value is True
+                and self._executing_version == self.version):
+            # An identical Start must not cancel the preparation it is waiting for.
+            return True
         now = time.monotonic()
         if self.batch_deadline is None:
             self.batch_deadline = now + self.EXPIRY
@@ -103,6 +116,8 @@ class LatestIntent:
                 request = self.pending.pop(key)
                 version = self.version
                 self.executing = key
+                self._executing_request = request
+                self._executing_version = version
                 self.owner.async_update_listeners()
                 try:
                     # Remove before transmission. Failure cannot replay this request.
@@ -110,25 +125,33 @@ class LatestIntent:
                 except Exception as exc:
                     # User-visible background failure must be retained even though
                     # the original service call already acknowledged deferred intent.
-                    if key == "charging" and request.value is True:
-                        # An errored Start may already have reached the device.
-                        # Keep a newer Stop, but never dispatch another queued Start.
-                        stop = self.pending.get("charging")
-                        if stop is not None and stop.value is False:
-                            self.pending = {"charging": stop}
-                            self.error = "operation_failed"
-                        else:
-                            await self._fail("operation_failed")
-                            return
-                    elif (version != self.version and self.pending
-                          and getattr(exc, "translation_key", None) == "request_superseded"):
+                    superseded = isinstance(exc, RequestSuperseded) or (
+                        getattr(exc, "translation_key", None) == "request_superseded"
+                    )
+                    if superseded and version != self.version and self.pending:
+                        # Only this typed failure proves no Start was delivered.
+                        # Power changes retain Start; a mode choice cancels the old
+                        # Start. Explicit newer Start/Stop always wins.
+                        if (key == "charging" and request.value is True
+                                and "charging" not in self.pending
+                                and "mode" not in self.pending):
+                            self.pending["charging"] = request
                         _LOGGER.debug("Deferred operation superseded by newer intent")
+                        continue
+                    _LOGGER.exception("Deferred wallbox %s operation failed", key)
+                    # Any failed command may have reached the device. Preserve a
+                    # newer explicit Stop, but never replay uncertain settings/Start.
+                    stop = self.pending.get("charging")
+                    if stop is not None and stop.value is False:
+                        self.pending = {"charging": stop}
+                        self.error = "operation_failed"
                     else:
-                        _LOGGER.exception("Deferred wallbox operation failed")
                         await self._fail("operation_failed")
                         return
                 finally:
                     self.executing = None
+                    self._executing_request = None
+                    self._executing_version = None
                     self.owner.async_update_listeners()
         except asyncio.CancelledError:
             self.pending.clear()
@@ -141,27 +164,12 @@ class LatestIntent:
                     self._run(), "GoodWe pending user intent"
                 )
 
-    async def _fail(self, reason, *, notify=True):
+    async def _fail(self, reason):
+        """Retain deferred failure for diagnostics without persistent UI notices."""
         self.error = reason
         self.pending.clear()
         self.batch_deadline = None
-        if not notify:
-            self.owner.async_update_listeners()
-            return
-        from homeassistant.components import persistent_notification
-        from homeassistant.helpers.translation import async_get_translations
-
-        language = getattr(getattr(self.owner.hass, "config", None), "language", "en")
-        messages = await async_get_translations(
-            self.owner.hass, language, "exceptions", {"sems_wallbox"}
-        )
-        key = "pending_controls_expired" if reason == "expired" else "pending_controls_failed"
-        persistent_notification.async_create(
-            self.owner.hass,
-            messages["component.sems_wallbox.exceptions." + key + ".message"],
-            title="GoodWe Wallbox",
-            notification_id=f"sems_wallbox_{self.owner.entry.entry_id}_pending_controls",
-        )
+        _LOGGER.warning("Deferred wallbox controls discarded: %s", reason)
         self.owner.async_update_listeners()
 
     def diagnostics(self):

@@ -90,7 +90,7 @@ class ControlFallback:
                 return
             if time.monotonic() < fallback.next_attempt:
                 raise ConnectionError("TCP handover retry is delayed")
-            await self._notify("cloud_control_switching")
+            _LOGGER.info("Cloud control unavailable; switching to native TCP")
 
             started = asyncio.Event()
 
@@ -121,33 +121,17 @@ class ControlFallback:
             fallback.reason = "cloud_control_unavailable"
             fallback.trial_deadline = None
             fallback.next_attempt = time.monotonic() + fallback.return_delay
-            await self._notify("cloud_control_tcp_ready")
+            _LOGGER.info("Native TCP control verified after cloud control failure")
         except asyncio.CancelledError:
             raise
         except Exception:
             # Background service acceptance must never hide a failed handover.
             _LOGGER.exception("Cloud control preflight or TCP handover failed")
             self.error = "cloud_control_failed"
-            await owner.pending_intent._fail("operation_failed", notify=False)
-            await self._notify("cloud_control_failed")
+            await owner.pending_intent._fail("operation_failed")
         finally:
             self.preparing = False
             owner.async_update_listeners()
-
-    async def _notify(self, key):
-        from homeassistant.components import persistent_notification
-        from homeassistant.helpers.translation import async_get_translations
-
-        messages = await async_get_translations(
-            self.owner.hass, self.owner.hass.config.language,
-            "exceptions", {"sems_wallbox"},
-        )
-        persistent_notification.async_create(
-            self.owner.hass,
-            messages["component.sems_wallbox.exceptions." + key + ".message"],
-            title="GoodWe Wallbox",
-            notification_id=f"sems_wallbox_{self.owner.entry.entry_id}_cloud_control",
-        )
 
     async def close(self):
         """Cancel preflight before disposing pending intent or restoring routing."""

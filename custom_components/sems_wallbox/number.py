@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from .optimistic_write import optimistic_write
+
 import logging
 import time
 
@@ -245,6 +247,7 @@ class SemsNumber(CoordinatorEntity, NumberEntity):
         await self.coordinator.async_request_refresh()
 
     @mode_setting_write(desired_mode=0, remember_power=True)
+    @optimistic_write
     async def async_set_native_value(self, value: float) -> None:
         """Handle change from UI slider -- switches to Fast mode (0) with the given power."""
         _LOGGER.debug(
@@ -261,7 +264,6 @@ class SemsNumber(CoordinatorEntity, NumberEntity):
         # trigger _handle_coordinator_update on the select entity, which could
         # see the optimistically-written chargeMode and prematurely clear
         # _pending_mode -- causing the very revert we are trying to prevent.
-        old_value = self._attr_native_value  # save before optimistic write for failure revert
         self._attr_native_value = float(value)
         # Start grace period immediately so coordinator updates during the API
         # call (which can take several seconds) don't revert the optimistic value.
@@ -270,6 +272,7 @@ class SemsNumber(CoordinatorEntity, NumberEntity):
         device = self.coordinator.data.get(self.sn)
         if device is not None:
             device["set_charge_power"] = float(value)
+        self._optimistic_write.capture_device(("set_charge_power",))
         self.async_write_ha_state()
 
         # 2) Call SEMS API -- always Fast mode (0)
@@ -282,26 +285,12 @@ class SemsNumber(CoordinatorEntity, NumberEntity):
         )
 
         if not ok:
-            # API call failed -- revert optimistic value and coordinator.data
-            # so the slider goes back to whatever the device actually has.
-            # But only revert if still in Fast mode (entity available): if the mode
-            # has already switched to PV while this call was in flight, we must NOT
-            # overwrite the preserved PV power value -- the user set 11 kW and we
-            # should remember it for the next switch back to Fast.
+            # Shared rollback preserves newer requests and fresh observations.
             _LOGGER.warning(
                 "set_charge_mode failed for %s (power=%s), reverting optimistic value",
                 self.sn,
                 value,
             )
-            if old_value is not None and self.coordinator.data.get(self.sn, {}).get("chargeMode", 0) == 0:
-                self._attr_native_value = old_value
-                self._pending_value = None  # revert cancels grace
-                self._pending_until = 0.0
-                device = self.coordinator.data.get(self.sn)
-                if device is not None:
-                    device["set_charge_power"] = old_value
-                self.async_write_ha_state()
-            self.hass.async_create_task(self.coordinator.async_request_refresh())
             raise HomeAssistantError(
                 translation_domain=DOMAIN,
                 translation_key="set_charge_power_failed",
@@ -393,6 +382,7 @@ class SemsOutputPowerLimitNumber(CoordinatorEntity, NumberEntity):
         self.async_write_ha_state()
 
     @mode_setting_write
+    @optimistic_write
     async def async_set_native_value(self, value: float) -> None:
         self._pending_value = value
         self._pending_until = time.monotonic() + self._PENDING_TIMEOUT
@@ -402,9 +392,6 @@ class SemsOutputPowerLimitNumber(CoordinatorEntity, NumberEntity):
         )
         if not ok:
             _LOGGER.warning("SemsOutputPowerLimitNumber %s: set_config failed", self.sn)
-            self._pending_value = None
-            self.async_write_ha_state()
-            self.coordinator.schedule_delayed_refresh(3.0)
             raise operation_error(RuntimeError("Device write was not confirmed"))
         else:
             self.coordinator.schedule_delayed_refresh(5.0)
@@ -479,6 +466,7 @@ class SemsCurrentLimitNumber(CoordinatorEntity, NumberEntity):
         self.async_write_ha_state()
 
     @mode_setting_write
+    @optimistic_write
     async def async_set_native_value(self, value: float) -> None:
         self._pending_value = value
         self._pending_until = time.monotonic() + self._PENDING_TIMEOUT
@@ -488,9 +476,6 @@ class SemsCurrentLimitNumber(CoordinatorEntity, NumberEntity):
         )
         if not ok:
             _LOGGER.warning("SemsCurrentLimitNumber %s: set_config failed", self.sn)
-            self._pending_value = None
-            self.async_write_ha_state()
-            self.coordinator.schedule_delayed_refresh(3.0)
             raise operation_error(RuntimeError("Device write was not confirmed"))
         else:
             self.coordinator.schedule_delayed_refresh(5.0)
@@ -566,6 +551,7 @@ class _SemsModeParamNumber(CoordinatorEntity, NumberEntity):
         self.async_write_ha_state()
 
     @mode_setting_write
+    @optimistic_write
     async def async_set_native_value(self, value: float) -> None:
         data = self.coordinator.data.get(self.sn, {}) or {}
         mode = data.get("chargeMode", 0)
@@ -594,9 +580,6 @@ class _SemsModeParamNumber(CoordinatorEntity, NumberEntity):
         )
         if not ok:
             _LOGGER.warning("%s: set_charge_mode failed, reverting pending value", self.unique_id)
-            self._pending_value = None
-            self.async_write_ha_state()
-            self.coordinator.schedule_delayed_refresh(3.0)
             raise operation_error(RuntimeError("Device write was not confirmed"))
         else:
             self.coordinator.schedule_delayed_refresh(5.0)
@@ -716,6 +699,7 @@ class _ModbusNumber(CoordinatorEntity, NumberEntity):
         self.async_write_ha_state()
 
     @mode_setting_write
+    @optimistic_write
     async def async_set_native_value(self, value: float) -> None:
         self._pending_value = value
         self._pending_until = time.monotonic() + 30.0
@@ -723,9 +707,6 @@ class _ModbusNumber(CoordinatorEntity, NumberEntity):
         ok = await async_execute(self.hass, self._do_write, value)
         if not ok:
             _LOGGER.warning("%s: write failed, reverting optimistic value", self.unique_id)
-            self._pending_value = None
-            self.async_write_ha_state()
-            self.coordinator.schedule_delayed_refresh(3.0)
             raise operation_error(RuntimeError("Device write was not confirmed"))
         else:
             self.coordinator.schedule_delayed_refresh(3.0)
