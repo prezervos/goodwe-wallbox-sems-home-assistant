@@ -19,7 +19,7 @@ Run commands are in [development](DEVELOPMENT.md) and the CI workflow. CI valida
 Python 3.12/3.13 separately; passing 3.14 does not establish those matrix results.
 HACS/hassfest results must also be checked on the pull request. The 3.0.0 release's
 broad pymodbus>=3.0.0 requirement did not establish compatibility with every
-allowed version. The pending dependency fix pins 3.13.1; the existing real-client
+allowed version. Release 3.0.1 pins 3.13.1; the existing real-client
 loopback wire checks passed with that package in HA 2026.9.2.
 
 Official HA 2026.9.0, 2026.9.2 and 2026.9.3 sources all pin pymodbus3.13.1 in
@@ -54,9 +54,13 @@ Physical factory reset and entirely missed-session accounting remain unverified.
 
 Extended settings without verified native mappings stay unavailable in TCP. Cloud
 current/load-setting echoes did not establish an effective hardware limit. SolarGo
-Auto start works on the tested device, but a portable verified cloud/native setter
-and readback were not found. The integration does not implement PV-surplus control
-or an independent-host safety watchdog.
+Auto start has verified native TCP readback and ON/OFF writes on the tested original
+HCA, both while idle and during active charging. The 2026-09-24 development-HA
+entity test observed 1.7–4.0 kW throughout the setting changes, then confirmed Stop
+and restored Auto start OFF, production/cloud ownership and both automations.
+Original-HCA cloud control and other model/firmware combinations remain unproven.
+The integration does not implement PV-surplus control or an independent-host
+safety watchdog.
 
 ## Follow-up: natural expiry and short lifetime-counter sessions
 
@@ -226,3 +230,31 @@ Natural token expiry, unverified model behavior and continuous MQTT telemetry
 remain separate research limits. GitHub Python 3.12/3.13 CI, HACS and hassfest must
 run on the proposed release commit before publication; these are not claimed as
 completed by the local Python 3.14 run.
+
+
+## 3.0.2 release validation — 2026-09-24
+
+Independent Astra high review examined all changed runtime modules, configuration
+flows, translations, documentation and regressions against 3.0.1. Its independent
+focused run passed 275 tests. No unresolved runtime blocker was identified.
+Follow-up review checked the final release wording and the additional four-case
+mixed-storage test. These checks do not guarantee absence of all bugs.
+
+The isolated Python 3.14.5 suite passed 1,173 tests before the final test-only
+addition. The additional regression covers both configuration/energy read orders,
+shared command serialization, cancellation after send, late-response fencing and
+continued status access. It uses an independent loopback peer and real decoders;
+it does not contact a wallbox. The complete Auto start file, including all four
+new cases, is run separately, and CI runs the resulting 1,177-test suite.
+
+Release checks use the 14 real-HA smoke commands in the CI workflow on HA 2026.9.2
+with pinned dependencies and isolated configurations. GitHub Python 3.12/3.13,
+real-HA, HACS and hassfest checks must pass before publication. No production HA
+changes, live GoodWe authentication or physical charging are part of these release
+checks. Earlier physical Auto start evidence remains scoped to original GW11 HCA:
+verified ON/OFF in SolarGo and during charging, followed by restoration to OFF.
+
+The issue #21 reporter confirmed alternate original SEMS+ authentication, regional
+Australian cloud reads and MQTT connection in the diagnostic beta. The stable
+candidate prefers that original endpoint and retains Common/CrossLogin as a
+bounded alternate. MQTT connection is not evidence of complete telemetry delivery.

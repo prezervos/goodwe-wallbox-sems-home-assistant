@@ -7,22 +7,99 @@ import sys
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
-from homeassistant import loader
+from homeassistant import bootstrap, loader
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import UpdateFailed
+
+
+async def check_modbus_forms(hass):
+    """Exercise HA flow progression and frontend serialization without device I/O."""
+    from probatio import to_field_list
+    from homeassistant.helpers import config_validation as cv
+    from custom_components.sems_wallbox import config_flow, wallbox_modbus
+
+    def serialize(form, step):
+        assert form["type"] == "form" and form["step_id"] == step, form
+        # This is the serializer used by HA's data-entry-flow HTTP response.
+        fields = to_field_list(form["data_schema"], custom_serializer=cv.custom_serializer)
+        json.dumps(fields)
+        assert any(field["name"] == "modbus_host" for field in fields)
+
+    with patch.object(wallbox_modbus, "WallboxModbusClient") as client, patch(
+        "custom_components.sems_wallbox.async_setup_entry", new=AsyncMock(return_value=True)
+    ):
+        flow = await hass.config_entries.flow.async_init(
+            "sems_wallbox", context={"source": "user"}
+        )
+        form = await hass.config_entries.flow.async_configure(
+            flow["flow_id"], {"connection_type": "modbus", "remember_charge_mode": False}
+        )
+        serialize(form, "modbus")
+        for blank in ("", "   "):
+            form = await hass.config_entries.flow.async_configure(
+                flow["flow_id"], {"modbus_host": blank, "modbus_port": 502, "modbus_device_id": 0}
+            )
+            serialize(form, "modbus")
+            assert form["errors"] == {"modbus_host": "connection_validation_failed"}
+            client.assert_not_called()
+            client.detect_device_id.assert_not_called()
+        client.detect_device_id.return_value = None
+        form = await hass.config_entries.flow.async_configure(
+            flow["flow_id"], {"modbus_host": " wallbox.local ", "modbus_port": 502, "modbus_device_id": 0}
+        )
+        serialize(form, "modbus")
+        assert form["errors"], form
+        client.detect_device_id.assert_called_once_with("wallbox.local", 502)
+        client.return_value.read_all.return_value = {"sn": "MODBUS-FORM-FIXTURE"}
+        result = await hass.config_entries.flow.async_configure(
+            flow["flow_id"], {"modbus_host": " wallbox.local ", "modbus_port": 502, "modbus_device_id": 1}
+        )
+        assert result["type"] == "create_entry", result
+        entry = result["result"]
+        assert entry.data["modbus_host"] == "wallbox.local"
+        client.assert_called_once_with("wallbox.local", 502, 1)
+        await hass.async_block_till_done()
+        client.reset_mock()
+        flow = await hass.config_entries.flow.async_init(
+            "sems_wallbox", context={"source": "reconfigure", "entry_id": entry.entry_id}
+        )
+        serialize(flow, "reconfigure")
+        for blank in ("", "   "):
+            form = await hass.config_entries.flow.async_configure(
+                flow["flow_id"], {"modbus_host": blank, "modbus_port": 502, "modbus_device_id": 1}
+            )
+            serialize(form, "reconfigure")
+            assert form["errors"] == {"modbus_host": "connection_validation_failed"}
+            client.assert_not_called()
+        client.return_value.read_all.return_value = {"sn": "ANOTHER-WALLBOX"}
+        values = {"modbus_host": " new-wallbox.local ", "modbus_port": 502, "modbus_device_id": 1}
+        form = await hass.config_entries.flow.async_configure(flow["flow_id"], values)
+        serialize(form, "reconfigure")
+        assert form["errors"] == {"base": "wrong_device"}
+        assert entry.data["modbus_host"] == "wallbox.local"
+        client.return_value.read_all.return_value = {"sn": "MODBUS-FORM-FIXTURE"}
+        with patch.object(hass.config_entries, "async_schedule_reload"):
+            result = await hass.config_entries.flow.async_configure(flow["flow_id"], values)
+        assert result["type"] == "abort" and result["reason"] == "reconfigure_successful", result
+        assert entry.data["modbus_host"] == "new-wallbox.local"
+        client.assert_called_with("new-wallbox.local", 502, 1)
+    print("PASS: Modbus setup/reconfigure UI serialization, blank hosts, failed validation and corrected retry")
 
 
 async def main(folder):
     """Exercise setup consumers and polling against simulated cloud data."""
     hass = HomeAssistant(folder)
     loader.async_setup(hass)
+    hass.config.skip_pip = True
+    await bootstrap.async_from_config_dict({}, hass)
     import custom_components.sems_wallbox as integration
     from custom_components.sems_wallbox import config_flow
     from custom_components.sems_wallbox.native_coordinator import NativeCoordinator
 
+    await check_modbus_forms(hass)
     results = {}
     entry = ConfigEntry(
         version=1,
@@ -139,6 +216,7 @@ async def main(folder):
     assert results["native_charging_option_overrides_data"] == 19
     assert results["tcp_active_interval"] == 2
     print(json.dumps({"result": "PASS", "checks": results}, indent=2))
+    await hass.async_stop(force=True)
 
 
 with tempfile.TemporaryDirectory(prefix="goodwe-config-audit-") as folder:

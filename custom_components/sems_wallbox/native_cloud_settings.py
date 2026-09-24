@@ -1,7 +1,7 @@
 """Cloud configuration retained when native Socket A support is enabled.
 
 Configuration is separate from timestamped telemetry: a detail response must not
-make an old device report appear fresh. Only the verified minimum-power control
+make an old device report appear fresh. Verified minimum-power and original-HCA Auto start controls
 can also use native TCP.
 """
 
@@ -26,6 +26,7 @@ from homeassistant.const import EntityCategory
 from .charge_mode_policy import ModeVerificationError
 from .native_entities import NativeEntity
 from .minimum_power import write_minimum_power
+from .ui_errors import operation_error
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -511,6 +512,91 @@ class MinimumPowerSwitch(CloudSettingSwitch):
         await self.invoke(lambda: owner.charge_mode_policy.async_setting_write(operation))
 
 
+class AutoStartSwitch(CloudSettingSwitch):
+    """Preserve the Plug and Charge identity with verified native Auto start."""
+
+    @property
+    def native_supported(self):
+        """Restrict local envelopes and the fixed snapshot to original HCA."""
+        return (self.settings.minimum_power_is_mode_setting
+                and len(self.coordinator.serial) == 16)
+
+    @property
+    def cloud_supported(self):
+        """Do not reuse the ineffective original-HCA cloud write without capability."""
+        return "plugAndCharge" in (self.coordinator.entry.data.get("dashboard_functions") or [])
+
+    @property
+    def available(self):
+        if self.coordinator.local:
+            return self.native_supported and self.coordinator.configuration_polling.available
+        return (self.cloud_supported and super().available
+                and type(self.settings.values.get("plug_and_charge")) is bool)
+
+    @property
+    def reported(self):
+        if self.coordinator.local:
+            return self.coordinator.configuration_polling.value.auto_start if self.available else None
+        return super().reported
+
+    @property
+    def extra_state_attributes(self):
+        if not self.native_supported:
+            return super().extra_state_attributes
+        return {"supported_transport": "cloud,tcp" if self.cloud_supported else "tcp",
+                "tcp_support": "verified_write"}
+
+    async def async_added_to_hass(self):
+        await super().async_added_to_hass()
+        if self.native_supported:
+            self.coordinator.configuration_polling.start()
+
+    async def async_will_remove_from_hass(self):
+        if self.native_supported:
+            await self.coordinator.configuration_polling.close()
+        await super().async_will_remove_from_hass()
+
+    async def async_update(self):
+        if self.coordinator.local:
+            await self.coordinator.configuration_polling.tick()
+        else:
+            await super().async_update()
+
+    async def write(self, value):
+        owner = self.coordinator
+        if not owner.local:
+            if not self.cloud_supported:
+                raise operation_error(ModeVerificationError(
+                    "Auto start is available only over TCP on this wallbox"
+                ))
+            return await super().write(value)
+        epoch = owner.routing_epoch
+
+        async def operation():
+            if value not in (0, 1):
+                raise ValueError("Invalid Auto start value")
+            polling = owner.configuration_polling
+            async with polling.lock:
+                if (not self.native_supported or not owner.local or owner.transitioning
+                        or epoch != owner.routing_epoch or owner._closed):
+                    raise ModeVerificationError("Auto start is unavailable on this transport")
+                polling.value = None
+                polling.next_read = 0
+                try:
+                    result = await owner.transport.async_set_auto_start(bool(value))
+                    if epoch != owner.routing_epoch or not owner.local:
+                        raise ConnectionError("Auto start transport changed")
+                    polling.value = result
+                    polling.error = None
+                    polling.epoch = owner.transport.epoch
+                    polling.next_read = time.monotonic() + polling.INTERVAL
+                finally:
+                    # Cancellation/timeout must never leave a requested value cached.
+                    owner.async_update_listeners()
+
+        await self.invoke(lambda: owner.charge_mode_policy.async_setting_write(operation), refresh=False)
+
+
 class CloudSettingSelect(CloudSettingEntity, SelectEntity):
     """Select a reported completion target, not elapsed session duration."""
 
@@ -531,15 +617,22 @@ class CloudSettingSelect(CloudSettingEntity, SelectEntity):
 
 def setup_cloud_settings(platform, coordinator):
     """Keep upstream controls registered across cloud/TCP transport changes."""
+    native_auto_start = (coordinator.cloud_settings.minimum_power_is_mode_setting
+                         and len(coordinator.serial) == 16)
     if coordinator.cloud is None:
-        transport = getattr(coordinator, "transport", None)
-        if (platform != "switch"
-                or not coordinator.cloud_settings.minimum_power_is_mode_setting
-                or transport is None or not transport.available
-                or transport.latest.minimum_power is None):
+        if platform != "switch":
             return []
-        return [MinimumPowerSwitch(coordinator, setting) for setting in SETTINGS
-                if setting.field == "ensure_minimum_charging_power"]
+        transport = getattr(coordinator, "transport", None)
+        entities = []
+        for setting in SETTINGS:
+            if setting.field == "plug_and_charge" and native_auto_start:
+                entities.append(AutoStartSwitch(coordinator, setting))
+            elif (setting.field == "ensure_minimum_charging_power"
+                  and coordinator.cloud_settings.minimum_power_is_mode_setting
+                  and transport is not None and transport.available
+                  and transport.latest.minimum_power is not None):
+                entities.append(MinimumPowerSwitch(coordinator, setting))
+        return entities
     classes = {
         "number": CloudSettingNumber,
         "switch": CloudSettingSwitch,
@@ -556,7 +649,7 @@ def setup_cloud_settings(platform, coordinator):
         "dynamicLoad": not more or "Dynamic_Load_Control" in more,
         "rated_max_charge_power": not more or "Dynamic_Load_Control" in more,
         "phaseSwitch": "Phase_Switch" in more,
-        "plug_and_charge": "plugAndCharge" in dashboard,
+        "plug_and_charge": "plugAndCharge" in dashboard or native_auto_start,
         "ensure_minimum_charging_power": not more
         or "Ensure_minimum_Charging_Power" in more
         or (coordinator.cloud_settings.minimum_power_is_mode_setting
@@ -570,6 +663,7 @@ def setup_cloud_settings(platform, coordinator):
     }
     return [
         (MinimumPowerSwitch if setting.field == "ensure_minimum_charging_power"
+         else AutoStartSwitch if setting.field == "plug_and_charge"
          else classes[platform])(coordinator, setting)
         for setting in SETTINGS
         if setting.platform == platform and gates.get(setting.field, True)

@@ -5,7 +5,6 @@ from __future__ import annotations
 from datetime import timedelta
 from typing import Any
 import logging
-import time
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_SCAN_INTERVAL
@@ -25,12 +24,6 @@ _LOGGER = logging.getLogger(__name__)
 
 # How quickly to retry after a Modbus communication failure (seconds).
 _RETRY_AFTER_ERROR_SECONDS = 30
-
-# How long (s) status=charging + car_connected≠2 must persist before issuing an
-# automatic stop to clear a phantom session.  Brief CP fluctuations during
-# normal charging stay well below this threshold.
-_PHANTOM_STOP_GRACE_SECONDS = 20.0
-
 
 class ModbusUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     """Coordinate fetching data from the wallbox directly via Modbus TCP."""
@@ -56,10 +49,6 @@ class ModbusUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._pending_refresh_cancel = None
         self._closed = False
         entry.async_on_unload(self._cancel_delayed_refresh)
-        # Timestamp when we first detected a phantom-charging state
-        # (status=charging but car not at CP=6V).  None when not in that state.
-        self._phantom_charging_since: float | None = None
-
         super().__init__(
             hass,
             _LOGGER,
@@ -131,30 +120,7 @@ class ModbusUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             _LOGGER.debug("Modbus coordinator polling interval -> %ss (charging=%s)",
                           int(new_interval.total_seconds()), is_charging)
 
-        # Phantom-charging detection: wallbox reports status=charging (3) but the
-        # car is no longer at CP=6V (car_connected != 2).  This is a firmware bug
-        # where the session timer keeps running after the car ends the session.
-        # After the grace period we issue a stop command to reset the wallbox state.
-        car_connected = result.get("modbus_car_connected")
-        if is_charging and car_connected != 2:
-            if self._phantom_charging_since is None:
-                self._phantom_charging_since = time.monotonic()
-                _LOGGER.debug(
-                    "Modbus %s: phantom charging suspected (status=3, car=%s, cp=%s) -- grace starts",
-                    sn, car_connected, result.get("modbus_cp_state_name"),
-                )
-            elif time.monotonic() - self._phantom_charging_since >= _PHANTOM_STOP_GRACE_SECONDS:
-                _LOGGER.warning(
-                    "Modbus %s: phantom charging for >%.0fs (car=%s, cp=%s) -- issuing auto-stop",
-                    sn, _PHANTOM_STOP_GRACE_SECONDS,
-                    car_connected, result.get("modbus_cp_state_name"),
-                )
-                self._phantom_charging_since = None
-                await self.hass.async_add_executor_job(self._client.write_start_stop, False)
-                self.schedule_delayed_refresh(3.0)
-        else:
-            if self._phantom_charging_since is not None:
-                _LOGGER.debug("Modbus %s: phantom charging cleared (car=%s)", sn, car_connected)
-            self._phantom_charging_since = None
-
+        # Polling must not infer a Stop from contradictory status/CP registers.
+        # They can describe a paused or non-atomically sampled charging session;
+        # preserve the report and leave controls to explicit user/automation intent.
         return data

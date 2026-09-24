@@ -57,7 +57,8 @@ _STEP_CONN_TYPE_SCHEMA = vol.Schema(
     }
 )
 
-_MODBUS_HOST = vol.All(str, str.strip, vol.Length(min=1))
+# Keep UI schemas serializable; normalize and reject blank hosts in the handlers.
+_MODBUS_HOST = str
 _MODBUS_PORT = vol.All(int, vol.Range(min=1, max=65535))
 _MODBUS_DEVICE_ID = vol.All(int, vol.Range(min=0, max=255))
 
@@ -130,6 +131,13 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if reauth and (modbus or not entry.data.get(CONF_USERNAME)):
             return self.async_abort(reason="cloud_credentials_required")
         errors = {}
+        if user_input is not None and modbus and not reauth:
+            if not user_input[CONF_MODBUS_HOST].strip():
+                return self.async_show_form(
+                    step_id="reconfigure",
+                    data_schema=self._connection_schema(current, reauth=False),
+                    errors={CONF_MODBUS_HOST: "connection_validation_failed"},
+                )
         if user_input is not None:
             updates = {}
             try:
@@ -295,6 +303,12 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
             host = user_input[CONF_MODBUS_HOST].strip()
+            if not host:
+                return self.async_show_form(
+                    step_id="modbus",
+                    data_schema=_STEP_MODBUS_SCHEMA,
+                    errors={CONF_MODBUS_HOST: "connection_validation_failed"},
+                )
             port = int(user_input.get(CONF_MODBUS_PORT, DEFAULT_MODBUS_PORT))
             device_id = int(user_input.get(CONF_MODBUS_DEVICE_ID, 0))
 

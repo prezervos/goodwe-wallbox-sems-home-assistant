@@ -54,6 +54,18 @@
     },
     "minimum_power_stop_first": {
       "message": "This setting can only be changed while the wallbox is idle. Stop charging and wait for confirmation."
+    },
+    "auto_start_schedule": {
+      "message": "Disable the wallbox schedule before enabling Auto start."
+    },
+    "auto_start_unconfirmed": {
+      "message": "The wallbox did not confirm the Auto start change. Its state is unknown; refresh it before retrying."
+    },
+    "auto_start_tcp_only": {
+      "message": "Auto start is available only through local TCP on this wallbox."
+    },
+    "auto_start_schedule_changed": {
+      "message": "The wallbox schedule changed during the Auto start update. Check its settings before trying again."
     }
   },
   "options": {

@@ -13,7 +13,11 @@ import time
 from collections.abc import Callable
 
 from .native_energy import NativeEnergy, decode_energy, energy_request
+from .native_configuration import (
+    NativeConfiguration, auto_start_request, configuration_request, decode_configuration,
+)
 from .native_power_limits import power_tenths
+from .operation_budget import CURRENT_BUDGET
 from .native_protocol import (
     NativeDecoder,
     NativeStatus,
@@ -65,6 +69,7 @@ class NativeTransport:
         self._last_receive = 0.0
         self._queued = 0
         self._energy_pending = None
+        self._snapshot_decoder = decode_energy
         self._energy_uncertain = False
         self._start_limit: float | None = None
         self._safety_stop = False
@@ -175,7 +180,7 @@ class NativeTransport:
                     if packet.command == 602 and self._energy_pending is not None:
                         if not self._energy_pending.done():
                             try:
-                                self._energy_pending.set_result(decode_energy(packet, self.serial))
+                                self._energy_pending.set_result(self._snapshot_decoder(packet, self.serial))
                             except ValueError as exc:
                                 # Optional storage diagnostics must not disconnect
                                 # status/control or independent load supervision.
@@ -637,32 +642,54 @@ class NativeTransport:
             ConnectionError: Changed, active or previously uncertain session.
             TimeoutError: No complete valid response within the bounded wait.
         """
+        return await self._async_read_snapshot(energy_request, decode_energy, timeout)
+
+    async def async_read_configuration(self, *, timeout: float = 5) -> NativeConfiguration:
+        """Read verified original-HCA settings using the shared snapshot lock."""
+        return await self._async_read_snapshot(
+            configuration_request, decode_configuration, timeout, idle_only=False
+        )
+
+    async def _async_read_snapshot(self, request, decoder, timeout, *, idle_only=True):
         if not 0 < timeout <= 10:
-            raise ValueError("Invalid cumulative snapshot timeout")
+            raise ValueError("Invalid storage snapshot timeout")
         epoch = self.epoch
+        async with asyncio.timeout(timeout), self._lock:
+            return await self._read_snapshot_locked(request, decoder, epoch, idle_only=idle_only)
+
+    def _require_snapshot_session(self, epoch, *, idle_only=True):
+        if (epoch != self.epoch or not self.available or self._energy_uncertain
+                or time.monotonic() - self.observed_at > 5):
+            raise ConnectionError("Storage operation requires a fresh unchanged session")
+        if idle_only and (not self.latest.stopped or self.latest.state != 0
+                or self.session_guard.phase in ("starting", "waiting", "charging")):
+            raise ConnectionError("Storage operation requires a fresh unchanged idle session")
+
+    async def _snapshot_quiet(self, epoch, *, idle_only=True):
+        self._require_snapshot_session(epoch, idle_only=idle_only)
+        while (self._decoder is not None and self._decoder.buffer
+               or time.monotonic() - self._last_receive < 0.35):
+            await asyncio.sleep(0.02)
+        self._require_snapshot_session(epoch, idle_only=idle_only)
+
+    async def _read_snapshot_locked(self, request, decoder, epoch, *, idle_only=True):
         sent = False
         pending = None
         try:
-            async with asyncio.timeout(timeout), self._lock:
-                if (epoch != self.epoch or not self.available or self._energy_uncertain
-                        or not self.latest.stopped or self.latest.state != 0
-                        or time.monotonic() - self.observed_at > 5
-                        or self.session_guard.phase in ("starting", "waiting", "charging")):
-                    raise ConnectionError("Cumulative read requires a fresh unchanged idle session")
-                while (self._decoder is not None and self._decoder.buffer
-                       or time.monotonic() - self._last_receive < 0.35):
-                    await asyncio.sleep(0.02)
-                if epoch != self.epoch or not self.available or not self.latest.stopped:
-                    raise ConnectionError("Session changed before cumulative read")
-                pending = self._energy_pending = asyncio.get_running_loop().create_future()
-                self._sequence = (self._sequence + 1) & 255
-                sent = True
-                self._writer.write(energy_request(self._identity, self._sequence))
-                await self._writer.drain()
-                return await pending
+            await self._snapshot_quiet(epoch, idle_only=idle_only)
+            pending = self._energy_pending = asyncio.get_running_loop().create_future()
+            self._snapshot_decoder = decoder
+            self._sequence = (self._sequence + 1) & 255
+            sent = True
+            self._writer.write(request(self._identity, self._sequence))
+            await self._writer.drain()
+            result = await pending
+            if epoch != self.epoch:
+                raise ConnectionError("Storage response belongs to a previous session")
+            return result
         except BaseException:
             # Responses do not echo the request sequence. After uncertain delivery,
-            # disallow another snapshot until reconnect so late data cannot satisfy it.
+            # disallow ALL storage snapshots until reconnect, including cancellation.
             if sent and epoch == self.epoch:
                 self._energy_uncertain = True
             raise
@@ -674,6 +701,56 @@ class NativeTransport:
                     pending.exception()
                 if self._energy_pending is pending:
                     self._energy_pending = None
+
+    async def async_set_auto_start(self, enabled: bool) -> NativeConfiguration:
+        """Write once and independently verify without changing charging intent.
+
+        Configuration snapshots are separate from idle-only cumulative energy.
+        Never replay an uncertain write.
+
+        Args:
+            enabled: Requested Auto start flag.
+
+        Returns:
+            Fresh configuration confirming the request.
+
+        Raises:
+            ValueError: Invalid value, active schedule or unconfirmed write.
+            ConnectionError: Stale, changed or uncertain session.
+            TimeoutError: The bounded operation did not complete.
+            BudgetCancelled: A newer intent superseded the request before writing.
+        """
+        if type(enabled) is not bool:
+            raise ValueError("Auto start requires a boolean")
+        epoch = self.epoch
+        budget = CURRENT_BUDGET.get()
+        async with asyncio.timeout(15), self._lock:
+            if budget is not None:
+                budget.remaining()
+            before = await self._read_snapshot_locked(configuration_request, decode_configuration, epoch, idle_only=False)
+            if budget is not None:
+                budget.remaining()
+            if before.auto_start == enabled:
+                return before
+            if enabled and before.scheduled:
+                raise ValueError("Disable the wallbox schedule before changing Auto start")
+            await self._snapshot_quiet(epoch, idle_only=False)
+            # A newer Stop/setting may arrive during the preflight read or quiet
+            # wait. Reject obsolete work immediately before the sole device write.
+            if budget is not None:
+                budget.remaining()
+            self._sequence = (self._sequence + 1) & 255
+            self._writer.write(auto_start_request(self._identity, self._sequence, self.serial, enabled))
+            await self._writer.drain()
+            await asyncio.sleep(1)
+            # Once sent, finish independent readback even if a newer intent
+            # supersedes this request; never turn an uncertain write into a replay.
+            after = await self._read_snapshot_locked(configuration_request, decode_configuration, epoch, idle_only=False)
+            if after.scheduled != before.scheduled:
+                raise ValueError("Wallbox schedule changed during Auto start update")
+            if after.auto_start != enabled:
+                raise ValueError("Auto start change was not confirmed by the wallbox")
+            return after
 
     async def async_disconnect(self, *, expected: bool = False) -> None:
         """Release the current client and reject reconnects until explicitly resumed."""

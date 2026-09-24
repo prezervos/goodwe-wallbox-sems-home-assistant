@@ -54,6 +54,18 @@
     },
     "minimum_power_stop_first": {
       "message": "Diese Einstellung kann nur im Ruhezustand der Wallbox geändert werden. Beenden Sie den Ladevorgang und warten Sie auf die Bestätigung."
+    },
+    "auto_start_schedule": {
+      "message": "Deaktivieren Sie den Ladezeitplan der Wallbox, bevor Sie Auto-Start aktivieren."
+    },
+    "auto_start_unconfirmed": {
+      "message": "Die Wallbox hat die Änderung von Auto-Start nicht bestätigt. Der Zustand ist unbekannt; aktualisieren Sie ihn vor einem erneuten Versuch."
+    },
+    "auto_start_tcp_only": {
+      "message": "Auto-Start ist bei dieser Wallbox nur über TCP verfügbar."
+    },
+    "auto_start_schedule_changed": {
+      "message": "Der Ladezeitplan der Wallbox hat sich während der Auto-Start-Änderung geändert. Prüfen Sie die Einstellungen vor einem erneuten Versuch."
     }
   },
   "options": {

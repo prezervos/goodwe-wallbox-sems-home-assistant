@@ -373,3 +373,30 @@ failure of an earlier setting or Start; uncertain writes are never replayed.
 Failed/cancelled settings clear their pending presentation and schedule readback,
 without overwriting newer requests or reports. A pending mode is presented by the
 select entity only; dependent entities continue to use reported device data.
+
+## Original-HCA Auto start
+
+The existing Plug & Charge switch reads and writes the original-HCA Auto start
+flag over the same native TCP connection. No Bluetooth radio is used. A complete
+native no-op frame precedes a checksummed local-command envelope in one TCP write;
+module packet splitting may reject delivery, so success requires an independent
+type-1 configuration snapshot. An ACK alone never changes the entity state.
+
+Readback validates serial, exact layout, both checksums and boolean encodings.
+Only Auto start and schedule flags are retained; private configuration bytes are
+not exposed. Enabled entities poll at most once per 60 seconds on TCP, with
+control operations taking priority. Polling does not invalidate a pending Start.
+Reads and writes share a configuration lock so an older read cannot overwrite a
+verified write; handover and reconnection invalidate the cached value.
+
+OFF/ON/OFF was confirmed twice while idle (including owner SolarGo confirmation),
+and through actual development-HA switch services during charging on 2026-09-24.
+The active session continued at 1.7–4.0 kW. Configuration readback therefore does
+not inherit the separate cumulative-energy idle restriction. Other hardware and
+firmware remain unverified. Cloud support is still capability-dependent.
+
+Enabling Auto start can clear the device's schedule: the integration refuses it
+when the independently read schedule flag is enabled. Disabling Auto start does
+not clear that schedule. Failed/cancelled writes do not publish an optimistic
+value and are not replayed. An uncertain snapshot blocks further storage reads
+until reconnection, preventing a delayed reply from confirming a newer request.

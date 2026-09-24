@@ -54,6 +54,18 @@
     },
     "minimum_power_stop_first": {
       "message": "Este ajuste solo se puede cambiar cuando el cargador está en reposo. Detenga la carga y espere la confirmación."
+    },
+    "auto_start_schedule": {
+      "message": "Desactive la programación de carga del wallbox antes de activar el inicio automático."
+    },
+    "auto_start_unconfirmed": {
+      "message": "El wallbox no ha confirmado el cambio del inicio automático. El estado es desconocido; actualícelo antes de volver a intentarlo."
+    },
+    "auto_start_tcp_only": {
+      "message": "El inicio automático solo está disponible por TCP en este wallbox."
+    },
+    "auto_start_schedule_changed": {
+      "message": "La programación del wallbox cambió durante la actualización del inicio automático. Compruebe los ajustes antes de volver a intentarlo."
     }
   },
   "options": {

@@ -56,16 +56,20 @@ def _make_api():
     return SemsApi(hass, "user@example.com", "password123")
 
 
-def _login_response(token_data: dict | None, code=0, has_error=False):
+def _login_response(token_data: dict | None, code=0, has_error=False, *, endpoint="original", region="eu"):
     resp = MagicMock(status_code=200, headers={})
     resp.raise_for_status = MagicMock()
+    gateway = f"https://{region}-gateway.semsportal.com/sems/"
+    if endpoint == "original" and isinstance(token_data, dict):
+        token_data = {**token_data, "api": gateway}
     resp.json.return_value = {
         "code": code,
         "hasError": has_error,
         "data": token_data,
-        "api": "https://eu-gateway.semsportal.com/sems/",
         "msg": "",
     }
+    if endpoint == "common":
+        resp.json.return_value["api"] = gateway
     return resp
 
 
@@ -423,17 +427,25 @@ def test_login_rate_limit_honors_valid_retry_after(header, delay):
 
 
 @pytest.mark.parametrize("region", ["eu", "au", "us", "hk"])
-def test_common_login_uses_web_client_and_returned_regional_gateway(region):
+def test_default_original_login_uses_web_client_and_returned_regional_gateway(region):
     api = _make_api()
     response = _login_response({"uid":"user","token":"secret-token","client":"semsPlusWeb"})
-    response.json.return_value["api"] = f"https://{region}-gateway.semsportal.com/sems/"
+    response.json.return_value["data"]["api"] = f"https://{region}-gateway.semsportal.com/sems/"
     with patch("requests.post", return_value=response) as post:
         assert api._ensure_web_token()
     args = post.call_args
-    assert args.args[0] == "https://www.semsportal.com/api/v3/Common/CrossLogin"
+    assert args.args[0] == sems_api_module._LOGIN_URLS["original"]
+    post.assert_called_once()
     assert json.loads(args.kwargs["headers"]["token"])["client"] == "semsPlusWeb"
     assert args.kwargs["headers"]["User-Agent"] == sems_api_module.SEMS_USER_AGENT
-    assert args.kwargs["json"] == {"account":"user@example.com","pwd":"password123"}
+    import base64
+    import hashlib
+    assert args.kwargs["json"] == {
+        "account": "user@example.com",
+        "pwd": base64.b64encode(hashlib.md5(b"password123").hexdigest().encode()).decode(),
+        "agreement": 1, "isLocal": False, "isChinese": False,
+    }
+    assert "x-signature" in args.kwargs["headers"]
     assert api._eu_url("sems-remote/api/ev-charger/detail") == (
         f"https://{region}-gateway.semsportal.com/web/sems/sems-remote/api/ev-charger/detail"
     )
@@ -446,48 +458,60 @@ def test_common_login_uses_web_client_and_returned_regional_gateway(region):
     "https://user:password@eu-gateway.semsportal.com/sems/",
     "https://eu-gateway.semsportal.com/sems/?token=unexpected",
 ])
-def test_common_login_rejects_untrusted_or_incompatible_gateway(gateway):
+def test_original_login_rejects_untrusted_or_incompatible_gateway(gateway):
     api = _make_api()
     response = _login_response({"token":"secret-token","client":"semsPlusWeb"})
-    response.json.return_value["api"] = gateway
+    response.json.return_value["data"]["api"] = gateway
     with patch("requests.post", return_value=response):
         assert not api._ensure_web_token()
     assert api._web_token is None
 
 
-def _fallback_response(region="eu"):
+def _endpoint_response(endpoint, region="eu"):
     return _login_response({"uid": "user", "token": "fallback-token",
-                            "client": "semsPlusWeb",
-                            "api": f"https://{region}-gateway.semsportal.com/web/sems"})
+                            "client": "semsPlusWeb"}, endpoint=endpoint, region=region)
+
+
+def _fallback_response(region="eu"):
+    return _endpoint_response("common", region)
 
 
 @pytest.mark.parametrize("region", ["eu", "au", "us", "hk"])
-def test_original_login_fallback_preserves_client_and_region(region):
+@pytest.mark.parametrize("first", ["original", "common"])
+def test_either_login_order_preserves_endpoint_format_and_region(region, first, monkeypatch):
     import base64
     import hashlib
+    second = "common" if first == "original" else "original"
+    monkeypatch.setattr(sems_api_module, "_LOGIN_ORDER", (first, second))
     api = _make_api()
     with patch("requests.post", side_effect=[
-        _login_response(None, code="100004"), _fallback_response(region)
+        _login_response(None, code="100004", endpoint=first), _endpoint_response(second, region)
     ]) as post:
         assert api._ensure_web_token()
         assert api._ensure_web_token()
-    assert post.call_count == 2
-    call = post.call_args_list[1]
-    assert call.args[0] == sems_api_module._FallbackLoginURL
-    assert call.kwargs["headers"]["User-Agent"] == sems_api_module.SEMS_USER_AGENT
-    assert call.kwargs["headers"]["client"] == "semsPlusWeb"
-    assert json.loads(call.kwargs["headers"]["token"])["token"] == ""
-    assert call.kwargs["json"]["pwd"] == base64.b64encode(
-        hashlib.md5(b"password123").hexdigest().encode()
-    ).decode()
+    assert [call.args[0] for call in post.call_args_list] == [
+        sems_api_module._LOGIN_URLS[first], sems_api_module._LOGIN_URLS[second]]
+    for endpoint, call in zip((first, second), post.call_args_list):
+        assert call.kwargs["headers"]["User-Agent"] == sems_api_module.SEMS_USER_AGENT
+        assert json.loads(call.kwargs["headers"]["token"])["client"] == "semsPlusWeb"
+        if endpoint == "original":
+            assert call.kwargs["json"]["pwd"] == base64.b64encode(
+                hashlib.md5(b"password123").hexdigest().encode()).decode()
+            signature, stamp = base64.b64decode(call.kwargs["headers"]["x-signature"]).decode().split("@")
+            assert signature == hashlib.sha256(f"{stamp}@@".encode()).hexdigest()
+        else:
+            assert call.kwargs["json"] == {"account": "user@example.com", "pwd": "password123"}
+            assert "x-signature" not in call.kwargs["headers"]
     assert api._web_api_base == f"https://{region}-gateway.semsportal.com/web/sems"
 
 
 @pytest.mark.parametrize("failure", ["http401", "http403", "http429", "retry_after",
     "business_auth", "business_rate", "unknown", "invalid_region"])
-def test_login_fallback_cannot_bypass_rejection_or_server_delay(failure):
+@pytest.mark.parametrize("first", ["original", "common"])
+def test_login_fallback_cannot_bypass_rejection_or_server_delay(failure, first, monkeypatch):
+    monkeypatch.setattr(sems_api_module, "_LOGIN_ORDER", (first, "common" if first == "original" else "original"))
     api = _make_api()
-    response = _login_response(None, code="unclassified")
+    response = _login_response(None, code="unclassified", endpoint=first)
     if failure.startswith("http"):
         response.status_code = int(failure[4:])
     elif failure == "retry_after":
@@ -497,8 +521,9 @@ def test_login_fallback_cannot_bypass_rejection_or_server_delay(failure):
         response.json.return_value.update(code="100004", translationCode=(
             "account_password_error" if failure == "business_auth" else "too_many_requests"))
     elif failure == "invalid_region":
-        response = _login_response({"token": "secret"})
-        response.json.return_value["api"] = "https://attacker.example/sems"
+        response = _login_response({"token": "secret"}, endpoint=first)
+        target = response.json.return_value["data"] if first == "original" else response.json.return_value
+        target["api"] = "https://attacker.example/sems"
     with patch("requests.post", return_value=response) as post:
         if failure in ("http401", "http403"):
             with pytest.raises(sems_api_module.CloudAuthenticationError):
@@ -523,13 +548,15 @@ def test_eligible_login_failure_uses_only_one_fallback(failure):
 
 
 @pytest.mark.parametrize("elapsed,attempts", [(29, 2), (31, 1)])
-def test_login_fallback_shares_remaining_deadline(elapsed, attempts):
+@pytest.mark.parametrize("missing_token", [False, True])
+def test_login_fallback_shares_remaining_deadline(elapsed, attempts, missing_token):
     api = _make_api()
     clock = [100.0]
     def post(url, **kwargs):
-        if url == sems_api_module._WebLoginURL:
+        if url == sems_api_module._LOGIN_URLS["original"]:
             clock[0] += elapsed
-            response = _login_response(None);response.status_code = 503
+            response = _login_response({} if missing_token else None)
+            response.status_code = 200 if missing_token else 503
             return response
         assert 0 < kwargs["timeout"] <= 1
         return _fallback_response()
@@ -546,7 +573,7 @@ def test_concurrent_callers_share_one_fallback_session():
     api = _make_api()
     entered, release = threading.Event(), threading.Event()
     def post(url, **kwargs):
-        if url == sems_api_module._WebLoginURL:
+        if url == sems_api_module._LOGIN_URLS["original"]:
             entered.set();assert release.wait(2)
             return _login_response(None, code="100004")
         return _fallback_response()
@@ -568,14 +595,14 @@ def test_session_rejection_renews_via_fallback_without_extra_command_replay():
         _login_response(None, code="100004"), _fallback_response(), success]) as post:
         assert api.change_status_gen2("SN001", "stop")
     assert [c.args[0].rsplit("/", 1)[-1] for c in post.call_args_list] == [
-        "stopCharge", "CrossLogin", "cross-login", "stopCharge"]
+        "stopCharge", "cross-login", "CrossLogin", "stopCharge"]
 
 
 @pytest.mark.parametrize("gateway", [None, "http://eu-gateway.semsportal.com/web/sems",
     "https://eu-gateway.semsportal.com.attacker.example/web/sems"])
 def test_fallback_rejects_missing_or_untrusted_region(gateway):
     api = _make_api();response = _fallback_response()
-    response.json.return_value["data"]["api"] = gateway
+    response.json.return_value["api"] = gateway
     with patch("requests.post", side_effect=[_login_response(None, code="100004"), response]) as post:
         assert not api._ensure_web_token()
     assert post.call_count == 2
@@ -600,3 +627,115 @@ def test_web_headers_override_requests_default_user_agent_without_changing_clien
     assert request.headers["User-Agent"].startswith("Mozilla/5.0")
     assert request.headers["client"] == "semsPlusWeb"
     assert json.loads(request.headers["token"])["token"] == "fake"
+
+
+@pytest.mark.parametrize("data,reason,client_kind", [
+    (None, "invalid_data_type", "unavailable"),
+    ([], "invalid_data_type", "unavailable"),
+    ({"client": "semsPlusWeb"}, "missing_token", "expected"),
+    ({"token": "", "client": "semsPlusWeb"}, "missing_token", "expected"),
+    ({"token": "private-token", "client": "private-client"}, "unexpected_client", "other_string"),
+    ({"token": "private-token", "client": None}, "unexpected_client", "other_type"),
+    ({"token": "private-token"}, "session_shape_accepted", "missing_default"),
+    ({"token": "private-token", "client": "semsPlusWeb"}, "session_shape_accepted", "expected"),
+])
+def test_login_diagnostic_explains_shape_without_exposing_credentials(data, reason, client_kind, caplog):
+    """A valid HTTP response must explain silent rejection without logging secrets."""
+    api = _make_api()
+    response = _login_response(data)
+    response.json.return_value["private_field"] = "private-response-value"
+    with caplog.at_level("DEBUG", logger=sems_api_module.__name__), patch(
+        "requests.post", return_value=response
+    ) as post:
+        assert api.test_authentication() is (reason == "session_shape_accepted")
+    assert post.call_count == (2 if reason == "missing_token" else 1)
+    assert "endpoint=original http_status=200" in caplog.text
+    assert "business_code=0" in caplog.text
+    assert f"reason={reason}" in caplog.text
+    assert f"client_kind={client_kind}" in caplog.text
+    for secret in ("private-token", "private-client", "private-response-value", "user@example.com", "password123"):
+        assert secret not in caplog.text
+    api.close()
+
+
+def test_login_diagnostic_distinguishes_server_and_local_backoff(caplog):
+    """One throttled request followed by cooldown needs no second network call."""
+    api = _make_api()
+    response = _login_response(None)
+    response.status_code = 429
+    response.headers = {"Retry-After": "60"}
+    with caplog.at_level("DEBUG", logger=sems_api_module.__name__), patch(
+        "requests.post", return_value=response
+    ) as post:
+        assert api.test_authentication() is False
+        assert api.test_authentication() is False
+    assert post.call_count == 1
+    assert "endpoint=original reason=server_backoff" in caplog.text
+    assert "reason=local_backoff" in caplog.text
+    api.close()
+
+
+@pytest.mark.parametrize("data", [{}, {"token": None}, {"token": ""},
+                                  {"client": "semsPlusWeb"}])
+@pytest.mark.parametrize("code", [0, "0", "00000"])
+@pytest.mark.parametrize("first", ["original", "common"])
+def test_success_without_token_uses_alternate_login(data, code, first, monkeypatch):
+    """An explicitly successful empty primary session uses the alternate login."""
+    second = "common" if first == "original" else "original"
+    monkeypatch.setattr(sems_api_module, "_LOGIN_ORDER", (first, second))
+    api = _make_api()
+    with patch("requests.post", side_effect=[
+        _login_response(data, code=code, endpoint=first), _endpoint_response(second, "au")
+    ]) as post:
+        assert api._ensure_web_token()
+        assert api._ensure_web_token()
+    assert [call.args[0] for call in post.call_args_list] == [
+        sems_api_module._LOGIN_URLS[first], sems_api_module._LOGIN_URLS[second]]
+    assert api._web_token["token"] == "fallback-token"
+    assert api._web_api_base == "https://au-gateway.semsportal.com/web/sems"
+    api.close()
+
+
+@pytest.mark.parametrize("data,code,has_error", [
+    ({}, None, False), ({}, 0, True),
+    ({"client": "other"}, 0, False), ({"client": None}, 0, False),
+])
+def test_missing_token_does_not_bypass_ambiguous_or_rejected_login(data, code, has_error):
+    """Only explicit success for the expected client permits token fallback."""
+    api = _make_api()
+    response = _login_response(data, code=code)
+    response.json.return_value["hasError"] = has_error
+    with patch("requests.post", return_value=response) as post:
+        assert not api._ensure_web_token()
+    post.assert_called_once()
+    api.close()
+
+
+def test_both_logins_without_token_stop_and_share_backoff():
+    """Two empty sessions must not loop or immediately retry."""
+    api = _make_api()
+    with patch("requests.post", side_effect=[
+        _login_response({}), _login_response({})
+    ]) as post:
+        assert not api._ensure_web_token()
+        assert not api._ensure_web_token()
+    assert post.call_count == 2
+    assert api.login_attempts == 1
+    api.close()
+
+
+@pytest.mark.parametrize("failure", ["http401", "http429", "missing_token"])
+def test_secondary_failure_never_starts_a_third_login(failure):
+    api = _make_api()
+    second = _login_response({}, endpoint="common")
+    if failure.startswith("http"):
+        second.status_code = int(failure[4:])
+    with patch("requests.post", side_effect=[_login_response(None, code="100004"), second]) as post:
+        for _ in range(2):
+            if failure == "http401":
+                with pytest.raises(sems_api_module.CloudAuthenticationError):
+                    api._ensure_web_token()
+            else:
+                assert not api._ensure_web_token()
+        assert post.call_count == 2
+    assert api._web_token is None
