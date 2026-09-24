@@ -523,13 +523,15 @@ def test_eligible_login_failure_uses_only_one_fallback(failure):
 
 
 @pytest.mark.parametrize("elapsed,attempts", [(29, 2), (31, 1)])
-def test_login_fallback_shares_remaining_deadline(elapsed, attempts):
+@pytest.mark.parametrize("missing_token", [False, True])
+def test_login_fallback_shares_remaining_deadline(elapsed, attempts, missing_token):
     api = _make_api()
     clock = [100.0]
     def post(url, **kwargs):
         if url == sems_api_module._WebLoginURL:
             clock[0] += elapsed
-            response = _login_response(None);response.status_code = 503
+            response = _login_response({} if missing_token else None)
+            response.status_code = 200 if missing_token else 503
             return response
         assert 0 < kwargs["timeout"] <= 1
         return _fallback_response()
@@ -621,7 +623,7 @@ def test_login_diagnostic_explains_shape_without_exposing_credentials(data, reas
         "requests.post", return_value=response
     ) as post:
         assert api.test_authentication() is (reason == "session_shape_accepted")
-    assert post.call_count == 1
+    assert post.call_count == (2 if reason == "missing_token" else 1)
     assert "endpoint=common http_status=200" in caplog.text
     assert "business_code=0" in caplog.text
     assert f"reason={reason}" in caplog.text
@@ -645,4 +647,50 @@ def test_login_diagnostic_distinguishes_server_and_local_backoff(caplog):
     assert post.call_count == 1
     assert "endpoint=common reason=server_backoff" in caplog.text
     assert "reason=local_backoff" in caplog.text
+    api.close()
+
+
+@pytest.mark.parametrize("data", [{}, {"token": None}, {"token": ""},
+                                  {"client": "semsPlusWeb"}])
+@pytest.mark.parametrize("code", [0, "0", "00000"])
+def test_success_without_token_uses_original_login(data, code):
+    """Issue 21: a successful empty session uses the original regional login."""
+    api = _make_api()
+    with patch("requests.post", side_effect=[
+        _login_response(data, code=code), _fallback_response("au")
+    ]) as post:
+        assert api._ensure_web_token()
+        assert api._ensure_web_token()
+    assert [call.args[0] for call in post.call_args_list] == [
+        sems_api_module._WebLoginURL, sems_api_module._FallbackLoginURL]
+    assert api._web_token["token"] == "fallback-token"
+    assert api._web_api_base == "https://au-gateway.semsportal.com/web/sems"
+    api.close()
+
+
+@pytest.mark.parametrize("data,code,has_error", [
+    ({}, None, False), ({}, 0, True),
+    ({"client": "other"}, 0, False), ({"client": None}, 0, False),
+])
+def test_missing_token_does_not_bypass_ambiguous_or_rejected_login(data, code, has_error):
+    """Only explicit success for the expected client permits token fallback."""
+    api = _make_api()
+    response = _login_response(data, code=code)
+    response.json.return_value["hasError"] = has_error
+    with patch("requests.post", return_value=response) as post:
+        assert not api._ensure_web_token()
+    post.assert_called_once()
+    api.close()
+
+
+def test_both_logins_without_token_stop_and_share_backoff():
+    """An empty original session must not loop or immediately retry."""
+    api = _make_api()
+    with patch("requests.post", side_effect=[
+        _login_response({}), _login_response({})
+    ]) as post:
+        assert not api._ensure_web_token()
+        assert not api._ensure_web_token()
+    assert post.call_count == 2
+    assert api.login_attempts == 1
     api.close()

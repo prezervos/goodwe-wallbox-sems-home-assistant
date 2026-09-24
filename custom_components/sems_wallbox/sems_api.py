@@ -295,6 +295,14 @@ class SemsApi:
             "SEMS login diagnostic: endpoint=%s reason=%s data_type=%s token_present=%s client_kind=%s",
             endpoint, reason, type(data).__name__, token_present, client_kind,
         )
+        # Some accounts receive success from Common/CrossLogin without a token.
+        # Try the original SEMS+ login once, under the same deadline/backoff.
+        # Require explicit success and an expected/omitted client; an account
+        # rejection or a different client must not trigger another login.
+        if (not fallback and reason == "missing_token"
+                and code in (0, "0", "00000")
+                and client_kind in ("missing_default", "expected")):
+            raise _LoginFallbackEligible("Successful common login omitted its token")
         if reason != "session_shape_accepted":
             return None
         # Common API returns api at top level; original login returns it in data.
