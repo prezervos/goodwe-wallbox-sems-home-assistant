@@ -600,3 +600,49 @@ def test_web_headers_override_requests_default_user_agent_without_changing_clien
     assert request.headers["User-Agent"].startswith("Mozilla/5.0")
     assert request.headers["client"] == "semsPlusWeb"
     assert json.loads(request.headers["token"])["token"] == "fake"
+
+
+@pytest.mark.parametrize("data,reason,client_kind", [
+    (None, "invalid_data_type", "unavailable"),
+    ([], "invalid_data_type", "unavailable"),
+    ({"client": "semsPlusWeb"}, "missing_token", "expected"),
+    ({"token": "", "client": "semsPlusWeb"}, "missing_token", "expected"),
+    ({"token": "private-token", "client": "private-client"}, "unexpected_client", "other_string"),
+    ({"token": "private-token", "client": None}, "unexpected_client", "other_type"),
+    ({"token": "private-token"}, "session_shape_accepted", "missing_default"),
+    ({"token": "private-token", "client": "semsPlusWeb"}, "session_shape_accepted", "expected"),
+])
+def test_login_diagnostic_explains_shape_without_exposing_credentials(data, reason, client_kind, caplog):
+    """A valid HTTP response must explain silent rejection without logging secrets."""
+    api = _make_api()
+    response = _login_response(data)
+    response.json.return_value["private_field"] = "private-response-value"
+    with caplog.at_level("DEBUG", logger=sems_api_module.__name__), patch(
+        "requests.post", return_value=response
+    ) as post:
+        assert api.test_authentication() is (reason == "session_shape_accepted")
+    assert post.call_count == 1
+    assert "endpoint=common http_status=200" in caplog.text
+    assert "business_code=0" in caplog.text
+    assert f"reason={reason}" in caplog.text
+    assert f"client_kind={client_kind}" in caplog.text
+    for secret in ("private-token", "private-client", "private-response-value", "user@example.com", "password123"):
+        assert secret not in caplog.text
+    api.close()
+
+
+def test_login_diagnostic_distinguishes_server_and_local_backoff(caplog):
+    """One throttled request followed by cooldown needs no second network call."""
+    api = _make_api()
+    response = _login_response(None)
+    response.status_code = 429
+    response.headers = {"Retry-After": "60"}
+    with caplog.at_level("DEBUG", logger=sems_api_module.__name__), patch(
+        "requests.post", return_value=response
+    ) as post:
+        assert api.test_authentication() is False
+        assert api.test_authentication() is False
+    assert post.call_count == 1
+    assert "endpoint=common reason=server_backoff" in caplog.text
+    assert "reason=local_backoff" in caplog.text
+    api.close()

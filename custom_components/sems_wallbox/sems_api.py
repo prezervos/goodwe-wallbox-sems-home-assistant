@@ -222,16 +222,21 @@ class SemsApi:
 
     def _login_attempt(self, fallback, deadline):
         """Attempt one login; reject unsafe routing and explicit authentication errors."""
+        endpoint = "original" if fallback else "common"
         remaining = deadline - time.monotonic()
         if remaining <= 0:
+            _LOGGER.debug("SEMS login diagnostic: endpoint=%s reason=deadline_expired", endpoint)
             return None
         url, headers, body = self._login_request(fallback)
         resp = self._request_gate.request(requests.post, url, raise_on_limit=False, headers=headers, json=body,
                              timeout=request_timeout(min(_RequestTimeout, remaining)))
+        _LOGGER.debug("SEMS login diagnostic: endpoint=%s http_status=%s", endpoint, resp.status_code)
         if resp.status_code in (401, 403):
+            _LOGGER.debug("SEMS login diagnostic: endpoint=%s reason=http_auth_rejected", endpoint)
             raise CloudAuthenticationError("SEMS authentication was rejected")
         delayed = self._record_login_retry_after(resp)
         if resp.status_code == 429 or delayed:
+            _LOGGER.debug("SEMS login diagnostic: endpoint=%s reason=server_backoff", endpoint)
             return None
         if resp.status_code in (404, 405, 408, 500, 502, 503, 504):
             raise _LoginFallbackEligible("Login endpoint temporarily unavailable")
@@ -239,10 +244,21 @@ class SemsApi:
         try:
             payload = resp.json()
         except ValueError as error:
+            _LOGGER.debug("SEMS login diagnostic: endpoint=%s reason=non_json_response", endpoint)
             raise _LoginFallbackEligible("Login response is not JSON") from error
         if not isinstance(payload, dict):
+            _LOGGER.debug(
+                "SEMS login diagnostic: endpoint=%s reason=invalid_response_type response_type=%s",
+                endpoint, type(payload).__name__,
+            )
             raise _LoginFallbackEligible("Login response has an unexpected shape")
         code = payload.get("code")
+        safe_code = (
+            str(code) if type(code) in (int, str) and str(code).isascii()
+            and str(code).isdigit() and len(str(code)) <= 6 else
+            "absent" if code is None else "nonstandard"
+        )
+        _LOGGER.debug("SEMS login diagnostic: endpoint=%s business_code=%s", endpoint, safe_code)
         if code not in (0, "0", "00000", None) or payload.get("hasError"):
             _LOGGER.warning(
                 "SEMS web login failed: code=%s translation=%s description=%s",
@@ -257,8 +273,29 @@ class SemsApi:
                 raise _LoginFallbackEligible("Login protocol rejected")
             return None
         data = payload.get("data")
-        if (not isinstance(data, dict) or not data.get("token")
-                or data.get("client", "semsPlusWeb") != "semsPlusWeb"):
+        # Log structure and fixed categories, never login bodies, token values or
+        # arbitrary server strings (even a client field can contain private data).
+        if not isinstance(data, dict):
+            reason = "invalid_data_type"
+            token_present = False
+            client_kind = "unavailable"
+        else:
+            token_present = bool(data.get("token"))
+            client = data.get("client", "semsPlusWeb")
+            client_kind = (
+                "missing_default" if "client" not in data else
+                "expected" if client == "semsPlusWeb" else
+                "other_string" if isinstance(client, str) else "other_type"
+            )
+            reason = (
+                "missing_token" if not token_present else
+                "unexpected_client" if client != "semsPlusWeb" else "session_shape_accepted"
+            )
+        _LOGGER.debug(
+            "SEMS login diagnostic: endpoint=%s reason=%s data_type=%s token_present=%s client_kind=%s",
+            endpoint, reason, type(data).__name__, token_present, client_kind,
+        )
+        if reason != "session_shape_accepted":
             return None
         # Common API returns api at top level; original login returns it in data.
         # Require a validated region from either endpoint; never guess EU.
@@ -305,6 +342,7 @@ class SemsApi:
         if self._web_login_auth_error:
             raise CloudAuthenticationError("SEMS authentication was rejected")
         if time.monotonic() < self._web_login_retry_at:
+            _LOGGER.debug("SEMS login diagnostic: reason=local_backoff")
             return False
         self._web_retry_after = 0.0
         self.login_attempts += 1
