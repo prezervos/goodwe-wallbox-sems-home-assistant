@@ -10,10 +10,8 @@ part of the package hierarchy. This conftest ensures:
      to the project root (__init__.py), so relative imports work.
 """
 
-import os
 import sys
 import types
-import importlib.util
 
 
 def _register(name: str) -> types.ModuleType:

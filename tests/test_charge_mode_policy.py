@@ -1091,3 +1091,32 @@ async def test_modbus_raw_charging_requires_independent_cp_and_power(cp, power, 
         await policy.async_start()
     assert client.write_start_stop.call_count == (result == "start")
     client.write_charge_mode.assert_not_called()
+
+
+@pytest.mark.parametrize("value", [0, -1, float("nan"), float("inf"), True, "0", None])
+async def test_invalid_initial_report_does_not_become_saved_power(value):
+    store = Store({"mode": 1})
+    adapter = Adapter(Observation(1))
+    policy = make_policy(adapter, store)
+    await policy.async_load()
+    await policy.async_seed_power(value)
+    assert policy.desired_power is None
+    assert store.saved == {"mode": 1}
+    assert adapter.calls == []
+    # A later valid initialization may seed once, then survives reload and
+    # cannot be replaced by an external report, valid or invalid.
+    await policy.async_seed_power(4.2)
+    restored = make_policy(adapter, store)
+    await restored.async_load()
+    await restored.async_seed_power(value)
+    await restored.async_seed_power(7)
+    assert restored.desired_power == 4.2
+    assert store.saved == {"mode": 1, "power": 4.2}
+    assert adapter.calls == []
+
+
+@pytest.mark.parametrize("value", [0, -1, float("nan"), float("inf"), True, "0", None])
+async def test_invalid_saved_power_still_rejected(value):
+    policy = make_policy(Adapter(Observation(0)), Store({"mode": 0, "power": value}))
+    with pytest.raises(Error, match="Invalid saved power limit"):
+        await policy.async_load()

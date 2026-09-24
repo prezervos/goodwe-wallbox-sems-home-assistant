@@ -66,6 +66,12 @@
     },
     "auto_start_schedule_changed": {
       "message": "Během změny automatického nabíjení se změnil časový plán wallboxu. Před dalším pokusem zkontrolujte jeho nastavení."
+    },
+    "current_limit_range_unverified": {
+      "message": "Cloudové údaje o rozsahu proudového limitu jsou neplatné nebo odporují hlášené hodnotě. Před změnou tohoto nastavení obnovte údaje zařízení."
+    },
+    "current_limit_invalid": {
+      "message": "Zadejte proud v podporovaném rozsahu s nejvýše dvěma desetinnými místy."
     }
   },
   "options": {

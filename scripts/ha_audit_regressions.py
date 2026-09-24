@@ -1,6 +1,7 @@
 """Real HA publication race and installed pymodbus lost-ACK replay; loopback only."""
 
 import asyncio
+import json
 import socket
 import struct
 import sys
@@ -59,6 +60,7 @@ async def publication_race():
             await finish.wait()
 
         owner.transport = SimpleNamespace(
+            epoch=1,
             available=True,
             observed_at=0,
             latest=NativeStatus(
@@ -76,9 +78,9 @@ async def publication_race():
         owner.cloud_settings.request_refresh = Mock()
         sensor = ValueSensor(owner, SERIAL + "_power", "power", "power", "kW", "power")
         polling = asyncio.create_task(owner.async_refresh())
-        await entered.wait()
+        await asyncio.wait_for(entered.wait(), timeout=10)
         moving = asyncio.create_task(owner._set_local(False))
-        await restoring.wait()
+        await asyncio.wait_for(restoring.wait(), timeout=10)
         report.set()
         await polling
         result = {
@@ -244,9 +246,16 @@ async def modbus_wire_checks():
         assert writes == [(10060, 1), (10060, 2)], writes
         identity = SERIAL
         assert await asyncio.to_thread(client.write_start_stop, False)
+        assert await asyncio.to_thread(client.write_breaker_current, 63)
         client.close()
         assert not await asyncio.to_thread(client.write_start_stop, True)
-        assert writes == [(10060, 1), (10060, 2), (10060, 1)], writes
+        assert writes == [(10060, 1), (10060, 2), (10060, 1), (10026, 63)], writes
+        trace = client.diagnostics()
+        assert trace["write_requests"] == len(writes)
+        assert [(event["address"], event["value"]) for event in trace["recent_events"]
+                if event["event"] == "write_request"] == writes
+        assert trace["connection_attempts"] > 0 and trace["read_requests"] > 0
+        assert SERIAL not in json.dumps(trace) and "127.0.0.1" not in json.dumps(trace)
         print(
             "PASS: one uncertain Start; wrong/missing identity and closed-client writes blocked"
         )
@@ -336,7 +345,7 @@ async def modbus_fields_and_services():
                 number.SemsCurrentLimitNumber,
                 "async_set_native_value",
                 8,
-                "_pending_value",
+                None,
             ),
             (
                 number.SemsOutputPowerLimitNumber,
@@ -382,9 +391,15 @@ async def modbus_fields_and_services():
             current.entity.hass = hass
             current.entity.async_write_ha_state = Mock()
             current.action, current.argument = action, argument
+            observed = current.entity.native_value if pending is None else None
             with pytest.raises(HomeAssistantError):
                 await hass.services.async_call("audit", "write", {}, blocking=True)
-            assert getattr(current.entity, pending) is None, cls.__name__
+            if pending is None:
+                # Current-limit controls publish readback only, not optimistic intent.
+                assert current.entity.native_value == observed, cls.__name__
+                assert not hasattr(current.entity, "_pending_value")
+            else:
+                assert getattr(current.entity, pending) is None, cls.__name__
         # An explicit Stop must still reach the client exactly once, even when
         # telemetry is contradictory and the switch already appears off.
         client.write_start_stop.reset_mock(return_value=True)

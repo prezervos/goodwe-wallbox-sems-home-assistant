@@ -19,10 +19,11 @@ def response(body):
 def reader(*bodies):
     session = MagicMock()
     session.post.side_effect = [response(body) for body in bodies]
-    return module.CloudObservationReader("user", "secret", session=session), session
+    provider = MagicMock(return_value={"token": "fake-token", "client": "semsPlusWeb"})
+    rejected = MagicMock()
+    return module.CloudObservationReader(provider, token_rejected=rejected, session=session), session
 
 
-LOGIN = {"code": 0, "data": {"token": "fake-token", "uid": "fake-uid"}}
 STATUS = {
     "code": 0,
     "data": {
@@ -35,10 +36,10 @@ STATUS = {
 
 
 def test_report_timestamp_and_power_are_preserved():
-    client, session = reader(LOGIN, STATUS, STATUS)
+    client, session = reader(STATUS, STATUS)
     assert client.read("TEST") == STATUS["data"]
     assert client.read("TEST")["lastUpdate"] == STATUS["data"]["lastUpdate"]
-    assert len(session.post.call_args_list) == 3
+    assert len(session.post.call_args_list) == 2
     assert all(call.kwargs["headers"]["User-Agent"] == module.SEMS_USER_AGENT
                for call in session.post.call_args_list)
     assert all(
@@ -50,7 +51,7 @@ def test_report_timestamp_and_power_are_preserved():
     "data", [None, {}, {"sn": "OTHER", "lastUpdate": "x"}, {"sn": "TEST"}]
 )
 def test_missing_identity_or_timestamp_is_not_fabricated(data):
-    client, _ = reader(LOGIN, {"code": 0, "data": data})
+    client, _ = reader({"code": 0, "data": data})
     with pytest.raises(ConnectionError):
         client.read("TEST")
 
@@ -62,10 +63,10 @@ def test_missing_identity_or_timestamp_is_not_fabricated(data):
 ])
 def test_expired_token_is_refreshed_once_for_read_only_request(failure):
     client, session = reader(
-        LOGIN, failure, LOGIN, STATUS
+        failure, STATUS
     )
     assert client.read("TEST")["sn"] == "TEST"
-    assert len(session.post.call_args_list) == 4
+    assert len(session.post.call_args_list) == 2
 
 
 @pytest.mark.parametrize("failure", [
@@ -73,29 +74,33 @@ def test_expired_token_is_refreshed_once_for_read_only_request(failure):
     *({"code": code, "data": None} for code in (100001, "100001", 100002, "100002")),
 ])
 def test_expired_token_retries_are_bounded(failure):
-    client, session = reader(LOGIN, failure, LOGIN, failure)
-    with pytest.raises(module.CloudAuthenticationError):
+    client, session = reader(failure, failure)
+    with pytest.raises(ConnectionError, match="session renewal"):
         client.read("TEST")
-    assert len(session.post.call_args_list) == 4
-    assert client._token is None
+    assert len(session.post.call_args_list) == 2
+    assert client._token_rejected.call_count == 1
+    with pytest.raises(ConnectionError, match="temporarily unavailable"):
+        client.read("TEST")
+    assert session.post.call_count == 2
 
 
 def test_authentication_error_does_not_request_device_data():
-    client, session = reader({"hasError": True, "code": 100})
-    with pytest.raises(ConnectionError):
+    client, session = reader()
+    client._token_provider.side_effect = module.CloudAuthenticationError("Rejected")
+    with pytest.raises(module.CloudAuthenticationError):
         client.read("TEST")
-    assert session.post.call_count == 1
+    session.post.assert_not_called()
 
 
 @pytest.mark.parametrize("code", [0, "0"])
 def test_success_code_accepts_numeric_and_string_forms(code):
-    client, _ = reader(dict(LOGIN, code=code), dict(STATUS, code=code))
+    client, _ = reader(dict(STATUS, code=code))
     assert client.read("TEST") == STATUS["data"]
 
 
 @pytest.mark.parametrize("code", [1, "1", "error"])
 def test_error_code_rejects_otherwise_valid_report(code):
-    client, _ = reader(LOGIN, dict(STATUS, code=code))
+    client, _ = reader(dict(STATUS, code=code))
     with pytest.raises(ConnectionError):
         client.read("TEST")
 
@@ -264,7 +269,7 @@ def test_reader_close_respects_session_ownership(owned):
     from unittest.mock import patch
     session = MagicMock()
     with patch.object(module.requests, "Session", return_value=session):
-        client = module.CloudObservationReader("user", "secret", session=None if owned else session)
+        client = module.CloudObservationReader(lambda: {"token": "test"}, token_rejected=MagicMock(), session=None if owned else session)
     client.close()
     client.close()
     assert session.close.call_count == int(owned)
@@ -289,8 +294,7 @@ def test_reader_close_waits_for_inflight_read():
 
     session.post.side_effect = post
     with patch.object(module.requests, "Session", return_value=session):
-        client = module.CloudObservationReader("user", "secret")
-    client._token = {"token": "test"}
+        client = module.CloudObservationReader(lambda: {"token": "test"}, token_rejected=MagicMock())
     with ThreadPoolExecutor(max_workers=2) as pool:
         read = pool.submit(client.read, "TEST")
         try:

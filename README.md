@@ -7,10 +7,10 @@
 
 Home Assistant custom integration for the **GoodWe Wallbox**.
 
-The 3.0.2 update fixes cloud login compatibility and Modbus setup, removes
-unsolicited Modbus Stop writes, and completes original-HCA native TCP Auto start.
-It requires **Home Assistant 2026.9.2 or newer**.
-See [release notes](docs/RELEASE_NOTES.md) for upgrade details and validation limits.
+The 3.0.3 update fixes cloud connection-state and shared-authentication issues,
+PV-to-Fast power preparation, diagnostic limit readback and native TCP Stop
+verification. It includes the 3.0.3 beta fixes; the separate Modbus charging
+interruption remains under investigation. See [release notes](docs/RELEASE_NOTES.md).
 
 Supports cloud, local Modbus and optional native Socket A TCP connections:
 
@@ -30,9 +30,10 @@ Supports cloud, local Modbus and optional native Socket A TCP connections:
 |--------|------|-------------|
 | Charging | Switch | Start / stop charging |
 | Charge mode | Select | Fast / PV priority / PV & battery |
-| Status | Sensor | Current charging state |
+| Status | Sensor | Wallbox-reported session state, independent of measured energy flow |
 | Vehicle state | Sensor | Car plug connection state |
 | Charging power | Sensor (kW) | Actual power drawn |
+| Charging activity | Binary sensor (optional, cloud/native coordinator) | Actual measured energy flow; independent of the Start/Stop switch and reported session state |
 | Session energy | Sensor (kWh) | Energy delivered in current session |
 | Charge duration | Sensor (min) | Duration of current / last session |
 | Charge power limit | Number (kW) | Set max charge power |
@@ -62,11 +63,36 @@ Supports cloud, local Modbus and optional native Socket A TCP connections:
 
 ### Optional settings and transport support
 
+Development behavior: in cloud-only and Modbus PV modes, the charge-power control
+can prepare a **Fast-mode preference**. Changing it saves the requested kW in HA
+without switching mode or writing to the wallbox. Selecting Fast applies and
+verifies that preference, even with automatic mode restoration disabled. The
+preference survives reload; `reported_power_limit` remains the separate actual
+device report. No power preference means a valid limit must be chosen before a
+verified Fast transition. This change is not yet in a published release.
+
+
 Cloud integrations also retain capability-dependent controls for grid current,
 output power, session energy targets, battery SOC, completion time, phase switching,
 dynamic load management and Plug & Charge. Availability depends on the model and
 actual API values; a successful API acknowledgement alone does not prove the
 wallbox applies a setting.
+
+The **Import current limit** number (A; Czech: **Limit proudu ze sítě**) sets
+the household incoming-current limit used by dynamic load management. It is
+distinct from **Max charge power** (kW), which limits vehicle charging, and
+**Phase A/B/C current** (A), which reports measurements. A 63 A household limit
+does not mean the vehicle can charge at 63 A.
+
+In the unreleased cloud range fix, this control uses the device's SEMS+ range
+metadata, with 0–2000 A defaults for missing/null bounds in a successful response
+and a 0.01 A input step. These are accepted input bounds, not recommended breaker
+settings or proof of physical support on every model. Failed discovery, malformed
+metadata or contradictory reported values prevent writes; missing readings are
+never replaced with zero. The existing entity identity is preserved. This cloud
+setting does not gain native TCP support from the fix. Modbus uses its separate
+register contract (10026, integer 0–2000 A). See
+[cloud current-limit behavior and evidence](docs/CLOUD_CURRENT_LIMIT.md).
 
 Enabling native TCP keeps the core Start/Stop, mode, power and session-energy
 identities. Extended cloud-only settings become unavailable while TCP owns the
@@ -87,6 +113,30 @@ Original-HCA cloud Auto start support remains unproven.
 Entity and service-error catalogs include English (`en`), Czech (`cs`), German (`de`) and Spanish (`es`). Hardware support is separate from translation coverage.
 
 ---
+
+
+### Session state versus actual energy flow
+
+The wallbox may keep reporting Charging after the vehicle stops taking energy.
+The optional charging-activity binary sensor uses measured power: positive means
+On and confirmed zero means Off. For native TCP, phase currents must agree with
+the power measurement. Missing, invalid, contradictory or stale observations
+remain unknown; a failed coordinator update makes the entity unavailable.
+The sensor is disabled by default and can be enabled in the entity settings.
+It is available with the cloud/native coordinator, not the separate legacy
+cloud-only or Modbus platforms.
+
+This does not rewrite the wallbox status, turn off the command switch or authorize
+idle-only settings. A waiting session must remain stoppable. Vehicle completion
+is shown only when explicitly reported and is not latched: in a physical cloud
+test, Charging at zero load lasted about 9.5 minutes, then finished_charging was
+reported briefly before connected. Zero load alone never means fully charged.
+
+Activity freshness follows native connection freshness or the existing ten-minute
+cloud device-timestamp ceiling, even if automatic fallback is disabled. It is
+reevaluated when HA updates the entity; no additional polling or expiry timer is
+introduced. See [vehicle-state evidence](docs/VEHICLE_STATE_EVIDENCE.md).
+
 
 ## Requirements
 
@@ -232,6 +282,12 @@ missing-data behavior and some state semantics changed. Check dependent template
 do not treat unavailable measurements as zero.
 
 ## Changelog
+
+### 3.0.3
+
+Cloud state/authentication, PV-to-Fast power preparation, current-limit ranges,
+reported limit readback, TCP Stop verification and bounded diagnostics.
+See [release notes](docs/RELEASE_NOTES.md) for validation and remaining limits.
 
 ### 3.0.2
 

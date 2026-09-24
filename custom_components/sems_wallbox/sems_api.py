@@ -63,15 +63,6 @@ _SetModeR0305Retries = 3   # retry count on R0305 (remote_control_fail -- transi
 _SetModeR0305Delay = 2.0   # seconds between R0305 retries
 
 
-_DefaultHeaders = {
-    "User-Agent": SEMS_USER_AGENT,
-    "Content-Type": "application/json",
-    "Accept": "application/json",
-    "token": '{"version":"","client":"semsPlusAndroid","language":"en"}',
-}
-
-
-
 def _response_json(response):
     """Keep explicit HTTP authentication rejection distinct from an outage."""
     if response.status_code in (401, 403):
@@ -124,13 +115,15 @@ class SemsApi:
         from .cloud_observation import CloudObservationReader
         self._request_gate = CloudRequestGate()
         self._observation_reader = CloudObservationReader(
-            username, password, request_gate=self._request_gate
+            self._observation_token, token_rejected=self._invalidate_rejected_session,
+            request_gate=self._request_gate
         )
         self._hass = hass
         self._username = username
         self._password = password
         self._web_request_lock = threading.RLock()
         self._closed = False
+        self._control_item_ranges = {}
         self._web_login_retry_at = 0.0
         self._web_login_delay = 30.0
         self._web_retry_after = 0.0
@@ -169,7 +162,8 @@ class SemsApi:
         self._web_token = None
         self._web_api_base = _EuGatewayBase
         self._observation_reader = CloudObservationReader(
-            username, password, request_gate=self._request_gate
+            self._observation_token, token_rejected=self._invalidate_rejected_session,
+            request_gate=self._request_gate
         )
 
     def close(self) -> None:
@@ -700,6 +694,13 @@ class SemsApi:
                 raise ValueError("Missing cloud event credential field")
         return {key: data[key] for key in ("brokerUrl", "clientId", "userName", "password")}
 
+    def _observation_token(self):
+        """Reuse the serialized web session and its bounded login recovery."""
+        if not self._ensure_web_token():
+            raise ConnectionError("Shared SEMS session is unavailable")
+        return dict(self._web_token)
+
+    @_serialized_web_request
     def fetch_status_observation(self, wallbox_sn):
         """Read independent timestamped telemetry; never infer freshness from HTTP time."""
         return self._observation_reader.read(wallbox_sn)
@@ -803,6 +804,9 @@ class SemsApi:
                 "charge_from_grid": _get("charge_from_grid", "chargeFromGrid", default=1),
                 "isOpen": _get("isOpen", "isConnected", default=False),
                 "currentLimit": _get("currentLimit", "currentLimitValue", default=None),
+                # Metadata is read at discovery and before explicit current writes,
+                # never fetched again for every telemetry poll.
+                "controlItemRanges": self._control_item_ranges.get(wallbox_sn, False),
                 # Per-mode charging targets (0 = unlimited / no target)
                 "max_energy": _get("maxEnergy", default=None),
                 "min_energy": _get("minEnergy", default=None),
@@ -820,6 +824,10 @@ class SemsApi:
                 # Physical hardware maximum (unchangeable device spec, used as slider ceiling)
                 "hw_max_charge_power": _get("ratedMaxChargePower", default=None),
             }
+            # Preserve presence: an unknown connection code must not silently
+            # fall back to the stale SEMS+ workState text.
+            if "vehConnStu" in raw:
+                result["vehConnStu"] = raw["vehConnStu"]
             return result
 
         except (CloudAuthenticationError, CloudRateLimitedError, BudgetCancelled, TimeoutError):
@@ -1028,7 +1036,13 @@ class SemsApi:
             _LOGGER.debug("SEMS fetch_device_info raw: %s", rj)
             if str(rj.get("code") or "") not in ("00000", "0"):
                 return {}
-            return rj.get("data") or {}
+            info = rj.get("data")
+            if not isinstance(info, dict) or not info:
+                return {}
+            if info.get("sn") is not None and info["sn"] != wallbox_sn:
+                return {}
+            self._control_item_ranges[wallbox_sn] = info.get("controlItemRanges")
+            return info
         except (CloudAuthenticationError, CloudRateLimitedError, BudgetCancelled, TimeoutError):
             raise
         except Exception as exc:  # noqa: BLE001

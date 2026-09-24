@@ -10,8 +10,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from dataclasses import asdict
 from collections.abc import Callable
 
+from .native_faults import decode_fault_report
 from .native_energy import NativeEnergy, decode_energy, energy_request
 from .native_configuration import (
     NativeConfiguration, auto_start_request, configuration_request, decode_configuration,
@@ -53,6 +55,9 @@ class NativeTransport:
         self.stale_after = stale_after
         self.latest: NativeStatus | None = None
         self.observed_at = 0.0
+        self._fault_report = None
+        self._fault_observed_at = None
+        self._fault_rejected = 0
         self.on_observation = None
         self.epoch = 0
         self._identity: bytes | None = None
@@ -87,6 +92,7 @@ class NativeTransport:
         """Return whether a current peer has recently reported valid telemetry."""
         return (
             self._writer is not None
+            and not self._writer.is_closing()
             and self.latest is not None
             and time.monotonic() - self.observed_at < self.stale_after
         )
@@ -120,11 +126,36 @@ class NativeTransport:
         self.epoch += 1
         self.latest = None
         self._identity = None
+        self._fault_report = None
+        self._fault_observed_at = None
+        self._fault_rejected = 0
         self._energy_uncertain = False
         if self._energy_pending is not None and not self._energy_pending.done():
             self._energy_pending.set_exception(ConnectionError(reason))
         if self._pending is not None and not self._pending.done():
             self._pending.set_exception(ConnectionError(reason))
+
+    def fault_diagnostics(self, *, active: bool) -> dict:
+        """Return cached report metadata without polling or exposing identifiers.
+
+        Args:
+            active: Whether TCP is selected and no transport switch is underway.
+
+        Returns:
+            Last observation and its age, never an assertion of current health.
+        """
+        visible = active and self._writer is not None and self._identity is not None
+        report = self._fault_report if visible else None
+        return {
+            "reference_mapping": "original_hca_3_0",
+            "complete_fault_coverage": False,
+            "session_usable": bool(visible and self.available),
+            "received": report is not None,
+            "age_seconds": max(0, time.monotonic() - self._fault_observed_at)
+            if report is not None else None,
+            "rejected_reports": self._fault_rejected if visible else 0,
+            "last_report": asdict(report) if report is not None else None,
+        }
 
     async def _send(self, action: str, **values) -> None:
         if self._writer is None or self._identity is None:
@@ -177,6 +208,16 @@ class NativeTransport:
                     if ack is not None:
                         writer.write(ack)
                     await writer.drain()
+                    if packet.command == 108:
+                        try:
+                            self._fault_report = decode_fault_report(packet, self.serial)
+                            self._fault_observed_at = time.monotonic()
+                        except ValueError:
+                            # Optional diagnostics must not break status/control.
+                            # Clear older details rather than implying they are current.
+                            self._fault_report = None
+                            self._fault_observed_at = None
+                            self._fault_rejected += 1
                     if packet.command == 602 and self._energy_pending is not None:
                         if not self._energy_pending.done():
                             try:
@@ -546,8 +587,11 @@ class NativeTransport:
                     if action != "status":
                         await asyncio.sleep(0.3)
                         await self._send("status")
+                    # Ordinary Stop may outlive the first status query. Recheck
+                    # observations without replaying the control command; the
+                    # device need not push its final idle state spontaneously.
                     while (
-                        action == "start" or protective
+                        action in ("start", "stop") or protective
                     ) and not self._pending.done():
                         if (
                             (self._safety_stop or protective)

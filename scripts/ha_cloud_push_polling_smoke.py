@@ -101,7 +101,6 @@ async def check_http_cadence(folder):
     api = SemsApi(hass, "test", "test")
     # Authentication has separate retry tests. This measures steady-state reads.
     api._web_token = {"uid": "test", "token": "test"}
-    api._observation_reader._token = {"token": "test"}
     api.configure_gen2("test-plant", "GW11K-HCA")
     owner = NativeCoordinator(hass, entry, api)
     push = CloudPush(owner, serial, api.fetch_mqtt_settings)

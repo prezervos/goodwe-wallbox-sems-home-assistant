@@ -284,7 +284,7 @@ async def test_blank_native_ingress_is_normalized_to_direct_connection(flow_modu
     assert result["native_ingress_peer"] == ""
 
 async def test_reconfigure_cloud_preserves_identity_and_preferences(flow_module, monkeypatch):
-    from unittest.mock import AsyncMock, Mock
+    from unittest.mock import Mock
     entry = types.SimpleNamespace(entry_id="existing", data={
         "wallbox_serial_No": "original", "username": "old", "password": "secret",
         "remember_charge_mode": True}, options={"initial_charge_mode": 2}, update_listeners=[object()])

@@ -7,8 +7,11 @@ Connection: Modbus TCP, port 502, device/unit ID 247 (0xF7).
 
 from __future__ import annotations
 
+from collections import deque
 import logging
+import math
 import threading
+import time
 
 from .operation_budget import BudgetCancelled, request_timeout, serialized_request
 from typing import Any
@@ -18,6 +21,8 @@ _LOGGER = logging.getLogger(__name__)
 # Modbus TCP defaults discovered empirically.
 DEFAULT_MODBUS_PORT = 502
 DEFAULT_MODBUS_DEVICE_ID = 247  # 0xF7
+BREAKER_CURRENT_MIN = 0
+BREAKER_CURRENT_MAX = 2000  # Household breaker, protocol v1.0.15 register 10026.
 
 # Register base addresses
 _REG_FAULT_BASE = 10000
@@ -98,11 +103,61 @@ class WallboxModbusClient:
         self._device_id = device_id
         self._expected_serial = expected_serial
         self._closed = False
-        # Serialise all Modbus TCP operations -- the wallbox only supports 2
-        # simultaneous connections (1 = cloud IoT, 1 = HA).  Without a lock,
-        # a coordinator read_all and a user-triggered write can open two
-        # connections at the same time, causing one to be rejected.
+        # Prevent this integration's polling and controls from opening overlapping
+        # connections. Other clients and firmware connection limits are external.
         self._lock = threading.Lock()
+        self._trace_lock = threading.Lock()
+        self._events = deque(maxlen=128)
+        self._read_requests = 0
+        self._write_requests = 0
+        self._connection_attempts = 0
+
+    def _trace(self, event: str, **fields: int | float | str) -> None:
+        """Record bounded protocol metadata, never register payloads or identity."""
+        with self._trace_lock:
+            self._read_requests += event == "read_request"
+            self._write_requests += event == "write_request"
+            self._connection_attempts += event == "connection_attempt"
+            self._events.append({"at": time.monotonic(), "event": event, **fields})
+        _LOGGER.debug("Modbus trace %s %s", event, fields)
+
+    def diagnostics(self) -> dict[str, Any]:
+        """Return a thread-safe cached trace without making any device requests.
+
+        Returns:
+            Since-load request counts and the last 128 protocol events.
+        """
+        with self._trace_lock:
+            now = time.monotonic()
+            return {
+                "connection_attempts": self._connection_attempts,
+                "read_requests": self._read_requests,
+                "write_requests": self._write_requests,
+                "recent_events": [
+                    {"age_seconds": round(max(0, now - item["at"]), 3),
+                     **{key: value for key, value in item.items() if key != "at"}}
+                    for item in self._events
+                ],
+            }
+
+    def _close_client(self, client) -> None:
+        """Close an operation's connection and record the local close attempt."""
+        try:
+            client.close()
+        finally:
+            self._trace("connection_close")
+
+    def _write_register(self, client, address: int, value: int):
+        """Trace exact wire attempts, including rejected or unacknowledged writes."""
+        self._trace("write_request", function=6, address=address, value=value)
+        try:
+            result = client.write_register(address, value, device_id=self._device_id)
+        except Exception:  # Trace transport/library failure without changing propagation.
+            self._trace("write_result", address=address, outcome="exception")
+            raise
+        self._trace("write_result", address=address,
+                    outcome="error" if result.isError() else "acknowledged")
+        return result
 
     # ------------------------------------------------------------------
     # Connection management
@@ -116,9 +171,18 @@ class WallboxModbusClient:
         # Never replay a possibly delivered mutating request after a lost ACK.
         # Read recovery is handled by later coordinator polls.
         client = ModbusTcpClient(self._host, port=self._port, timeout=request_timeout(2), retries=0)
-        if not client.connect():
-            client.close()
+        self._trace("connection_attempt")
+        try:
+            connected = client.connect()
+        except Exception:  # Preserve the library error and close an unreturned client.
+            self._trace("connection_failed")
+            self._close_client(client)
+            raise
+        if not connected:
+            self._trace("connection_failed")
+            self._close_client(client)
             raise OSError(f"Cannot connect to wallbox Modbus at {self._host}:{self._port}")
+        self._trace("connection_open")
         return client
 
     def close(self) -> None:
@@ -140,14 +204,18 @@ class WallboxModbusClient:
 
     def _read(self, client, address: int, count: int) -> list[int] | None:
         """Read `count` holding registers starting at `address`."""
+        self._trace("read_request", function=3, address=address, count=count)
         try:
             result = client.read_holding_registers(address, count=count,
                                                    device_id=self._device_id)
             if not result.isError():
+                self._trace("read_result", address=address, outcome="success")
                 return list(result.registers)
+            self._trace("read_result", address=address, outcome="error")
             _LOGGER.warning("Modbus read error at %d count=%d: %s", address, count, result)
             return None
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # Library failures are represented as a failed observation.
+            self._trace("read_result", address=address, outcome="exception")
             _LOGGER.warning("Modbus read exception at %d: %s", address, exc)
             return None
 
@@ -165,7 +233,7 @@ class WallboxModbusClient:
                 return False
             try:
                 self._verify_write_identity(client)
-                result = client.write_register(address, value, device_id=self._device_id)
+                result = self._write_register(client, address, value)
                 if result.isError():
                     _LOGGER.warning("Modbus write error at %d value=%d: %s", address, value, result)
                     return False
@@ -177,7 +245,7 @@ class WallboxModbusClient:
                 _LOGGER.warning("Modbus write exception at %d: %s", address, exc)
                 return False
             finally:
-                client.close()
+                self._close_client(client)
 
     def write_start_stop(self, start: bool) -> bool:
         """Start (True) or stop (False) charging. Reg 10060: 2=start, 1=stop.
@@ -198,11 +266,11 @@ class WallboxModbusClient:
                 return False
             try:
                 self._verify_write_identity(client)
-                reset = client.write_register(10060, 1, device_id=self._device_id)
+                reset = self._write_register(client, 10060, 1)
                 if reset.isError():
                     return False
                 request_timeout(2)
-                result = client.write_register(10060, 2, device_id=self._device_id)
+                result = self._write_register(client, 10060, 2)
                 if result.isError():
                     _LOGGER.warning("Modbus start error: %s", result)
                     return False
@@ -214,7 +282,7 @@ class WallboxModbusClient:
                 _LOGGER.warning("Modbus start exception: %s", exc)
                 return False
             finally:
-                client.close()
+                self._close_client(client)
 
     def write_charge_mode(self, mode: int) -> bool:
         """Set advanced charging mode. Reg 10032: 0=fast, 1=PV, 2=PV+battery."""
@@ -246,8 +314,12 @@ class WallboxModbusClient:
         return self._write(10025, 1 if enabled else 0)
 
     def write_breaker_current(self, amps: int) -> bool:
-        """Set import current limit in amps. Reg 10026, range [6, 32]."""
-        return self._write(10026, max(6, min(32, int(amps))))
+        """Set household breaker current, register 10026, integer range 0–2000 A."""
+        if (isinstance(amps, bool) or not isinstance(amps, (int, float))
+                or not math.isfinite(amps) or not float(amps).is_integer()
+                or not BREAKER_CURRENT_MIN <= amps <= BREAKER_CURRENT_MAX):
+            raise ValueError("Household breaker current must be a whole number from 0 to 2000 A")
+        return self._write(10026, int(amps))
 
     def write_phase_switch(self, single_phase: bool) -> bool:
         """Enable/disable single-phase mode. Reg 10023: 1=single-phase, 0=three-phase.
@@ -316,9 +388,21 @@ class WallboxModbusClient:
                 _LOGGER.warning("Modbus connect failed: %s", exc)
                 return None
             try:
-                return self._read_all_inner(client)
+                result = self._read_all_inner(client)
+                if result is not None:
+                    fields = ("modbus_status_raw", "modbus_power", "set_charge_power",
+                              "modbus_car_connected", "modbus_cp_state", "modbus_comm_status",
+                              "modbus_charging_on_off", "modbus_start_mode", "modbus_ems_dispatch",
+                              "modbus_breaker_current", "modbus_fault_01", "modbus_fault_02",
+                              "modbus_fault_03", "modbus_fault_04", "modbus_warn_05",
+                              "modbus_warn_06", "modbus_hw_fault_07", "modbus_hw_fault_08")
+                    self._trace("observation", **{
+                        key: result[key] for key in fields
+                        if type(result.get(key)) in (int, float) and math.isfinite(result[key])
+                    })
+                return result
             finally:
-                client.close()
+                self._close_client(client)
 
     def _read_all_inner(self, client) -> dict[str, Any] | None:
         """Internal implementation of read_all."""

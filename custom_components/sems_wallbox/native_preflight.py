@@ -40,7 +40,8 @@ async def async_cloud_preflight(owner):
         )
         if not isinstance(data, dict) or data.get("sn") != owner.serial:
             return False
-        # Telemetry has a separate session and can work while SEMS+ controls fail.
+        # Both endpoints share a session, but telemetry access does not prove
+        # that the SEMS+ control service is available.
         settings = await owner.hass.async_add_executor_job(
             owner.cloud.get_data_gen2, owner.serial
         )

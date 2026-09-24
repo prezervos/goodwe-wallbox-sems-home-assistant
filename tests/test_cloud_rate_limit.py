@@ -76,7 +76,6 @@ def test_cooldown_is_shared_by_polling_commands_discovery_and_login(source):
     api._plant_id = "fixture"
     if source != "login":
         api._web_token = {"uid": "fixture", "token": "fixture"}
-    api._observation_reader._token = {"token": "fixture"}
     reply = response(429, "600")
     with patch("requests.post", return_value=reply) as post, patch(
         "requests.get", return_value=reply

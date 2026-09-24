@@ -67,3 +67,6 @@ jobs:
           python scripts/ha_runtime_smoke.py custom_components --mqtt-only
           python scripts/ha_native_runtime_smoke.py custom_components --lifecycle
           python scripts/ha_runtime_smoke.py custom_components --minimum-power-only
+
+      - name: Real HA observed energy flow and freshness
+        run: python scripts/ha_energy_flow_smoke.py custom_components

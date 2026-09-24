@@ -87,12 +87,17 @@ def test_status_preserves_reported_legacy_attributes_without_defaults():
     """Automations can keep reading reported attributes, including false/zero."""
     values = {"status": "standby", "chargeMode": 0, "set_charge_power": 4.2,
               "ensure_minimum_charging_power": False, "scheduleMode": None}
-    entity = entities.ValueSensor(coordinator(values), "TEST", "status", "status")
+    owner = coordinator(values)
+    owner.cloud_settings = SimpleNamespace(
+        cloud_ready=True, valid=True, values={"set_charge_power": 4.2}
+    )
+    entity = entities.ValueSensor(owner, "TEST", "status", "status")
     assert entity.extra_state_attributes == {
         "statusText": "standby", "chargeMode": 0, "set_charge_power": 4.2,
         "ensure_minimum_charging_power": False,
     }
     entity.coordinator.data = {"TEST": {"status": "charging"}}
+    owner.cloud_settings.valid = False
     assert entity.extra_state_attributes == {"statusText": "charging"}
 
 

@@ -7,6 +7,9 @@ can also use native TCP.
 
 from __future__ import annotations
 
+from .cloud_current_limit import (
+    current_attributes, current_bounds, current_writable, observed_current, validate_current_write,
+)
 from .operation_budget import async_execute
 
 from .mode_parameters import preserved_mode_parameters
@@ -59,7 +62,8 @@ SETTINGS = (
         "currentLimit",
         unit="A",
         device_class="current",
-        maximum=32,
+        maximum=2000,
+        step=0.01,
     ),
     Setting(
         "number",
@@ -165,6 +169,7 @@ class CloudSettings:
         self._lock = asyncio.Lock()
         self._closed = False
         self._observed_mode = None
+        self._revision = 0
 
     async def discover_capabilities(self):
         """Fill missing legacy metadata using the existing cloud session.
@@ -179,6 +184,8 @@ class CloudSettings:
         info = await owner.hass.async_add_executor_job(fetch, owner.serial)
         if not isinstance(info, dict) or not info:
             return {}
+        self.values["controlItemRanges"] = info.get("controlItemRanges")
+        owner.async_update_listeners()
         data = dict(owner.entry.data)
         for stored, remote in (
             ("dashboard_functions", "dashboardFunctions"),
@@ -235,12 +242,19 @@ class CloudSettings:
         """Require a fresh configuration read after a transport or mode change."""
         self.valid = False
         self.next_refresh = 0
+        self._revision += 1
 
     def observe_mode(self, mode):
         """Refresh mode-specific configuration after an observed mode change."""
         if mode is not None and mode != self._observed_mode:
+            previous = self._observed_mode
             self._observed_mode = mode
-            self.invalidate()
+            # The first telemetry report initializes the mode; it must not
+            # discard the configuration read already scheduled during setup.
+            if previous is not None or (
+                self.valid and self.values.get("_reported_charge_mode") != mode
+            ):
+                self.invalidate()
             self.request_refresh()
 
     def request_refresh(self):
@@ -262,15 +276,29 @@ class CloudSettings:
                 self.valid = False
                 return
             epoch = self.owner.routing_epoch
+            revision = self._revision
             self.next_refresh = time.monotonic() + 300
             try:
                 data = await async_execute(self.owner.hass,
                     self.owner.cloud.get_data_gen2, self.owner.serial
                 )
+                # Complete range discovery even when model/capabilities were saved
+                # previously or startup was local. Retry failures only at the
+                # existing configuration refresh cadence, not telemetry frequency.
+                if (isinstance(data, dict) and data.get("sn") == self.owner.serial
+                        and data.get("controlItemRanges") is False):
+                    info = await async_execute(
+                        self.owner.hass, self.owner.cloud.fetch_device_info, self.owner.serial
+                    )
+                    data["controlItemRanges"] = (
+                        info.get("controlItemRanges") if isinstance(info, dict) and info
+                        and info.get("sn", self.owner.serial) == self.owner.serial else False
+                    )
             except (OSError, ValueError, RuntimeError) as error:
                 _LOGGER.debug("Cloud settings read failed: %s", error)
                 data = None
-            if not self.cloud_ready or epoch != self.owner.routing_epoch:
+            if (not self.cloud_ready or epoch != self.owner.routing_epoch
+                    or revision != self._revision):
                 self.valid = False
                 self.next_refresh = 0
                 return
@@ -294,6 +322,7 @@ class CloudSettings:
                 raise ModeVerificationError(
                     "Cloud configuration is unavailable on this transport"
                 )
+            epoch = self.owner.routing_epoch
             await self.refresh()
             if not self.valid or self.values.get(setting.field) is None:
                 raise ModeVerificationError(
@@ -304,6 +333,20 @@ class CloudSettings:
                 raise ModeVerificationError(
                     "The setting is unavailable in the reported charging mode"
                 )
+            if setting.field == "currentLimit":
+                try:
+                    info = await async_execute(
+                        self.owner.hass, self.owner.cloud.fetch_device_info, self.owner.serial
+                    )
+                    if not isinstance(info, dict) or not info or info.get("sn", self.owner.serial) != self.owner.serial:
+                        raise ValueError("Missing or mismatched cloud configuration")
+                    self.values["controlItemRanges"] = info.get("controlItemRanges")
+                    self.owner.async_update_listeners()
+                    validate_current_write(self.values.get(setting.field), value, self.values["controlItemRanges"])
+                except ValueError as error:
+                    raise ModeVerificationError(str(error)) from error
+            if not self.cloud_ready or epoch != self.owner.routing_epoch:
+                raise ModeVerificationError("Cloud configuration is unavailable on this transport")
             api = self.owner.cloud
             if setting.field == "ensure_minimum_charging_power":
                 send = partial(
@@ -403,12 +446,45 @@ class CloudSettingNumber(CloudSettingEntity, NumberEntity):
         super().__init__(coordinator, setting)
         self._attr_native_unit_of_measurement = setting.unit
         self._attr_device_class = setting.device_class
-        self._attr_native_min_value = setting.minimum
         self._attr_native_step = setting.step
         self._attr_mode = "box" if setting.field == "currentLimit" else "slider"
 
     @property
+    def range_metadata(self):
+        return self.settings.values.get("controlItemRanges")
+
+    @property
+    def available(self):
+        return super().available and (
+            self.setting.field != "currentLimit"
+            or current_writable(self.settings.values.get("currentLimit"), self.range_metadata)
+        )
+
+    @property
+    def native_min_value(self):
+        if self.setting.field == "currentLimit":
+            try:
+                return current_bounds(self.range_metadata)[0]
+            except ValueError:
+                return 0.0
+        return self.setting.minimum
+
+    @property
+    def extra_state_attributes(self):
+        attributes = super().extra_state_attributes
+        if self.setting.field == "currentLimit":
+            attributes.update(current_attributes(
+                self.settings.values.get("currentLimit"), self.range_metadata
+            ))
+        return attributes
+
+    @property
     def native_max_value(self):
+        if self.setting.field == "currentLimit":
+            try:
+                return current_bounds(self.range_metadata)[1]
+            except ValueError:
+                return 2000.0
         if self.setting.field == "rated_max_charge_power":
             for key in ("hw_max_charge_power", "max_charge_power"):
                 value = number(self.settings.values.get(key))
@@ -418,9 +494,18 @@ class CloudSettingNumber(CloudSettingEntity, NumberEntity):
 
     @property
     def native_value(self):
+        if self.setting.field == "currentLimit":
+            return observed_current(self.reported)
         return number(self.reported)
 
     async def async_set_native_value(self, value):
+        if self.setting.field == "currentLimit":
+            try:
+                value = validate_current_write(self.settings.values.get("currentLimit"), value, self.range_metadata)
+            except ValueError as error:
+                raise operation_error(error) from error
+            await self.write(value)
+            return
         parsed = number(value)
         if (
             parsed is None
