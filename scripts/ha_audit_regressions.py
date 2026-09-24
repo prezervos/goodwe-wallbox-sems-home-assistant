@@ -60,6 +60,7 @@ async def publication_race():
             await finish.wait()
 
         owner.transport = SimpleNamespace(
+            epoch=1,
             available=True,
             observed_at=0,
             latest=NativeStatus(
@@ -77,9 +78,9 @@ async def publication_race():
         owner.cloud_settings.request_refresh = Mock()
         sensor = ValueSensor(owner, SERIAL + "_power", "power", "power", "kW", "power")
         polling = asyncio.create_task(owner.async_refresh())
-        await entered.wait()
+        await asyncio.wait_for(entered.wait(), timeout=10)
         moving = asyncio.create_task(owner._set_local(False))
-        await restoring.wait()
+        await asyncio.wait_for(restoring.wait(), timeout=10)
         report.set()
         await polling
         result = {
