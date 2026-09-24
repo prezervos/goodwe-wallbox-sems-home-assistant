@@ -345,7 +345,7 @@ async def modbus_fields_and_services():
                 number.SemsCurrentLimitNumber,
                 "async_set_native_value",
                 8,
-                "_pending_value",
+                None,
             ),
             (
                 number.SemsOutputPowerLimitNumber,
@@ -391,9 +391,15 @@ async def modbus_fields_and_services():
             current.entity.hass = hass
             current.entity.async_write_ha_state = Mock()
             current.action, current.argument = action, argument
+            observed = current.entity.native_value if pending is None else None
             with pytest.raises(HomeAssistantError):
                 await hass.services.async_call("audit", "write", {}, blocking=True)
-            assert getattr(current.entity, pending) is None, cls.__name__
+            if pending is None:
+                # Current-limit controls publish readback only, not optimistic intent.
+                assert current.entity.native_value == observed, cls.__name__
+                assert not hasattr(current.entity, "_pending_value")
+            else:
+                assert getattr(current.entity, pending) is None, cls.__name__
         # An explicit Stop must still reach the client exactly once, even when
         # telemetry is contradictory and the switch already appears off.
         client.write_start_stop.reset_mock(return_value=True)

@@ -247,8 +247,14 @@ class CloudSettings:
     def observe_mode(self, mode):
         """Refresh mode-specific configuration after an observed mode change."""
         if mode is not None and mode != self._observed_mode:
+            previous = self._observed_mode
             self._observed_mode = mode
-            self.invalidate()
+            # The first telemetry report initializes the mode; it must not
+            # discard the configuration read already scheduled during setup.
+            if previous is not None or (
+                self.valid and self.values.get("_reported_charge_mode") != mode
+            ):
+                self.invalidate()
             self.request_refresh()
 
     def request_refresh(self):

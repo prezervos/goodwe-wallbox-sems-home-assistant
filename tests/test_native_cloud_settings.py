@@ -638,3 +638,22 @@ async def test_control_write_invalidates_configuration_before_telemetry_refresh(
         await entity.submit(key, 6, write)
     assert invalidated == [True]
     assert entity.reported_power_limit == 5
+
+
+@pytest.mark.asyncio
+async def test_initial_mode_does_not_discard_pending_configuration_read():
+    instance = owner()
+    instance.cloud_settings.request_refresh = Mock()
+
+    async def execute(function, *args):
+        data = function(*args)
+        instance.cloud_settings.observe_mode(0)
+        return data
+
+    instance.hass.async_add_executor_job = execute
+    await instance.cloud_settings.refresh()
+    assert instance.cloud_settings.valid
+    assert instance.cloud_settings.next_refresh > 0
+    instance.cloud_settings.observe_mode(1)
+    assert not instance.cloud_settings.valid
+    assert instance.cloud_settings.next_refresh == 0
