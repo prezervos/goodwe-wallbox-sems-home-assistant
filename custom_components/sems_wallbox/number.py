@@ -22,6 +22,7 @@ from .operation_budget import async_execute
 from .const import DOMAIN, CONN_TYPE_MODBUS, CAP_OUTPUT_POWER_SETTING, CAP_DYNAMIC_LOAD_CONTROL
 from .charge_mode_policy import mode_setting_write
 from .coordinator import SemsUpdateCoordinator
+from .wallbox_modbus import BREAKER_CURRENT_MIN, BREAKER_CURRENT_MAX
 from .ui_errors import operation_error
 
 _LOGGER = logging.getLogger(__name__)
@@ -872,16 +873,16 @@ class ModbusBatteryDischargeSocNumber(_ModbusNumber):
 
 
 class ModbusCurrentLimitNumber(_ModbusNumber):
-    """Import current limit in amps (reg 10026). Range [6, 32] A."""
+    """Household breaker current (reg 10026), not the EV charging current."""
 
     _attr_translation_key = "current_limit"
     _attr_device_class = NumberDeviceClass.CURRENT
     _attr_native_unit_of_measurement = UnitOfElectricCurrent.AMPERE
-    _attr_native_min_value = 6.0
-    _attr_native_max_value = 32.0
+    _attr_native_min_value = float(BREAKER_CURRENT_MIN)
+    _attr_native_max_value = float(BREAKER_CURRENT_MAX)
     _attr_native_step = 1.0
     _attr_entity_category = EntityCategory.CONFIG
-    _attr_mode = "slider"
+    _attr_mode = "box"
 
     @property
     def unique_id(self) -> str:
@@ -893,4 +894,4 @@ class ModbusCurrentLimitNumber(_ModbusNumber):
         return float(v) if v is not None else None
 
     def _do_write(self, value: float) -> bool:
-        return self._client.write_breaker_current(int(value))
+        return self._client.write_breaker_current(value)

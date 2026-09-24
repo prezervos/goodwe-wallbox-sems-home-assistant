@@ -110,6 +110,7 @@ async def check_modbus_zero_power_setup(hass):
         "set_charge_power": 0.0, "chargeMode": 0, "status": "available",
         "modbus_status_raw": 0, "modbus_status_name": "idle_no_plug",
         "modbus_power": 0.0, "modbus_car_connected": 0,
+        "modbus_breaker_current": 63,
     }
     with patch("custom_components.sems_wallbox.WallboxModbusClient", return_value=client):
         try:
@@ -123,6 +124,12 @@ async def check_modbus_zero_power_setup(hass):
             assert await store.async_load() is None
             assert any(state.attributes.get("device_class") == "power"
                        for state in hass.states.async_all("number"))
+            current = [state for state in hass.states.async_all("number")
+                       if state.attributes.get("unit_of_measurement") == "A"]
+            assert len(current) == 1 and float(current[0].state) == 63
+            assert current[0].attributes["min"] == 0
+            assert current[0].attributes["max"] == 2000
+            assert current[0].attributes["mode"] == "box"
             # Existing intent must still win after a reload with the same zero report.
             await owner.charge_mode_policy.async_seed_power(4.2)
             assert await hass.config_entries.async_reload(entry.entry_id)

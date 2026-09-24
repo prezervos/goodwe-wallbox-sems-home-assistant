@@ -23,6 +23,28 @@ The reporter's log does not include the register value, so hardware confirmation
 is still needed. This fix is the 3.0.3b1 prerelease candidate for reporter validation; it is not
 in a stable release. No production deployment accompanies this candidate.
 
+### Household breaker range and Modbus troubleshooting (3.0.3b2)
+
+Protocol v1.0.15 documents register 10026 as Household Circuit Breaker Rated
+Current, 0–2000 A. Replace the Modbus entity's assumed 6–32 A slider with a
+0–2000 A numeric box, preserving identity and reported values. Reject invalid
+or fractional writes; never silently clamp to 32 A. This is a protocol range,
+not a recommended installation setting. Cloud API limits are not inferred from
+this Modbus register specification.
+
+Add a bounded, thread-safe, cached trace of connection events, FC3 reads, FC6
+write attempts/results (including the existing Start pre-reset), and allowlisted
+numeric status/CP/communication/fault observations. The last 128 events and
+since-load request counters are available in downloaded HA diagnostics; debug
+logging records the same events with timestamps. No extra polling, raw register
+payloads, account data, host or serial is added to this trace. Reload resets it.
+Diagnostics are observational and cannot establish another client's activity.
+
+The reporter confirmed beta1 setup succeeds and the reported power limit is
+indeed 0.0 kW. Reload confirmation remains pending. Beta2 addresses the reported
+63 A UI mismatch and gathers evidence for the separate charging interruptions;
+it does not claim those interruptions are fixed. See [the test procedure](MODBUS_TROUBLESHOOTING.md).
+
 ## Remaining investigation
 
 - Modbus connection-triggered charging interruptions reported in #16: removing

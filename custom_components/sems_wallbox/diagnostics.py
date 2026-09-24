@@ -51,6 +51,9 @@ async def async_get_config_entry_diagnostics(hass, entry):
         else ("modbus" if runtime.get("connection_type") == "modbus" else "cloud"),
         "measurements": {key: _number(values.get(key)) for key in _NUMERIC_FIELDS},
     }
+    modbus = runtime.get("modbus_client")
+    if modbus is not None:
+        result["modbus"] = modbus.diagnostics()
     policy = getattr(coordinator, "charge_mode_policy", None)
     if policy is not None:
         result["requested"] = {

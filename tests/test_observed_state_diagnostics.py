@@ -154,3 +154,22 @@ def test_idle_connector_mapping_rejects_unverified_or_conflicting_reports(overri
 def test_last_session_does_not_override_current_vehicle(last_status, workstate, expected):
     values = {"workstate": workstate, "last_charge_work_status": last_status}
     assert state.vehicle_state(values, local=False) == expected
+
+
+async def test_modbus_diagnostics_exports_cached_trace_without_requests():
+    from unittest.mock import Mock
+
+    client_module = importlib.import_module(PACKAGE + ".wallbox_modbus")
+    client = client_module.WallboxModbusClient("private-host", expected_serial="private-serial")
+    client._make_client = Mock(side_effect=AssertionError("Diagnostic export must not connect"))
+    entry = SimpleNamespace(entry_id="modbus", data={"wallbox_serial_No": "private-serial"})
+    owner = SimpleNamespace(data={"private-serial": {"set_charge_power": 0}}, last_update_success=True)
+    hass = SimpleNamespace(data={"sems_wallbox": {"modbus": {
+        "coordinator": owner, "modbus_client": client, "connection_type": "modbus",
+    }}})
+    result = await diagnostics.async_get_config_entry_diagnostics(hass, entry)
+    assert result["transport"] == "modbus"
+    assert result["modbus"] == {"connection_attempts": 0, "read_requests": 0,
+                                "write_requests": 0, "recent_events": []}
+    assert "private-" not in json.dumps(result)
+    client._make_client.assert_not_called()

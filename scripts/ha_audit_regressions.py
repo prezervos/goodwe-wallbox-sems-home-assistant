@@ -1,6 +1,7 @@
 """Real HA publication race and installed pymodbus lost-ACK replay; loopback only."""
 
 import asyncio
+import json
 import socket
 import struct
 import sys
@@ -244,9 +245,16 @@ async def modbus_wire_checks():
         assert writes == [(10060, 1), (10060, 2)], writes
         identity = SERIAL
         assert await asyncio.to_thread(client.write_start_stop, False)
+        assert await asyncio.to_thread(client.write_breaker_current, 63)
         client.close()
         assert not await asyncio.to_thread(client.write_start_stop, True)
-        assert writes == [(10060, 1), (10060, 2), (10060, 1)], writes
+        assert writes == [(10060, 1), (10060, 2), (10060, 1), (10026, 63)], writes
+        trace = client.diagnostics()
+        assert trace["write_requests"] == len(writes)
+        assert [(event["address"], event["value"]) for event in trace["recent_events"]
+                if event["event"] == "write_request"] == writes
+        assert trace["connection_attempts"] > 0 and trace["read_requests"] > 0
+        assert SERIAL not in json.dumps(trace) and "127.0.0.1" not in json.dumps(trace)
         print(
             "PASS: one uncertain Start; wrong/missing identity and closed-client writes blocked"
         )
