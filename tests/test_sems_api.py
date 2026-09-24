@@ -236,11 +236,31 @@ class TestChangeStatusGen2:
         assert post.call_count == 2
         renew.assert_called_once()
 
-    def test_network_error_returns_false(self):
+    @pytest.mark.parametrize("action", ["start", "stop"])
+    @pytest.mark.parametrize("failure", ["connection", "timeout", 429, 500, 502, 503, 504])
+    def test_transport_failure_does_not_replay_command(self, action, failure):
+        import requests
+
         api = self._setup_api()
-        with patch("requests.post", side_effect=OSError("connection refused")):
-            result = api.change_status_gen2("SN001", "start")
-        assert result is False
+        if failure == "connection":
+            request = patch("requests.post", side_effect=requests.ConnectionError("connection lost"))
+        elif failure == "timeout":
+            request = patch("requests.post", side_effect=requests.Timeout("response lost"))
+        else:
+            response = requests.Response()
+            response.status_code = failure
+            response.headers["Retry-After"] = "600"
+            response._content = b'{"message": "Please wait"}'
+            request = patch("requests.post", return_value=response)
+        with request as post:
+            if failure in (429, 503):
+                with pytest.raises(sems_api_module.CloudRateLimitedError):
+                    api.change_status_gen2("SN001", action)
+            else:
+                assert api.change_status_gen2("SN001", action) is False
+        post.assert_called_once()
+        assert api.login_attempts == 0
+        api.close()
 
 
 
@@ -349,11 +369,15 @@ def test_failed_login_backoff_is_shared_and_renew_cannot_bypass(renew):
             api.fetch_mqtt_settings()
         assert post.call_count == 2
         assert api._web_login_retry_at == 130
+        assert api.login_attempts == 1
+        assert api.successful_logins == 0
+        assert api.last_login_at is None
     with patch.object(sems_api_module.time, "monotonic", return_value=130), patch(
         "requests.post", return_value=_login_response(None, code="100004")
     ) as post:
         assert not api._ensure_web_token()
         assert api._web_login_retry_at == 190
+        assert api.login_attempts == 2
         assert post.call_count == 2
     with patch.object(sems_api_module.time, "monotonic", return_value=190), patch(
         "requests.post", return_value=_login_response({"token": "fresh"})
@@ -361,6 +385,11 @@ def test_failed_login_backoff_is_shared_and_renew_cannot_bypass(renew):
         assert api._ensure_web_token()
         assert api._web_login_retry_at == 0
         assert api._web_login_delay == 30
+        assert api.login_attempts == 3
+        assert api.successful_logins == 1
+        assert api.last_login_at == 190
+        assert api._ensure_web_token()
+        assert api.login_attempts == 3  # Cached access is not another login.
 
 
 def test_explicit_auth_rejection_is_not_retried_until_credentials_replaced():
@@ -403,6 +432,7 @@ def test_common_login_uses_web_client_and_returned_regional_gateway(region):
     args = post.call_args
     assert args.args[0] == "https://www.semsportal.com/api/v3/Common/CrossLogin"
     assert json.loads(args.kwargs["headers"]["token"])["client"] == "semsPlusWeb"
+    assert args.kwargs["headers"]["User-Agent"] == sems_api_module.SEMS_USER_AGENT
     assert args.kwargs["json"] == {"account":"user@example.com","pwd":"password123"}
     assert api._eu_url("sems-remote/api/ev-charger/detail") == (
         f"https://{region}-gateway.semsportal.com/web/sems/sems-remote/api/ev-charger/detail"
@@ -444,7 +474,7 @@ def test_original_login_fallback_preserves_client_and_region(region):
     assert post.call_count == 2
     call = post.call_args_list[1]
     assert call.args[0] == sems_api_module._FallbackLoginURL
-    assert call.kwargs["headers"]["User-Agent"] == sems_api_module._LoginUserAgent
+    assert call.kwargs["headers"]["User-Agent"] == sems_api_module.SEMS_USER_AGENT
     assert call.kwargs["headers"]["client"] == "semsPlusWeb"
     assert json.loads(call.kwargs["headers"]["token"])["token"] == ""
     assert call.kwargs["json"]["pwd"] == base64.b64encode(
@@ -556,3 +586,17 @@ def test_cancelled_operation_never_attempts_fallback():
     with patch.object(sems_api_module, "request_timeout", side_effect=sems_api_module.BudgetCancelled()), patch("requests.post") as post:
         with pytest.raises(sems_api_module.BudgetCancelled):api._ensure_web_token()
         post.assert_not_called()
+
+
+def test_web_headers_override_requests_default_user_agent_without_changing_client():
+    import requests
+    api = _make_api()
+    api._web_token = {"uid": "u", "token": "fake", "client": "semsPlusWeb"}
+    with requests.Session() as session:
+        request = session.prepare_request(requests.Request(
+            "POST", "https://example.invalid", headers=api._build_web_headers()
+        ))
+    assert request.headers["User-Agent"] == sems_api_module.SEMS_USER_AGENT
+    assert request.headers["User-Agent"].startswith("Mozilla/5.0")
+    assert request.headers["client"] == "semsPlusWeb"
+    assert json.loads(request.headers["token"])["token"] == "fake"

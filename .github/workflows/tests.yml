@@ -63,6 +63,7 @@ jobs:
       - name: MQTT fallback, lifecycle overlap and minimum-power guards
         run: |
           python scripts/ha_cloud_push_polling_smoke.py custom_components
+          python scripts/ha_cloud_push_polling_smoke.py custom_components --cooldown-only
           python scripts/ha_runtime_smoke.py custom_components --mqtt-only
           python scripts/ha_native_runtime_smoke.py custom_components --lifecycle
           python scripts/ha_runtime_smoke.py custom_components --minimum-power-only

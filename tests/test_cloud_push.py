@@ -163,3 +163,55 @@ async def test_tcp_disconnect_and_cloud_reconnect_and_unload():
     await push.close()
     assert not push.connected and push.task is None
     await push.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("finish", ["complete", "unload"])
+async def test_hints_during_slow_refresh_are_coalesced_and_unload_drains(finish):
+    """Events during HTTP work share one task; unload owns its cancellation."""
+    push = subject()
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    exited = asyncio.Event()
+
+    async def slow_refresh():
+        entered.set()
+        try:
+            await release.wait()
+        finally:
+            exited.set()
+
+    push.owner.async_request_refresh.side_effect = slow_refresh
+    try:
+        assert event(push, tid="initial")
+        task = push._refresh_task
+        await asyncio.wait_for(entered.wait(), 1)
+        for index in range(20):
+            assert event(push, tid=f"during-read-{index}")
+        assert push._refresh_task is task
+        assert push.refresh_count == 1
+        if finish == "complete":
+            release.set()
+            await task
+            push.owner.async_request_refresh.assert_awaited_once()
+            # A later hint still works; coalescing cannot permanently mute push.
+            assert event(push, tid="after-read")
+            await push._refresh_task
+            assert push.owner.async_request_refresh.await_count == 2
+        else:
+            await push.close()
+            assert task.done() and exited.is_set()
+            assert push._refresh_task is None
+            assert not event(push, tid="late-old-listener")
+            push.owner.async_request_refresh.assert_awaited_once()
+            replacement = subject()
+            try:
+                assert event(replacement, tid="initial")
+                await replacement._refresh_task
+                replacement.owner.async_request_refresh.assert_awaited_once()
+                push.owner.async_request_refresh.assert_awaited_once()
+            finally:
+                await replacement.close()
+    finally:
+        release.set()
+        await push.close()

@@ -1,6 +1,9 @@
 {
   "title": "GoodWe Wallbox",
   "exceptions": {
+    "cloud_rate_limited": {
+      "message": "GoodWe dočasně omezil požadavky do cloudu. Zkuste to znovu za {seconds} sekund. Příkaz nebyl opakován."
+    },
     "set_charge_mode_failed_fast": {
       "message": "Přepnutí do režimu Rychle se nepodařilo potvrdit. Před opakováním ověřte skutečný režim wallboxu."
     },
@@ -28,6 +31,9 @@
     "stop_before_mode": {
       "message": "Před změnou režimu zastavte nabíjení."
     },
+    "start_requires_idle": {
+      "message": "Požadavek na spuštění nebyl odeslán, protože wallbox nepotvrdil zastavení. Zkontrolujte stav nabíjení a zkuste to znovu, až bude wallbox v klidu."
+    },
     "start_pending": {
       "message": "Spuštění nabíjení již probíhá. Počkejte na výsledek."
     },
@@ -43,26 +49,11 @@
     "start_unconfirmed": {
       "message": "Spuštění nebylo potvrzeno a nebylo opakováno. Zkontrolujte skutečný stav nabíjení."
     },
-    "pending_controls_expired": {
-      "message": "Platnost odložených požadavků vypršela, protože se nepodařilo včas ověřit spojení. Zkontrolujte skutečný stav nabíjení a zadejte požadavek znovu."
-    },
-    "pending_controls_failed": {
-      "message": "Odložené požadavky wallboxu se nepodařilo dokončit. Zkontrolujte spojení a skutečný stav nabíjení před zadáním nového požadavku."
-    },
     "minimum_power_cloud_fast": {
       "message": "Cloudové ovládání tohoto nastavení není u tohoto wallboxu v režimu Rychle podporováno. Zastavte nabíjení a počkejte na klidový stav, potom změnu proveďte přes místní TCP nebo SolarGo. Hlášený stav zůstává viditelný."
     },
     "minimum_power_stop_first": {
       "message": "Toto nastavení lze změnit pouze v klidu wallboxu. Zastavte nabíjení a počkejte na potvrzení."
-    },
-    "cloud_control_switching": {
-      "message": "Cloudové ovládání je nedostupné. Před odesláním posledního požadavku na nabíjení přepínám na místní TCP."
-    },
-    "cloud_control_tcp_ready": {
-      "message": "Místní TCP je připravené. Nyní bude zpracován poslední požadavek na nabíjení; výsledek ověřte podle stavu nabíjení."
-    },
-    "cloud_control_failed": {
-      "message": "Cloudové ovládání nebo přepnutí na TCP selhalo. Čekající požadavky byly zrušeny; před dalším pokusem ověřte stav wallboxu."
     }
   },
   "options": {

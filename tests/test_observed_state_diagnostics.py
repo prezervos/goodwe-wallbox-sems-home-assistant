@@ -100,15 +100,24 @@ async def test_diagnostics_never_copies_secrets_or_free_text():
     )
     coordinator.cloud_push = SimpleNamespace(
         connected=True, refresh_count=2, last_event_at=None,
+        subscription_count=3, last_subscription_at=None,
         event_counts={"telemetry": 1, "charging": 2},
         settings={"password": "secret-password"},
         polling=SimpleNamespace(diagnostics=lambda: {"backup_polling": False}),
+    )
+    coordinator.cloud = SimpleNamespace(
+        _web_token={"token": "secret-token"}, _web_login_retry_at=0,
+        _web_login_auth_error=False, login_attempts=2, successful_logins=2,
+        session_recovery_attempts=1, last_login_at=None,
     )
     hass = SimpleNamespace(
         data={"sems_wallbox": {"entry": {"coordinator": coordinator}}}
     )
     result = await diagnostics.async_get_config_entry_diagnostics(hass, entry)
-    assert result["cloud_push"] == {"connected": True, "refresh_count": 2, "telemetry_events": 1, "charging_events": 2, "last_event_age_seconds": None, "polling": {"backup_polling": False}}
+    assert result["cloud_push"] == {"connected": True, "subscription_count": 3, "last_subscription_age_seconds": None, "refresh_count": 2, "telemetry_events": 1, "charging_events": 2, "last_event_age_seconds": None, "polling": {"backup_polling": False}}
+    assert result["cloud_login"]["successful_logins"] == 2
+    assert result["cloud_login"]["session_recovery_attempts"] == 1
+    assert "secret-token" not in json.dumps(result)
     assert result["measurements"]["power"] == 4.2
     assert result["measurements"]["fault_code"] is None
     assert result["native"]["protection_issue"] is True

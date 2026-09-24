@@ -18,6 +18,15 @@ module = importlib.import_module(PACKAGE + ".native_control_fallback")
 intent = importlib.import_module(PACKAGE + ".native_intent")
 
 
+@pytest.fixture(autouse=True)
+def no_persistent_notifications(monkeypatch):
+    notification = types.ModuleType("homeassistant.components.persistent_notification")
+    notification.async_create = Mock()
+    monkeypatch.setitem(sys.modules, notification.__name__, notification)
+    yield
+    notification.async_create.assert_not_called()
+
+
 def subject(reply=None):
     async def executor(function):
         return function()
@@ -44,7 +53,6 @@ def subject(reply=None):
     owner._set_local = AsyncMock(side_effect=handover)
     owner.pending_intent = intent.LatestIntent(owner)
     owner.control_fallback = module.ControlFallback(owner)
-    owner.control_fallback._notify = AsyncMock()
     return owner
 
 
@@ -54,9 +62,13 @@ async def finish(owner):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("healthy", [True, False])
+@pytest.mark.parametrize("healthy", [True, False, "rate_limited"])
 async def test_route_is_verified_before_single_dispatch(healthy):
-    owner = subject({"sn": "test"} if healthy else None)
+    owner = subject({"sn": "test"} if healthy is True else None)
+    if healthy == "rate_limited":
+        rate_limit = importlib.import_module(PACKAGE + ".cloud_rate_limit")
+        owner.cloud.get_data_gen2.side_effect = rate_limit.CloudRateLimitedError(60)
+        healthy = False
     operation = AsyncMock()
     assert owner.control_fallback.submit(True, operation)
     operation.assert_not_awaited()
@@ -65,10 +77,9 @@ async def test_route_is_verified_before_single_dispatch(healthy):
     assert owner.local is not healthy
     if healthy:
         owner._set_local.assert_not_awaited()
-        owner.control_fallback._notify.assert_not_awaited()
     else:
         owner._set_local.assert_awaited_once_with(True)
-        assert owner.control_fallback._notify.await_args_list[-1].args == ("cloud_control_tcp_ready",)
+        assert owner.automatic_fallback.reason == "cloud_control_unavailable"
 
 
 @pytest.mark.asyncio

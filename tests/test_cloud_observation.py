@@ -39,6 +39,8 @@ def test_report_timestamp_and_power_are_preserved():
     assert client.read("TEST") == STATUS["data"]
     assert client.read("TEST")["lastUpdate"] == STATUS["data"]["lastUpdate"]
     assert len(session.post.call_args_list) == 3
+    assert all(call.kwargs["headers"]["User-Agent"] == module.SEMS_USER_AGENT
+               for call in session.post.call_args_list)
     assert all(
         call.kwargs["allow_redirects"] is False for call in session.post.call_args_list
     )

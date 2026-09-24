@@ -240,12 +240,13 @@ class TestSetNativeValue:
         """A rejected write restores UI/shared state and schedules a fresh read."""
         entity = _make_entity(chargeMode=0, set_charge_power=7.4)
         entity.api.set_charge_mode_gen2 = MagicMock(return_value=False)
+        entity.coordinator.schedule_delayed_refresh = MagicMock()
         with pytest.raises(HomeAssistantError):
             await entity.async_set_native_value(9.0)
         assert entity.native_value == 7.4
         assert entity.coordinator.data[SAMPLE_SN]["set_charge_power"] == 7.4
         entity.async_write_ha_state.assert_called()
-        entity.hass.async_create_task.assert_called_once()
+        entity.coordinator.schedule_delayed_refresh.assert_called_once_with(3.0)
 
 
     @pytest.mark.asyncio

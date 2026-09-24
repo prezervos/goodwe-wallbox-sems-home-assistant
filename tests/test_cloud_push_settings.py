@@ -64,11 +64,13 @@ def test_regional_frontend_fallback():
     config.text = '{"mqttUrlPolling":{"eu":"wss://eu.iot.goodwe-power.com:8885/mqtt","au":"wss://au.iot.goodwe-power.com/mqtt"}}'
     with patch(
         "requests.get", side_effect=[response(credentials(brokerUrl=None)), config]
-    ):
+    ) as get:
         assert (
             api.fetch_mqtt_settings()["brokerUrl"]
             == "wss://eu.iot.goodwe-power.com:8885/mqtt"
         )
+
+    assert get.call_args_list[-1].kwargs["headers"]["User-Agent"].startswith("Mozilla/5.0")
 
 
 def test_expired_token_retried_once():
@@ -220,6 +222,11 @@ async def test_listener_reconnect_renews_shared_session_and_resubscribes(
             assert get.call_count == 3 + int(discovery_unavailable)
             renew.assert_called_once()
             assert api._web_token["token"] == "new"
+            assert api.login_attempts == api.successful_logins == 1
+            assert api.session_recovery_attempts == 1
+            assert api.last_login_at is not None
+            assert push.subscription_count == 2
+            assert push.last_subscription_at is not None
             assert push.owner.last_update_success
             assert push.owner.update_interval == 30
             assert push.owner.data == {"unchanged": True}

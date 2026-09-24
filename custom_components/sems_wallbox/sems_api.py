@@ -22,21 +22,18 @@ from urllib.parse import urlsplit
 import requests
 from homeassistant import exceptions
 
+from .cloud_http import SEMS_USER_AGENT
+from .cloud_rate_limit import CloudRateLimitedError, CloudRequestGate
 from .cloud_observation import CloudAuthenticationError
 from .operation_budget import BudgetCancelled, request_timeout, retry_delay, serialized_request
 
 _LOGGER = logging.getLogger(__name__)
 
 # Common/CrossLogin issues a SEMS+ web session when client=semsPlusWeb.
-# Prefer the common API. The original endpoint requires a browser-format
-# compatibility User-Agent; use it only for one eligible login fallback.
+# Prefer the common API, with one original-endpoint fallback when eligible.
+# Both use the shared browser-format compatibility header; no browser is used.
 _WebLoginURL = "https://www.semsportal.com/api/v3/Common/CrossLogin"
 _FallbackLoginURL = "https://semsplus.goodwe.com/web/sems/sems-user/api/v1/auth/cross-login"
-# Compatibility header only: no browser or browser cookies are used.
-_LoginUserAgent = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
-)
 
 
 class _LoginFallbackEligible(Exception):
@@ -64,6 +61,7 @@ _SetModeR0305Delay = 2.0   # seconds between R0305 retries
 
 
 _DefaultHeaders = {
+    "User-Agent": SEMS_USER_AGENT,
     "Content-Type": "application/json",
     "Accept": "application/json",
     "token": '{"version":"","client":"semsPlusAndroid","language":"en"}',
@@ -121,7 +119,10 @@ class SemsApi:
     def __init__(self, hass, username, password):
         """Init SEMS API wrapper."""
         from .cloud_observation import CloudObservationReader
-        self._observation_reader = CloudObservationReader(username, password)
+        self._request_gate = CloudRequestGate()
+        self._observation_reader = CloudObservationReader(
+            username, password, request_gate=self._request_gate
+        )
         self._hass = hass
         self._username = username
         self._password = password
@@ -131,6 +132,10 @@ class SemsApi:
         self._web_login_delay = 30.0
         self._web_retry_after = 0.0
         self._web_login_auth_error = False
+        self.login_attempts = 0
+        self.successful_logins = 0
+        self.session_recovery_attempts = 0
+        self.last_login_at = None
         self._web_token: dict | None = None  # semsPlusWeb token for EU gateway
         self._web_api_base: str = _EuGatewayBase  # overridden from login response
         # Gen2: cached plant info (auto-detected or user-supplied)
@@ -160,7 +165,9 @@ class SemsApi:
         self._web_login_auth_error = False
         self._web_token = None
         self._web_api_base = _EuGatewayBase
-        self._observation_reader = CloudObservationReader(username, password)
+        self._observation_reader = CloudObservationReader(
+            username, password, request_gate=self._request_gate
+        )
 
     def close(self) -> None:
         """Close owned HTTP resources after any in-flight web/telemetry request."""
@@ -174,6 +181,7 @@ class SemsApi:
     def _login_request(self, fallback):
         """Build endpoint-specific credentials without changing the session client."""
         headers = {
+            "User-Agent": SEMS_USER_AGENT,
             "Content-Type": "application/json", "Accept": "application/json",
             "token": json.dumps({"version": "", "client": "semsPlusWeb", "language": "en"}),
         }
@@ -187,7 +195,6 @@ class SemsApi:
                                  "client": "semsPlusWeb", "version": "", "language": "en"}),
             "client": "semsPlusWeb", "neutral": "0", "currentlang": "en",
             "x-signature": base64.b64encode(f"{digest}@{ts}".encode()).decode(),
-            "User-Agent": _LoginUserAgent,
         })
         body.update({
             "pwd": base64.b64encode(
@@ -219,7 +226,7 @@ class SemsApi:
         if remaining <= 0:
             return None
         url, headers, body = self._login_request(fallback)
-        resp = requests.post(url, headers=headers, json=body,
+        resp = self._request_gate.request(requests.post, url, raise_on_limit=False, headers=headers, json=body,
                              timeout=request_timeout(min(_RequestTimeout, remaining)))
         if resp.status_code in (401, 403):
             raise CloudAuthenticationError("SEMS authentication was rejected")
@@ -276,7 +283,7 @@ class SemsApi:
         for fallback in (False, True):
             try:
                 return self._login_attempt(fallback, deadline)
-            except (CloudAuthenticationError, BudgetCancelled, TimeoutError):
+            except (CloudAuthenticationError, CloudRateLimitedError, BudgetCancelled, TimeoutError):
                 raise
             except (_LoginFallbackEligible, requests.ConnectionError, requests.Timeout):
                 if not fallback:
@@ -300,6 +307,7 @@ class SemsApi:
         if time.monotonic() < self._web_login_retry_at:
             return False
         self._web_retry_after = 0.0
+        self.login_attempts += 1
         try:
             tok = self._fetch_web_token()
         except CloudAuthenticationError:
@@ -312,12 +320,23 @@ class SemsApi:
             self._web_login_delay = min(self._web_login_delay * 2, 300.0)
             return False
         self._web_token = tok
+        self.successful_logins += 1
+        self.last_login_at = time.monotonic()
         self._web_login_retry_at = 0.0
         self._web_login_delay = 30.0
         api = (tok.get("api") or "").rstrip("/")
         if api:
             self._web_api_base = api
         return True
+
+    def _invalidate_rejected_session(self):
+        """Count server-rejected sessions that initiate bounded recovery.
+
+        Called under the shared request lock. Diagnostics retain counters only,
+        never tokens, credentials or server response bodies.
+        """
+        self.session_recovery_attempts += 1
+        self._web_token = None
 
     def _eu_url(self, path: str) -> str:
         """Build a full EU gateway URL from a relative path."""
@@ -338,6 +357,7 @@ class SemsApi:
         digest = hashlib.sha256(f"{ts}@{uid}@{tok}".encode()).hexdigest()
         x_signature = base64.b64encode(f"{digest}@{ts}".encode()).decode()
         return {
+            "User-Agent": SEMS_USER_AGENT,
             "Content-Type": "application/json",
             "Accept": "application/json",
             "token": json.dumps(self._web_token),
@@ -358,6 +378,8 @@ class SemsApi:
             ok = self._ensure_web_token(renew=True)
             _LOGGER.debug("SEMS authentication result: %s", ok)
             return ok
+        except CloudRateLimitedError:
+            raise
         except Exception as exc:  # noqa: BLE001
             _LOGGER.exception("SEMS Authentication exception: %s", exc)
             return False
@@ -401,7 +423,7 @@ class SemsApi:
                     "Set plant_id manually in integration options.",
                     len(stations),
                 )
-        except (CloudAuthenticationError, BudgetCancelled, TimeoutError):
+        except (CloudAuthenticationError, CloudRateLimitedError, BudgetCancelled, TimeoutError):
             raise
         except Exception as exc:  # noqa: BLE001
             _LOGGER.debug("SEMS plantId auto-detect failed: %s", exc)
@@ -495,7 +517,7 @@ class SemsApi:
             try:
                 set_success = False
                 for attempt in range(1, _SetModeR0305Retries + 2):
-                    resp = requests.post(
+                    resp = self._request_gate.request(requests.post,
                         _eu_set_mode_url,
                         headers=headers,
                         json=payload,
@@ -518,7 +540,7 @@ class SemsApi:
                         _LOGGER.debug(
                             "SEMS gen2 set-mode C0602 (session expired), renewing web token and retrying"
                         )
-                        self._web_token = None
+                        self._invalidate_rejected_session()
                         return self.set_charge_mode_gen2(
                             wallboxSn, mode, chargePower=chargePower,
                             ensure_minimum_charging_power=ensure_minimum_charging_power,
@@ -559,7 +581,7 @@ class SemsApi:
                 return False
         except OutOfRetries:
             raise
-        except (CloudAuthenticationError, BudgetCancelled, TimeoutError):
+        except (CloudAuthenticationError, CloudRateLimitedError, BudgetCancelled, TimeoutError):
             raise
         except Exception as exc:  # noqa: BLE001
             _LOGGER.error("Unable to execute gen2 SetChargeMode command. %s", exc)
@@ -583,7 +605,7 @@ class SemsApi:
                 headers = self._build_web_headers()
             except OutOfRetries as err:
                 raise ConnectionError("Cloud event login unavailable") from err
-            response = requests.get(
+            response = self._request_gate.request(requests.get,
                 self._eu_url("sems-plant/api/second-data/config"),
                 headers=headers, timeout=request_timeout(15),
             )
@@ -592,7 +614,7 @@ class SemsApi:
             if not isinstance(payload, dict):
                 raise ValueError("Invalid cloud event response")
             if str(payload.get("code")) == "C0602" and attempt == 0:
-                self._web_token = None
+                self._invalidate_rejected_session()
                 continue
             if str(payload.get("code")) != "00000":
                 raise ConnectionError("Cloud event credentials unavailable")
@@ -609,7 +631,8 @@ class SemsApi:
             region = host.split("-", 1)[0]
             if region not in {"eu", "au", "hk", "us", "cn"}:
                 raise ValueError("Unknown cloud event region")
-            response = requests.get("https://semsplus.goodwe.com/config.js", timeout=request_timeout(15))
+            response = self._request_gate.request(requests.get, "https://semsplus.goodwe.com/config.js",
+                                                  headers={"User-Agent": SEMS_USER_AGENT}, timeout=request_timeout(15))
             response.raise_for_status()
             match = re.search(r'"mqttUrlPolling"\s*:\s*\{([^}]+)\}', response.text)
             regional = re.search(r'"' + region + r'"\s*:\s*"(wss://[^"\s]+)"',
@@ -655,7 +678,7 @@ class SemsApi:
             _LOGGER.debug(
                 "SEMS gen2 getData: POST %s payload=%s", _eu_detail_url, payload
             )
-            resp = requests.post(
+            resp = self._request_gate.request(requests.post,
                 _eu_detail_url, headers=headers, json=payload, timeout=request_timeout(_RequestTimeout)
             )
             rj = _response_json(resp)
@@ -670,12 +693,12 @@ class SemsApi:
 
             if code == "C0602":
                 _LOGGER.debug("SEMS gen2 getData: C0602, renewing web token")
-                self._web_token = None
+                self._invalidate_rejected_session()
                 if not self._ensure_web_token(renew=True):
                     _LOGGER.error("SEMS gen2 getData: could not renew web token")
                     return None
                 headers = self._build_web_headers()
-                resp = requests.post(
+                resp = self._request_gate.request(requests.post,
                     _eu_detail_url, headers=headers, json=payload, timeout=request_timeout(_RequestTimeout)
                 )
                 rj = _response_json(resp)
@@ -749,7 +772,7 @@ class SemsApi:
             }
             return result
 
-        except (CloudAuthenticationError, BudgetCancelled, TimeoutError):
+        except (CloudAuthenticationError, CloudRateLimitedError, BudgetCancelled, TimeoutError):
             raise
         except Exception as exc:  # noqa: BLE001
             _LOGGER.warning("SEMS gen2 getData failed: %s", exc)
@@ -784,7 +807,7 @@ class SemsApi:
         url = self._eu_url(_PATH_SET_CONFIG)
         _LOGGER.debug("SEMS gen2 set_config: POST %s payload=%s", url, payload)
         try:
-            resp = requests.post(url, headers=headers, json=payload, timeout=request_timeout(_RequestTimeout))
+            resp = self._request_gate.request(requests.post, url, headers=headers, json=payload, timeout=request_timeout(_RequestTimeout))
             _LOGGER.debug(
                 "SEMS gen2 set_config: HTTP %s body=%s", resp.status_code, resp.text[:300]
             )
@@ -792,11 +815,11 @@ class SemsApi:
             code = str(rj.get("code") or "")
             if code == "C0602":
                 _LOGGER.debug("SEMS gen2 set_config: C0602, renewing token and retrying")
-                self._web_token = None
+                self._invalidate_rejected_session()
                 if not self._ensure_web_token(renew=True):
                     return False
                 headers = self._build_web_headers()
-                resp = requests.post(url, headers=headers, json=payload, timeout=request_timeout(_RequestTimeout))
+                resp = self._request_gate.request(requests.post, url, headers=headers, json=payload, timeout=request_timeout(_RequestTimeout))
                 rj = _response_json(resp)
                 code = str(rj.get("code") or "")
             ok = _command_succeeded(rj)
@@ -811,7 +834,7 @@ class SemsApi:
         except requests.exceptions.Timeout:
             _LOGGER.warning("SEMS gen2 set_config timed out (sn=%s)", wallbox_sn)
             return False
-        except (CloudAuthenticationError, BudgetCancelled, TimeoutError):
+        except (CloudAuthenticationError, CloudRateLimitedError, BudgetCancelled, TimeoutError):
             raise
         except Exception as exc:  # noqa: BLE001
             _LOGGER.error("SEMS gen2 set_config failed: %s", exc)
@@ -839,7 +862,7 @@ class SemsApi:
         url = self._eu_url(path)
         _LOGGER.debug("SEMS gen2 %sCharge: POST %s payload=%s", action, url, payload)
         try:
-            resp = requests.post(url, headers=headers, json=payload, timeout=request_timeout(_SetModeTimeout))
+            resp = self._request_gate.request(requests.post, url, headers=headers, json=payload, timeout=request_timeout(_SetModeTimeout))
             _LOGGER.debug(
                 "SEMS gen2 %sCharge: HTTP %s body=%s", action, resp.status_code, resp.text
             )
@@ -847,11 +870,11 @@ class SemsApi:
             code = str(rj.get("code") or "")
             if code == "C0602":
                 _LOGGER.debug("SEMS gen2 %sCharge: C0602, renewing token and retrying", action)
-                self._web_token = None
+                self._invalidate_rejected_session()
                 if not self._ensure_web_token(renew=True):
                     return False
                 headers = self._build_web_headers()
-                resp = requests.post(url, headers=headers, json=payload, timeout=request_timeout(_SetModeTimeout))
+                resp = self._request_gate.request(requests.post, url, headers=headers, json=payload, timeout=request_timeout(_SetModeTimeout))
                 rj = _response_json(resp)
                 code = str(rj.get("code") or "")
             ok = _command_succeeded(rj)
@@ -866,7 +889,7 @@ class SemsApi:
         except requests.exceptions.Timeout:
             _LOGGER.warning("SEMS gen2 %sCharge timed out (sn=%s)", action, wallbox_sn)
             return False
-        except (CloudAuthenticationError, BudgetCancelled, TimeoutError):
+        except (CloudAuthenticationError, CloudRateLimitedError, BudgetCancelled, TimeoutError):
             raise
         except Exception as exc:  # noqa: BLE001
             _LOGGER.error("SEMS gen2 %sCharge failed: %s", action, exc)
@@ -892,7 +915,7 @@ class SemsApi:
         url = self._eu_url(_PATH_GET_LAST_CHARGE)
         params = {"chargeSn": wallbox_sn, "pwId": plant_id}
         try:
-            resp = requests.get(url, headers=headers, params=params, timeout=request_timeout(_RequestTimeout))
+            resp = self._request_gate.request(requests.get, url, headers=headers, params=params, timeout=request_timeout(_RequestTimeout))
             rj = _response_json(resp)
             if _LOGGER.isEnabledFor(logging.DEBUG):
                 _LOGGER.debug(
@@ -902,11 +925,11 @@ class SemsApi:
                 )
             code = str(rj.get("code") or "")
             if code == "C0602":
-                self._web_token = None
+                self._invalidate_rejected_session()
                 if not self._ensure_web_token(renew=True):
                     return None
                 headers = self._build_web_headers()
-                resp = requests.get(url, headers=headers, params=params, timeout=request_timeout(_RequestTimeout))
+                resp = self._request_gate.request(requests.get, url, headers=headers, params=params, timeout=request_timeout(_RequestTimeout))
                 rj = _response_json(resp)
                 if _LOGGER.isEnabledFor(logging.DEBUG):
                     _LOGGER.debug(
@@ -925,7 +948,7 @@ class SemsApi:
                 "last_charge_duration_minutes": log.get("chargeTimeLength"),
                 "last_charge_energy": log.get("currentChargeQuantity"),
             }
-        except (CloudAuthenticationError, BudgetCancelled, TimeoutError):
+        except (CloudAuthenticationError, CloudRateLimitedError, BudgetCancelled, TimeoutError):
             raise
         except Exception as exc:  # noqa: BLE001
             _LOGGER.warning("fetch_last_charge failed: %s", exc)
@@ -946,7 +969,7 @@ class SemsApi:
             return {}
         headers = self._build_web_headers()
         try:
-            resp = requests.get(
+            resp = self._request_gate.request(requests.get,
                 f"{self._eu_url(_PATH_CONTROL_ITEMS)}/{wallbox_sn}",
                 headers=headers,
                 timeout=request_timeout(_RequestTimeout),
@@ -956,7 +979,7 @@ class SemsApi:
             if str(rj.get("code") or "") not in ("00000", "0"):
                 return {}
             return rj.get("data") or {}
-        except (CloudAuthenticationError, BudgetCancelled, TimeoutError):
+        except (CloudAuthenticationError, CloudRateLimitedError, BudgetCancelled, TimeoutError):
             raise
         except Exception as exc:  # noqa: BLE001
             _LOGGER.debug("SEMS fetch_device_info failed: %s", exc)
@@ -975,7 +998,7 @@ class SemsApi:
             return []
         headers = self._build_web_headers()
         try:
-            resp = requests.post(
+            resp = self._request_gate.request(requests.post,
                 self._eu_url(_PATH_STATIONS_PAGE),
                 headers=headers,
                 json={"current": 1, "size": 50},
@@ -1008,7 +1031,7 @@ class SemsApi:
                 if sid:
                     result.append({"id": sid, "name": name, **r})
             return result
-        except (CloudAuthenticationError, BudgetCancelled, TimeoutError):
+        except (CloudAuthenticationError, CloudRateLimitedError, BudgetCancelled, TimeoutError):
             raise
         except Exception as exc:  # noqa: BLE001
             _LOGGER.error("SEMS fetch_stations failed: %s", exc)
@@ -1037,7 +1060,7 @@ class SemsApi:
         if station_id:
             payload["stationId"] = station_id
         try:
-            resp = requests.post(
+            resp = self._request_gate.request(requests.post,
                 self._eu_url(_PATH_CENTRALIZED_PAGE),
                 headers=headers,
                 json=payload,
@@ -1071,7 +1094,7 @@ class SemsApi:
                 or []
             )
             return records if isinstance(records, list) else []
-        except (CloudAuthenticationError, BudgetCancelled, TimeoutError):
+        except (CloudAuthenticationError, CloudRateLimitedError, BudgetCancelled, TimeoutError):
             raise
         except Exception as exc:  # noqa: BLE001
             _LOGGER.error("SEMS fetch_ev_chargers failed: %s", exc)

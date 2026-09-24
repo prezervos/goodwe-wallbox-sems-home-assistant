@@ -22,12 +22,6 @@ def subject(monkeypatch):
     notifications = types.ModuleType("homeassistant.components.persistent_notification")
     notifications.async_create = Mock()
     monkeypatch.setitem(sys.modules, notifications.__name__, notifications)
-    translations = types.ModuleType("homeassistant.helpers.translation")
-    async def translated(*args):
-        return {"component.sems_wallbox.exceptions." + key + ".message": key
-                for key in ("pending_controls_failed", "pending_controls_expired")}
-    translations.async_get_translations = translated
-    monkeypatch.setitem(sys.modules, translations.__name__, translations)
     owner = types.SimpleNamespace(
         transitioning=True, local=False, cloud_restored_at=1,
         last_update_success=False, _closed=False,
@@ -97,7 +91,7 @@ async def test_clicks_do_not_extend_batch_expiry(subject):
     pending.batch_deadline = time.monotonic()-1
     await asyncio.wait_for(pending.task, 1)
     assert pending.error == "expired" and not pending.pending
-    notices.async_create.assert_called_once()
+    notices.async_create.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -111,7 +105,7 @@ async def test_restart_discards_pending_start(subject):
 
 
 @pytest.mark.asyncio
-async def test_failed_prerequisite_cancels_pending_start(subject):
+async def test_failed_prerequisite_cancels_pending_start(subject, caplog):
     pending, notices = subject
     async def failed():raise ConnectionError("Mode not confirmed")
     async def forbidden():raise AssertionError("Must not start after failed preparation")
@@ -120,7 +114,9 @@ async def test_failed_prerequisite_cancels_pending_start(subject):
     ready(pending)
     await asyncio.wait_for(pending.task, 1)
     assert pending.error == "operation_failed" and not pending.pending
-    notices.async_create.assert_called_once()
+    notices.async_create.assert_not_called()
+    assert "Deferred wallbox mode operation failed" in caplog.text
+    assert "Mode not confirmed" in caplog.text
 
 
 @pytest.mark.asyncio
@@ -148,33 +144,6 @@ def test_healthy_connection_does_not_defer_normal_controls(subject):
 
 
 @pytest.mark.asyncio
-async def test_new_request_during_error_notification_is_not_stranded(subject, monkeypatch):
-    pending, _ = subject
-    entered, release = asyncio.Event(), asyncio.Event()
-    translation = sys.modules["homeassistant.helpers.translation"]
-    original = translation.async_get_translations
-
-    async def translated(*args):
-        entered.set()
-        await release.wait()
-        return await original(*args)
-
-    monkeypatch.setattr(translation, "async_get_translations", translated)
-    calls = []
-    async def failed():raise ConnectionError("setting failed")
-    async def stop():calls.append("stop")
-    pending.submit("mode", 1, failed)
-    ready(pending)
-    first = pending.task
-    await asyncio.wait_for(entered.wait(), 1)
-    pending.submit("charging", False, stop)
-    release.set()
-    await asyncio.wait_for(first, 1)
-    await asyncio.wait_for(pending.task, 1)
-    assert calls == ["stop"] and not pending.pending
-
-
-@pytest.mark.asyncio
 async def test_external_task_cancellation_cannot_spawn_another_worker(subject):
     pending, _ = subject
     async def forbidden():raise AssertionError("Cancelled intent must not execute")
@@ -184,3 +153,118 @@ async def test_external_task_cancellation_cannot_spawn_another_worker(subject):
     task.cancel()
     await asyncio.gather(task, return_exceptions=True)
     assert not pending.pending and pending.task is task and task.cancelled()
+
+
+@pytest.mark.asyncio
+async def test_duplicate_deferred_start_does_not_cancel_inflight_preparation(subject):
+    pending, notices = subject
+    entered, release = asyncio.Event(), asyncio.Event()
+    calls = []
+
+    async def start():
+        calls.append("start")
+        entered.set()
+        await release.wait()
+
+    assert pending.submit("charging", True, start)
+    ready(pending)
+    await asyncio.wait_for(entered.wait(), 1)
+    version = pending.version
+    invalidations = pending.owner.charge_mode_policy.invalidate.call_count
+    for _ in range(10):
+        assert pending.submit("charging", True, start)
+    assert pending.version == version
+    assert pending.owner.charge_mode_policy.invalidate.call_count == invalidations
+    release.set()
+    await asyncio.wait_for(pending.task, 1)
+    assert calls == ["start"] and not pending.pending and pending.error is None
+    notices.async_create.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("key", ["power", "mode", "stop"])
+@pytest.mark.parametrize("translated", [False, True])
+async def test_pre_delivery_supersession_preserves_latest_choices(subject, key, translated):
+    pending, notices = subject
+    policy_module = importlib.import_module(PACKAGE + ".charge_mode_policy")
+    from unittest.mock import AsyncMock
+    entered, release = asyncio.Event(), asyncio.Event()
+    state = types.SimpleNamespace(mode=0, power=4.2)
+    calls = []
+
+    async def read():
+        entered.set()
+        await release.wait()
+        return policy_module.ModeObservation(state.mode, power=state.power)
+
+    async def start():
+        calls.append("start")
+        return True
+
+    async def stop():
+        calls.append("stop")
+        return True
+
+    async def mode(value, before):
+        state.mode = value
+        calls.append("mode")
+        return True
+
+    async def power():
+        state.power = 5.0
+        calls.append("power")
+        return True
+
+    adapter = types.SimpleNamespace(read=read, start=start, stop=stop, write_mode=mode)
+    policy = policy_module.ChargeModePolicy(adapter, types.SimpleNamespace(async_save=AsyncMock()),
+                                           enabled=True, initial_mode=0, timeout=2)
+    pending.owner.charge_mode_policy = policy
+
+    async def initial_start():
+        try:
+            await policy.async_start()
+        except policy_module.RequestSuperseded as exc:
+            if not translated:
+                raise
+            error = RuntimeError("Translated service error")
+            error.translation_key = "request_superseded"
+            raise error from exc
+
+    pending.submit("charging", True, initial_start)
+    ready(pending)
+    await entered.wait()
+    if key == "power":
+        pending.submit(key, 5.0, lambda: policy.async_setting_write(power, desired_power=5.0))
+    elif key == "mode":
+        pending.submit(key, 1, lambda: policy.async_select_mode(1))
+    else:
+        pending.submit("charging", False, policy.async_stop)
+    release.set()
+    await asyncio.wait_for(pending.task, 2)
+    assert calls == (["power", "start"] if key == "power" else [key])
+    assert pending.error is None and not pending.pending
+    notices.async_create.assert_not_called()
+
+
+@pytest.mark.parametrize("key,value", [("power", 5.0), ("mode", 1)])
+@pytest.mark.parametrize("new_start", [False, True])
+async def test_failed_setting_preserves_only_newer_stop(subject, key, value, new_start):
+    pending, notices = subject
+    entered, release = asyncio.Event(), asyncio.Event()
+    calls = []
+    async def setting():
+        calls.append(key)
+        entered.set()
+        await release.wait()
+        raise ConnectionError("Connection lost after setting write")
+    async def control():
+        calls.append("start" if new_start else "stop")
+    assert pending.submit(key, value, setting)
+    ready(pending)
+    await entered.wait()
+    assert pending.submit("charging", new_start, control)
+    release.set()
+    await asyncio.wait_for(pending.task, 1)
+    assert calls == ([key] if new_start else [key, "stop"])
+    assert pending.error == "operation_failed" and not pending.pending
+    notices.async_create.assert_not_called()

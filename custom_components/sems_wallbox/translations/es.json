@@ -1,6 +1,9 @@
 {
   "title": "GoodWe Wallbox",
   "exceptions": {
+    "cloud_rate_limited": {
+      "message": "GoodWe ha limitado temporalmente las solicitudes a la nube. Inténtelo de nuevo en {seconds} segundos. El comando no se ha repetido."
+    },
     "set_charge_mode_failed_fast": {
       "message": "No se pudo confirmar el cambio al modo Rápido. Compruebe el modo real del cargador antes de volver a intentarlo."
     },
@@ -28,6 +31,9 @@
     "stop_before_mode": {
       "message": "Detenga la carga antes de cambiar el modo de carga."
     },
+    "start_requires_idle": {
+      "message": "No se envió la orden de inicio porque el cargador no ha confirmado que esté detenido. Compruebe el estado de carga e inténtelo de nuevo cuando esté en reposo."
+    },
     "start_pending": {
       "message": "Ya hay un inicio de carga en curso. Espere su resultado."
     },
@@ -43,26 +49,11 @@
     "start_unconfirmed": {
       "message": "El inicio no se confirmó ni se reintentó. Compruebe el estado real de carga."
     },
-    "pending_controls_expired": {
-      "message": "Las órdenes pendientes caducaron porque no se pudo verificar la conexión a tiempo. Compruebe el estado real de carga y envíe una nueva solicitud."
-    },
-    "pending_controls_failed": {
-      "message": "No se pudieron completar las órdenes pendientes. Compruebe la conexión y el estado real de carga antes de enviar otra solicitud."
-    },
     "minimum_power_cloud_fast": {
       "message": "El control de este ajuste mediante la nube no es compatible con el modo Rápido de este cargador. Detenga la carga y espere a que el cargador esté en reposo. Después, cambie el ajuste mediante TCP local o SolarGo. El estado comunicado sigue siendo visible."
     },
     "minimum_power_stop_first": {
       "message": "Este ajuste solo se puede cambiar cuando el cargador está en reposo. Detenga la carga y espere la confirmación."
-    },
-    "cloud_control_switching": {
-      "message": "El control en la nube no está disponible. Se está cambiando a TCP local antes de enviar la última solicitud de carga."
-    },
-    "cloud_control_tcp_ready": {
-      "message": "TCP local está listo. Ahora se procesará la última solicitud de carga; compruebe el estado de carga para confirmar el resultado."
-    },
-    "cloud_control_failed": {
-      "message": "El control en la nube o el cambio a TCP ha fallado. Se han descartado las solicitudes pendientes; compruebe el estado del cargador antes de volver a intentarlo."
     }
   },
   "options": {

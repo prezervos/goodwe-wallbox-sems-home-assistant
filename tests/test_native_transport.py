@@ -1551,3 +1551,96 @@ async def test_adopted_session_preserves_mode_and_pv_protection(mode, reported_m
         await server.async_close()
         await device.close()
         await task
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("scenario,read_count,success", [
+    ("settles_before_verification", 4, True),
+    ("settles_before_delivery", 4, True),
+    ("persistent", 3, False),
+    ("active", 1, False),
+    ("nonzero_power", 1, False),
+    ("pending_start", 1, False),
+    ("read_timeout", 2, False),
+])
+async def test_policy_rechecks_only_inconsistent_idle_reports(
+    monkeypatch, scenario, read_count, success
+):
+    """Replay the observed idle/0kW/2.7A contradiction through actual Start policy."""
+    from dataclasses import replace
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    idle = protocol.NativeStatus(SERIAL, 0, 0, 4.2, 0, (0, 0, 0), (240,)*3, 0, 1, 0)
+    residual = replace(idle, currents_a=(2.7, 0, 0))
+    reports = {
+        "settles_before_verification": [residual, residual, idle, idle],
+        "settles_before_delivery": [idle, residual, residual, idle],
+        "persistent": [residual]*3,
+        "active": [replace(residual, state=2, power_kw=4.2)],
+        "nonzero_power": [replace(idle, power_kw=0.1)],
+        "pending_start": [residual],
+        "read_timeout": [residual, TimeoutError("status timed out")],
+    }[scenario]
+    writes = []
+
+    async def command(action, **values):
+        if action == "status":
+            report = reports.pop(0)
+            if isinstance(report, Exception):
+                raise report
+            return report
+        writes.append(action)
+        return idle
+
+    fake = SimpleNamespace(serial=SERIAL, async_command=AsyncMock(side_effect=command),
+                           session_guard=SimpleNamespace(
+                               phase="waiting" if scenario == "pending_start" else "idle"))
+    adapter = adapter_module.NativeModeAdapter(fake)
+    monkeypatch.setattr(adapter, "IDLE_READ_INTERVAL", 0)
+    policy = policy_module.ChargeModePolicy(adapter, MemoryStore(), enabled=True)
+    policy.desired_mode = 0
+    policy.desired_power = 4.2
+    if success or scenario == "active":
+        await policy.async_start()
+    else:
+        with pytest.raises(policy_module.ModeVerificationError) as caught:
+            await policy.async_start()
+        errors = importlib.import_module(PACKAGE + ".ui_errors")
+        expected_key = "operation_timeout" if scenario == "read_timeout" else "start_requires_idle"
+        assert errors.operation_error(caught.value).translation_key == expected_key
+    assert writes == (["start"] if success else [])
+    assert sum(c.args == ("status",) for c in fake.async_command.call_args_list) == read_count
+    assert not reports
+
+
+@pytest.mark.asyncio
+async def test_stop_supersedes_inconsistent_idle_retry(monkeypatch):
+    """A Stop received during the settling delay prevents another read or Start."""
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    read = asyncio.Event()
+    residual = protocol.NativeStatus(
+        SERIAL, 0, 0, 4.2, 0, (2.7, 0, 0), (240,)*3, 0, 1, 0
+    )
+    writes = []
+
+    async def command(action, **values):
+        if action == "status":
+            read.set()
+            return residual
+        writes.append(action)
+        return SimpleNamespace(stopped=True)
+
+    fake = SimpleNamespace(serial=SERIAL, async_command=AsyncMock(side_effect=command))
+    adapter = adapter_module.NativeModeAdapter(fake)
+    monkeypatch.setattr(adapter, "IDLE_READ_INTERVAL", 0.01)
+    policy = policy_module.ChargeModePolicy(adapter, MemoryStore(), enabled=True)
+    start = asyncio.create_task(policy.async_start())
+    await asyncio.wait_for(read.wait(), 1)
+    await policy.async_stop()
+    with pytest.raises(policy_module.RequestSuperseded):
+        await start
+    assert writes == ["stop"]
+    assert sum(c.args == ("status",) for c in fake.async_command.call_args_list) == 1

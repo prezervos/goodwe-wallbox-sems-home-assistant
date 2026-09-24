@@ -1,5 +1,7 @@
 """Support for select entity controlling GoodWe SEMS Wallbox charge mode."""
 
+from .optimistic_write import optimistic_write
+
 import logging
 import time
 
@@ -11,6 +13,7 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
+from .cloud_rate_limit import CloudRateLimitedError
 from .operation_budget import async_execute
 from .const import DOMAIN, CONN_TYPE_MODBUS
 from .charge_mode_policy import async_apply_policy, mode_setting_write
@@ -122,8 +125,6 @@ class InverterOperationModeEntity(CoordinatorEntity, SelectEntity):
         # Prevents regular polls from reverting the optimistic UI state.
         self._pending_mode: int | None = None
         self._pending_mode_set_at: float = 0.0
-        # Guard against re-entrant async_set_updated_data calls.
-        self._restoring: bool = False
         _LOGGER.debug("Creating SelectEntity for Wallbox %s", self.sn)
 
     @property
@@ -140,8 +141,16 @@ class InverterOperationModeEntity(CoordinatorEntity, SelectEntity):
         """When entity is added to hass."""
         await super().async_added_to_hass()
 
+    @optimistic_write
     async def async_select_option(self, option: str) -> None:
-        """Change the selected option."""
+        """Change mode and translate cooldowns from either cloud write."""
+        try:
+            await self._async_select_option(option)
+        except CloudRateLimitedError as error:
+            raise operation_error(error) from error
+
+    async def _async_select_option(self, option: str) -> None:
+        """Apply a mode choice through the policy or legacy cloud path."""
         if option not in _OPTION_TO_MODE:
             _LOGGER.warning(
                 "Unknown operation mode option %s for wallbox %s",
@@ -164,7 +173,6 @@ class InverterOperationModeEntity(CoordinatorEntity, SelectEntity):
         )
 
         # Optimistic UI update for select entity
-        old_option = self._attr_current_option  # save before optimistic write for failure revert
         self._attr_current_option = option
         self.async_write_ha_state()
 
@@ -194,20 +202,10 @@ class InverterOperationModeEntity(CoordinatorEntity, SelectEntity):
                 cp = _min
             charge_power = cp
 
-        # Immediately propagate new chargeMode (and the actual charge_power
-        # we are about to send) into coordinator.data so that:
-        #   a) dependent entities (number slider) react before the API call finishes.
-        #   b) the clamped / resolved charge_power is visible, so a later write
-        #      by number.py can be distinguished from a clamping artefact.
-        current_device = self.coordinator.data.get(self.sn, {}) or {}
-        updated_device = {**current_device, "chargeMode": mode}
-        if mode == 0:
-            updated_device["set_charge_power"] = charge_power
-        self.coordinator.async_set_updated_data(
-            {**self.coordinator.data, self.sn: updated_device}
-        )
-        # Set pending AFTER async_set_updated_data so the synchronous
-        # _handle_coordinator_update call inside it doesn't clear the flag.
+        # Only this entity presents the pending mode. Shared coordinator data
+        # remains the last report, so failures cannot turn intent into telemetry.
+        write = self._optimistic_write
+        write.capture_device()
         self._pending_mode = mode
         self._pending_mode_set_at = time.monotonic()
 
@@ -219,37 +217,24 @@ class InverterOperationModeEntity(CoordinatorEntity, SelectEntity):
         )
 
         if not ok:
-            # API call failed (timeout, network error, auth failure).
-            # Cancel the pending guard and revert the optimistic UI state so
-            # the select shows whatever the coordinator last reported.
+            # Shared rollback preserves newer requests and fresh observations.
             _LOGGER.warning(
                 "set_charge_mode failed for %s (mode=%s), reverting optimistic UI state",
                 self.sn,
                 mode,
             )
-            self._pending_mode = None
-            self._attr_current_option = old_option
-            self.async_write_ha_state()
-            self.hass.async_create_task(self.coordinator.async_request_refresh())
             raise HomeAssistantError(
                 translation_domain=DOMAIN,
                 translation_key=f"set_charge_mode_failed_{option}",
             )
 
-        # Superseded-call guard: discard this call's result if a newer
-        # dispatch has taken over.  Two cases:
-        #
-        #   a) _pending_mode is set to a *different* mode: a newer dispatch
-        #      started while we were awaiting the API and hasn't finished yet.
-        #
-        #   b) coordinator.data["chargeMode"] != mode: a poll (or optimistic
-        #      update from a newer dispatch) has already confirmed a different
-        #      mode.  This catches the case where _pending_mode was already
-        #      cleared by a poll confirmation BEFORE a long (e.g. 30 s
-        #      timed-out) call finally returned.
+        # Ignore completion of an older request, or a genuinely different mode
+        # reported meanwhile. An unchanged old mode is normal cloud latency.
         current_device_supersede = self.coordinator.data.get(self.sn, {}) or {}
         current_chargemode = current_device_supersede.get("chargeMode")
-        if (self._pending_mode is not None and self._pending_mode != mode) or current_chargemode != mode:
+        if (self._optimistic_write is not write
+                or (self._pending_mode != mode and current_chargemode != mode)
+                or current_chargemode not in (mode, write.before.get("chargeMode"))):
             _LOGGER.debug(
                 "Mode call for %s (mode=%s) superseded (pending=%s, current chargeMode=%s), discarding result",
                 self.sn,
@@ -271,7 +256,9 @@ class InverterOperationModeEntity(CoordinatorEntity, SelectEntity):
                 latest_power = float(latest_raw) if latest_raw is not None else None
             except (TypeError, ValueError):
                 latest_power = None
-            if latest_power is not None and latest_power != charge_power:
+            if (latest_power is not None and latest_power != charge_power
+                    and latest_raw != write.before.get("set_charge_power")
+                    and _min <= latest_power <= _max):
                 _LOGGER.debug(
                     "Power changed during mode switch for %s (%.2f → %.2f kW), re-sending",
                     self.sn,
@@ -291,11 +278,6 @@ class InverterOperationModeEntity(CoordinatorEntity, SelectEntity):
     @callback
     def _handle_coordinator_update(self) -> None:
         """Handle updated data from the coordinator."""
-        # Guard: skip processing when we ourselves triggered async_set_updated_data
-        # to restore the pending mode (prevents re-entrant recursion).
-        if self._restoring:
-            return
-
         inverter = self.coordinator.data.get(self.sn, {}) or {}
         mode = inverter.get("chargeMode")
         _LOGGER.debug(
@@ -324,22 +306,9 @@ class InverterOperationModeEntity(CoordinatorEntity, SelectEntity):
                 )
                 self._pending_mode = None
             else:
-                # Poll returned the old mode -- API hasn't applied the change yet.
-                # Restore the pending chargeMode in coordinator.data so that ALL
-                # dependent entities (number slider, etc.) keep the correct state.
-                _LOGGER.debug(
-                    "Ignoring poll chargeMode=%s for wallbox %s while pending mode=%s",
-                    mode,
-                    self.sn,
-                    self._pending_mode,
-                )
-                self._restoring = True
-                current = dict(self.coordinator.data.get(self.sn, {}))
-                current["chargeMode"] = self._pending_mode
-                self.coordinator.async_set_updated_data(
-                    {**self.coordinator.data, self.sn: current}
-                )
-                self._restoring = False
+                # Keep optimistic presentation local to this entity. A pending
+                # choice must never overwrite an authoritative poll result.
+                self.async_write_ha_state()
                 return
 
         if mode in _MODE_TO_OPTION:
@@ -439,6 +408,7 @@ class SemsChargeDurationSelect(CoordinatorEntity, SelectEntity):
         self.async_write_ha_state()
 
     @mode_setting_write
+    @optimistic_write
     async def async_select_option(self, option: str) -> None:
         if option not in _DURATION_TO_HOURS:
             _LOGGER.warning("SemsChargeDurationSelect: unknown option %r", option)
@@ -469,9 +439,6 @@ class SemsChargeDurationSelect(CoordinatorEntity, SelectEntity):
         )
         if not ok:
             _LOGGER.warning("SemsChargeDurationSelect %s: set_charge_mode_gen2 failed", self.sn)
-            self._pending_value = None
-            self.async_write_ha_state()
-            self.coordinator.schedule_delayed_refresh(3.0)
             raise operation_error(RuntimeError("Device write was not confirmed"))
         else:
             self.coordinator.schedule_delayed_refresh(5.0)
@@ -552,6 +519,7 @@ class ModbusChargeModeSelect(CoordinatorEntity, SelectEntity):
     def _handle_coordinator_update(self) -> None:
         self.async_write_ha_state()
 
+    @optimistic_write
     async def async_select_option(self, option: str) -> None:
         if option not in _OPTION_TO_MODE:
             _LOGGER.warning("Unknown charge mode option: %s", option)
@@ -567,9 +535,6 @@ class ModbusChargeModeSelect(CoordinatorEntity, SelectEntity):
         ok = await async_execute(self.hass, self._client.write_charge_mode, mode)
         if not ok:
             _LOGGER.warning("ModbusChargeModeSelect %s: write failed, reverting", self.sn)
-            self._pending_mode = None
-            self.async_write_ha_state()
-            self.coordinator.schedule_delayed_refresh(3.0)
             raise operation_error(RuntimeError("Device write was not confirmed"))
         else:
             self.coordinator.schedule_delayed_refresh(3.0)
@@ -644,6 +609,7 @@ class ModbusChargeDurationSelect(CoordinatorEntity, SelectEntity):
         self.async_write_ha_state()
 
     @mode_setting_write
+    @optimistic_write
     async def async_select_option(self, option: str) -> None:
         if option not in _DURATION_TO_HOURS:
             _LOGGER.warning("Unknown charge duration option: %s", option)
@@ -655,9 +621,6 @@ class ModbusChargeDurationSelect(CoordinatorEntity, SelectEntity):
         ok = await async_execute(self.hass, self._client.write_completion_time, hours)
         if not ok:
             _LOGGER.warning("ModbusChargeDurationSelect %s: write failed, reverting", self.sn)
-            self._pending_value = None
-            self.async_write_ha_state()
-            self.coordinator.schedule_delayed_refresh(3.0)
             raise operation_error(RuntimeError("Device write was not confirmed"))
         else:
             self.coordinator.schedule_delayed_refresh(3.0)

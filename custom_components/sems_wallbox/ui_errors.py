@@ -6,6 +6,8 @@ import logging
 
 from homeassistant.exceptions import HomeAssistantError
 
+from .cloud_rate_limit import CloudRateLimitedError
+
 _LOGGER = logging.getLogger(__name__)
 
 _MESSAGES = {
@@ -14,7 +16,7 @@ _MESSAGES = {
     "Minimum-power write requires idle mode with a known flag": "minimum_power_stop_first",
     "Stop charging before changing native mode settings": "stop_before_mode",
     "Stop charging before changing native mode": "stop_before_mode",
-    "Wallbox already active; automatic mode change refused": "stop_before_mode",
+    "Wallbox stop state not confirmed; Start was not sent": "start_requires_idle",
     "A Start request is already pending": "start_pending",
     "A native Start is already awaiting charging": "start_pending",
     "Charging request superseded; Start was not sent": "request_superseded",
@@ -38,6 +40,12 @@ def operation_error(error: Exception) -> HomeAssistantError:
     key = _MESSAGES.get(str(error))
     cause = error
     while key is None:
+        if isinstance(cause, CloudRateLimitedError):
+            return HomeAssistantError(
+                str(error), translation_domain="sems_wallbox",
+                translation_key="cloud_rate_limited",
+                translation_placeholders={"seconds": str(cause.retry_after)},
+            )
         if isinstance(cause, TimeoutError):
             key = "operation_timeout"
             break

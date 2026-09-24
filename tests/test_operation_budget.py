@@ -164,3 +164,34 @@ async def test_setting_timeout_preserves_origin_and_releases_budget(failure):
     # The failed write neither holds serialization nor replays itself.
     await policy.async_setting_write(AsyncMock(return_value=True))
     assert calls == ["write"]
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+async def test_rate_limited_setting_preserves_translated_error_without_replay(enabled):
+    rates = importlib.import_module(PACKAGE + ".cloud_rate_limit")
+    errors = importlib.import_module(PACKAGE + ".ui_errors")
+    modes = importlib.import_module(PACKAGE + ".charge_mode_policy")
+    optimism = importlib.import_module(PACKAGE + ".optimistic_write")
+    policy = Policy(SimpleNamespace(), Store(), enabled=enabled, timeout=1)
+    entity = SimpleNamespace(
+        coordinator=SimpleNamespace(
+            charge_mode_policy=policy, data={"SN": {}}, schedule_delayed_refresh=Mock()
+        ),
+        sn="SN", _handle_coordinator_update=Mock(),
+        _pending_value=None, async_write_ha_state=Mock(),
+    )
+    operation = AsyncMock(side_effect=rates.CloudRateLimitedError(60))
+    @modes.mode_setting_write
+    @optimism.optimistic_write
+    async def write(subject):
+        subject._pending_value = 5
+        return await operation()
+    with pytest.raises(errors.HomeAssistantError) as caught:
+        await write(entity)
+    assert caught.value.translation_key == "cloud_rate_limited"
+    assert caught.value.translation_placeholders == {"seconds": "60"}
+    operation.assert_awaited_once()
+    assert entity._pending_value is None
+    entity._handle_coordinator_update.assert_called_once()
+    entity.coordinator.schedule_delayed_refresh.assert_called_once_with(3.0)
+    assert budget_module.CURRENT_BUDGET.get() is None
