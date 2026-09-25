@@ -7,8 +7,9 @@
 
 Home Assistant custom integration for the **GoodWe Wallbox**.
 
-The **3.0.4b1 prerelease** adds bounded readback after cloud and Modbus controls
+The **3.0.4b2 prerelease** adds bounded readback after cloud and Modbus controls
 so accepted changes can be reflected before the next normal polling interval.
+Beta2 corrects repeated-read timing and reconciles uncertain cloud setting writes.
 Native Socket A TCP keeps its existing short polling cadence. Hardware feedback
 is requested; **3.0.3 remains the stable release**. See the changes and test steps
 in [release notes](docs/RELEASE_NOTES.md).

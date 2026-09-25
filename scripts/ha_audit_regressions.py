@@ -532,7 +532,9 @@ async def control_readback_timers():
             client = Mock()
             client.read_all.side_effect = lambda: dict(data)
             client.get_data_gen2.side_effect = lambda serial: dict(data)
-            client.fetch_last_charge.return_value = None
+            client.fetch_last_charge.side_effect = lambda serial: {
+                "last_charge_work_status": 6 if data["status"] == "charging" else 8
+            }
             client.write_start_stop.return_value = True
             client.change_status_gen2.return_value = True
             coordinator = (ModbusUpdateCoordinator if modbus else SemsUpdateCoordinator)(
@@ -558,6 +560,12 @@ async def control_readback_timers():
                 assert read.call_count == 1, (modbus, read.call_count)
                 assert monitor.results["charging"] == "pending"
                 assert coordinator.update_interval.total_seconds() == 60
+                # Exercise a second unresolved timer through HA's real debouncer.
+                # The old default cooldown deferred it until roughly 15 seconds.
+                await asyncio.sleep(5.3)
+                await hass.async_block_till_done()
+                assert read.call_count == 2, (modbus, read.call_count)
+                assert monitor.results["charging"] == "pending"
                 # A normal/MQTT-triggered authoritative read satisfies the same plan.
                 data.update(status="charging")
                 if modbus:
@@ -565,7 +573,7 @@ async def control_readback_timers():
                 await coordinator.async_refresh()
                 assert monitor.results["charging"] == "confirmed"
                 assert not monitor.pending and monitor._cancel is None
-                assert coordinator.update_interval.total_seconds() == (30 if modbus else 60)
+                assert coordinator.update_interval.total_seconds() == 30
                 assert write.call_count == 1
                 # Superseding controls preserve only Stop and never replay Start.
                 await entity.async_turn_on()
@@ -577,6 +585,27 @@ async def control_readback_timers():
                 await coordinator.async_refresh()
                 assert monitor.results["charging"] == "confirmed"
                 assert write.call_count == 3
+                if not modbus:
+                    from custom_components.sems_wallbox.number import SemsNumber
+                    from homeassistant.exceptions import HomeAssistantError
+                    number = SemsNumber(coordinator, SERIAL, client, 4.2)
+                    number.hass = hass
+                    number.async_write_ha_state = Mock()
+                    client.set_charge_mode_gen2.side_effect = TimeoutError("lost reply")
+                    before_reads = read.call_count
+                    try:
+                        await number.async_set_native_value(5)
+                    except HomeAssistantError as error:
+                        assert error.translation_key == "setting_outcome_unknown"
+                    else:
+                        raise AssertionError("Uncertain write must not report success")
+                    assert monitor.results["set_charge_power"] == "pending_after_timeout"
+                    data["set_charge_power"] = 5
+                    await asyncio.sleep(5.3)
+                    await hass.async_block_till_done()
+                    assert read.call_count == before_reads + 1
+                    assert monitor.results["set_charge_power"] == "confirmed_after_timeout"
+                    assert client.set_charge_mode_gen2.call_count == 1
                 await entity.async_turn_on()
                 coordinator._cancel_delayed_refresh()
                 assert not monitor.pending and monitor._cancel is None

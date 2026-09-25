@@ -379,7 +379,7 @@ Test results prove simulated contracts, not physical behavior on untested Modbus
 hardware or unobserved firmware versions.
 
 
-## Bounded control readback (unreleased)
+## Bounded control readback (3.0.4 prereleases)
 
 Accepted HA controls initiate read-only confirmation. Cloud attempts target 5, 10,
 20, 35 and 60 seconds after command completion; Modbus targets five-second reads
@@ -406,3 +406,19 @@ misrepresented as successful charging.
 
 Focused scenarios: `tests/test_write_confirmation.py`. Physical validation of
 Modbus readback timing still requires a supported Modbus wallbox.
+
+Beta2 configures the shared HA request-refresh debouncer with a five-second
+cooldown. An actual second-timer regression guards against the default ten-second
+cooldown; a mutation check proves that test fails with the old setting. The cloud
+SEMS+ coordinator confirms Start from session work status 6, and Stop from known
+terminal statuses 8/10. Missing or other statuses do not confirm Stop merely
+because detail says available. Native v3 and Modbus keep separate interpretations.
+A coordinator read begun before the accepted request cannot confirm it. This
+fences local in-flight reads; it does not prove the server has no internal cache.
+
+A cloud setting timeout retains the service error and arms read-only reconciliation
+for the latest setting. Outcomes are pending_after_timeout, confirmed_after_timeout
+or unconfirmed_after_timeout; ordinary read failure/cancellation outcomes still
+apply. A matching report confirms the requested value, not which request caused
+it. No write replay or automatic service success is inferred. Start/Stop and
+Modbus timeout handling are not changed by this setting-only reconciliation.

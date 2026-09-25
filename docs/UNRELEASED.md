@@ -6,6 +6,18 @@ that a change had not yet been released at the time of its experiment. They are
 not claims that every historical investigation remains open. Remaining hardware
 limits are listed under Remaining investigation and in the current release notes.
 
+## 3.0.4b2 candidate: reporter follow-up
+
+- Reporter attachments confirm b1 improves control response. Modbus log shows
+  Start confirmed 17 seconds after ACK, power readback in 1.3 seconds, Stop in six.
+- Correct the remaining default HA ten-second debounce with shared five-second
+  coalescing; verify the second unresolved read in real HA, including mutation.
+- Use newly fetched SEMS+ session state for cloud confirmation, preserving distinct
+  native/v3 semantics and fencing pre-command reads.
+- Reconcile uncertain cloud setting timeouts through reads only; keep a translated
+  service error and never replay writes. Log measured elapsed response time.
+- Cloud server latency and Modbus/cloud ownership remain hardware/service limits.
+
 ## 3.0.4b1 candidate: bounded confirmation after controls
 
 - Cloud: progressively spaced readback (target offsets 5/10/20/35/60 seconds).

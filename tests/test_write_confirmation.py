@@ -178,7 +178,7 @@ def test_normal_polling_or_mqtt_read_reuses_confirmation(setup):
 
 
 @pytest.mark.asyncio
-async def test_decorator_sends_once_and_failure_never_arms(setup):
+async def test_decorator_sends_once_and_timeout_arms_only_readback(setup):
     clock, owner, monitor = setup
     entity = SimpleNamespace(coordinator=owner)
     write = AsyncMock()
@@ -191,10 +191,19 @@ async def test_decorator_sends_once_and_failure_never_arms(setup):
     write.assert_awaited_once_with(6)
     assert monitor.pending["set_charge_power"].value == 6
     write.side_effect = TimeoutError
-    with pytest.raises(TimeoutError):
+    from homeassistant.exceptions import HomeAssistantError
+
+    with pytest.raises(HomeAssistantError) as caught:
         await service(entity, 5)
-    assert not monitor.pending
-    assert monitor.results["set_charge_power"] == "write_failed"
+    assert caught.value.translation_key == "setting_outcome_unknown"
+    assert monitor.pending["set_charge_power"].uncertain
+    assert monitor.results["set_charge_power"] == "pending_after_timeout"
+    monitor.observed({"set_charge_power": 6}, read_started=99)
+    assert monitor.pending
+    clock.now += 5
+    monitor.observed({"set_charge_power": 5}, read_started=clock.now)
+    assert monitor.results["set_charge_power"] == "confirmed_after_timeout"
+    assert write.await_count == 2
 
 
 @pytest.mark.asyncio
@@ -404,3 +413,98 @@ async def test_inflight_configuration_read_is_reused_then_fresh_read_confirms(se
     assert monitor.results["set_charge_power"] == "confirmed"
     owner.cloud_settings.refresh.assert_awaited_once()
     owner.async_request_refresh.assert_not_awaited()
+
+
+@pytest.mark.parametrize("status,expected", [(6, True), (8, False), (10, False)])
+def test_current_cloud_session_overrides_contradictory_detail(setup, status, expected):
+    clock, owner, monitor = setup
+    monitor.cloud_session = True
+    arm(monitor, "charging", expected)
+    report = {
+        "status": "available",
+        "startStatus": False,
+        "last_charge_work_status": status,
+        "power": 0,
+    }
+    monitor.observed(report, read_started=99)
+    assert monitor.pending  # A read started before the command cannot confirm it.
+    clock.now += 5
+    monitor.observed(report, read_started=105)
+    assert monitor.results["charging"] == "confirmed"
+    assert not module.matches("charging", not expected, report, cloud_session=True)
+
+
+@pytest.mark.parametrize("status", [None, 0, 7, 99, "6"])
+def test_missing_or_ambiguous_session_never_confirms_cloud_stop(status):
+    report = {"status": "available", "last_charge_work_status": status, "power": 0}
+    assert not module.matches("charging", False, report, cloud_session=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("error", [ValueError("rejected"), asyncio.CancelledError()])
+async def test_rejection_and_cancellation_do_not_arm_uncertain_reads(setup, error):
+    _, owner, monitor = setup
+
+    @module.confirm_write("set_charge_power")
+    async def write(entity, value):
+        raise error
+
+    with pytest.raises(type(error)):
+        await write(SimpleNamespace(coordinator=owner), 5)
+    assert not monitor.pending
+    assert monitor.results["set_charge_power"] == "write_failed"
+
+
+@pytest.mark.asyncio
+async def test_wrapped_timeout_preserves_latest_setting_and_unload(setup):
+    from homeassistant.exceptions import HomeAssistantError
+
+    clock, owner, monitor = setup
+
+    @module.confirm_write("set_charge_power")
+    async def write(entity, value):
+        arm(monitor, "set_charge_power", 6)
+        try:
+            raise TimeoutError("deadline")
+        except TimeoutError as cause:
+            raise HomeAssistantError(
+                "wrapped", translation_key="operation_timeout"
+            ) from cause
+
+    with pytest.raises(HomeAssistantError):
+        await write(SimpleNamespace(coordinator=owner), 5)
+    assert monitor.pending["set_charge_power"].value == 6
+    assert not monitor.pending["set_charge_power"].uncertain
+    monitor.close()
+    assert not monitor.pending and clock.timer[2]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "modbus,key", [(True, "set_charge_power"), (False, "charging")]
+)
+async def test_other_transports_and_session_commands_keep_timeout_behavior(
+    setup, modbus, key
+):
+    _, owner, monitor = setup
+    monitor.modbus = modbus
+
+    @module.confirm_write(key)
+    async def write(entity, value):
+        raise TimeoutError("uncertain")
+
+    with pytest.raises(TimeoutError):
+        await write(SimpleNamespace(coordinator=owner), 5)
+    assert not monitor.pending
+    assert monitor.results[key] == "write_failed"
+
+
+def test_uncertain_readback_expires_without_claiming_failure_or_success(setup):
+    clock, owner, monitor = setup
+    monitor.accepted(
+        "set_charge_power", 5, monitor.begin("set_charge_power"), uncertain=True
+    )
+    clock.now += 61
+    monitor._schedule()
+    assert monitor.results["set_charge_power"] == "unconfirmed_after_timeout"
+    assert not monitor.pending and clock.timer[2]

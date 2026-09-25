@@ -12,7 +12,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
-from .write_confirmation import WriteConfirmation, confirmation_read
+from .write_confirmation import WriteConfirmation, confirmation_read, readback_debouncer
 from .const import (
     CONF_STATION_ID,
     DEFAULT_SCAN_INTERVAL_IDLE,
@@ -56,6 +56,7 @@ class ModbusUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             _LOGGER,
             name="Modbus wallbox",
             config_entry=entry,
+            request_refresh_debouncer=readback_debouncer(hass, _LOGGER),
             update_interval=timedelta(seconds=self._interval_idle),
         )
 

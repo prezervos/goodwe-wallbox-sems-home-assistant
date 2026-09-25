@@ -19,6 +19,13 @@ def async_call_later(hass, delay, callback):
     return schedule(hass, delay, callback)
 
 
+def readback_debouncer(hass, logger):
+    """Coalesce refresh requests without HA's default ten-second readback delay."""
+    from homeassistant.helpers.debounce import Debouncer
+
+    return Debouncer(hass, logger, cooldown=5, immediate=True)
+
+
 @dataclass
 class PendingRead:
     """Keep the latest accepted choice and its independent readback deadline."""
@@ -28,14 +35,20 @@ class PendingRead:
     started: float
     source: str
     last_read: float
+    uncertain: bool = False
 
 
-def matches(field, expected, data):
+def matches(field, expected, data, *, cloud_session=False):
     """Compare actual configuration or explicit session state, never measured watts."""
     if field == "charging":
         raw = data.get("modbus_status_raw")
         if raw is not None:
             return raw == 3 if expected else raw in (0, 1, 4, 5, 7, 8, 10)
+        if cloud_session:
+            # SEMS+ detail may report available throughout a live session. Only
+            # this coordinator's newly fetched session can confirm Start/Stop.
+            work_status = data.get("last_charge_work_status")
+            return work_status == 6 if expected else work_status in (8, 10)
         status = str(data.get("status", "")).lower()
         if expected:
             return status in ("charging", "evdetail_status_title_charging") or (
@@ -72,9 +85,10 @@ class WriteConfirmation:
     A failed read ends accelerated polling and leaves recovery to the coordinator.
     """
 
-    def __init__(self, owner, *, modbus=False):
+    def __init__(self, owner, *, modbus=False, cloud_session=False):
         self.owner = owner
         self.modbus = modbus
+        self.cloud_session = cloud_session
         self.pending = {}
         self.tokens = {}
         self.results = {}
@@ -91,8 +105,12 @@ class WriteConfirmation:
         self._schedule()
         return token, getattr(self.owner, "routing_epoch", 0)
 
-    def accepted(self, field, value, ticket, *, source="telemetry"):
-        """Arm readback only for the newest successfully completed command."""
+    def accepted(self, field, value, ticket, *, source="telemetry", uncertain=False):
+        """Arm readback for the newest accepted or uncertain setting request.
+
+        Returns:
+            True when armed; None when superseded, closed or rerouted.
+        """
         token, epoch = ticket
         if self.tokens.get(field) is not token:
             return
@@ -110,9 +128,10 @@ class WriteConfirmation:
         if cancel is not None:
             cancel()
             self.owner._pending_refresh_cancel = None
-        self.pending[field] = PendingRead(value, epoch, now, source, now)
-        self.results[field] = "pending"
+        self.pending[field] = PendingRead(value, epoch, now, source, now, uncertain)
+        self.results[field] = "pending_after_timeout" if uncertain else "pending"
         self._schedule()
+        return True
 
     def rejected(self, field, ticket):
         """Discard a failed command without erasing a newer accepted choice."""
@@ -136,9 +155,11 @@ class WriteConfirmation:
             ):
                 self.pending.pop(field)
                 self.results[field] = "device_rejected"
-            elif matches(field, target.value, data):
+            elif matches(field, target.value, data, cloud_session=self.cloud_session):
                 self.pending.pop(field)
-                self.results[field] = "confirmed"
+                self.results[field] = (
+                    "confirmed_after_timeout" if target.uncertain else "confirmed"
+                )
         self._schedule()
 
     def failed(self):
@@ -180,7 +201,9 @@ class WriteConfirmation:
             deadline = target.started + 60
             if now > deadline:
                 self.pending.pop(field)
-                self.results[field] = "unconfirmed"
+                self.results[field] = (
+                    "unconfirmed_after_timeout" if target.uncertain else "unconfirmed"
+                )
                 continue
             candidates = [
                 target.started + slot
@@ -189,7 +212,9 @@ class WriteConfirmation:
             ]
             if not candidates:
                 self.pending.pop(field)
-                self.results[field] = "unconfirmed"
+                self.results[field] = (
+                    "unconfirmed_after_timeout" if target.uncertain else "unconfirmed"
+                )
                 continue
             due.append(min(deadline, max(candidates[0], target.last_read + 5)))
         if due and not self._busy and not self._closed:
@@ -277,18 +302,34 @@ def confirm_write(field, *, value=None):
             expected = value(entity, raw) if value is not None else raw
             if expected is None:
                 return await function(entity, *args, **kwargs)
-            ticket = monitor.begin(key)
-            try:
-                result = await function(entity, *args, **kwargs)
-            except BaseException:
-                # Cancellation must invalidate only this command, never a newer one.
-                monitor.rejected(key, ticket)
-                raise
             source = (
                 "settings"
                 if hasattr(owner, "cloud_settings") and key != "charging"
                 else "telemetry"
             )
+            ticket = monitor.begin(key)
+            try:
+                result = await function(entity, *args, **kwargs)
+            except BaseException as error:
+                # Cancellation/supersession must never arm a new readback plan.
+                timed_out = isinstance(error, TimeoutError) or (
+                    getattr(error, "translation_key", None) == "operation_timeout"
+                )
+                if key != "charging" and not monitor.modbus and timed_out:
+                    # Keep the service failure: matching telemetry can reconcile
+                    # the outcome later, but is not an ACK for this request.
+                    armed = monitor.accepted(
+                        key, expected, ticket, source=source, uncertain=True
+                    )
+                    if armed:
+                        from homeassistant.exceptions import HomeAssistantError
+
+                        raise HomeAssistantError(
+                            translation_domain="sems_wallbox",
+                            translation_key="setting_outcome_unknown",
+                        ) from error
+                monitor.rejected(key, ticket)
+                raise
             monitor.accepted(key, expected, ticket, source=source)
             return result
 

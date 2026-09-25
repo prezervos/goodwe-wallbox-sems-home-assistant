@@ -10,7 +10,7 @@ from datetime import timedelta
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
-from .write_confirmation import WriteConfirmation, confirmation_read
+from .write_confirmation import WriteConfirmation, confirmation_read, readback_debouncer
 from .charge_mode_adapter import ModeTransportAdapter
 from .charge_mode_policy import ChargeModePolicy, ModeVerificationError
 from .cloud_observation import CloudAuthenticationError
@@ -107,6 +107,7 @@ class NativeCoordinator(DataUpdateCoordinator):
             _LOGGER,
             name="GoodWe cloud/TCP",
             config_entry=entry,
+            request_refresh_debouncer=readback_debouncer(hass, _LOGGER),
             update_interval=timedelta(seconds=5),
         )
         self.write_confirmation = WriteConfirmation(self)
