@@ -606,7 +606,20 @@ async def control_readback_timers():
                     assert read.call_count == before_reads + 1
                     assert monitor.results["set_charge_power"] == "confirmed_after_timeout"
                     assert client.set_charge_mode_gen2.call_count == 1
+                # Policy dispatch must present the same accepted intent as the
+                # direct platform write, without editing measured telemetry.
+                from types import SimpleNamespace
+                from unittest.mock import AsyncMock
+                coordinator.charge_mode_policy = SimpleNamespace(
+                    enabled=True, async_start=AsyncMock(), async_stop=AsyncMock())
+                snapshot = dict(coordinator.data[SERIAL])
                 await entity.async_turn_on()
+                assert entity.is_on is True
+                assert coordinator.data[SERIAL] == snapshot
+                await entity.async_turn_off()
+                assert entity.is_on is False
+                coordinator.charge_mode_policy.async_start.assert_awaited_once()
+                coordinator.charge_mode_policy.async_stop.assert_awaited_once()
                 coordinator._cancel_delayed_refresh()
                 assert not monitor.pending and monitor._cancel is None
             finally:

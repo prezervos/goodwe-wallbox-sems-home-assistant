@@ -1,3 +1,30 @@
+# 3.0.4b3 — Consistent Start/Stop feedback
+
+## Fixed
+
+- **Charging switch feedback with a preferred mode:** cloud and Modbus Start/Stop now retain the accepted control intent while telemetry catches up, including when the saved charging-mode policy handles the command. That path previously bypassed the existing pending-command display and could briefly show Off after an accepted Start.
+- **Latest request wins:** a delayed completion of an older policy Start cannot overwrite a newer Stop in the switch presentation.
+- **Modbus cached state:** a cached pre-Start idle snapshot no longer immediately cancels newly acknowledged policy intent. Fresh terminal reports and the existing pending timeout still clear it.
+- **Regression coverage:** delayed cloud sessions, Modbus handshake/terminal reports, expiry, rejected/uncertain commands and overlapping Start/Stop. Stabilize a Windows-sensitive deadline test while retaining real async cancellation.
+
+The Charging switch represents control/session state; measured power and charging activity remain independently reported. No additional Start writes are sent and telemetry is not fabricated. Native TCP behavior, entity identities, saved preferences and normal polling settings are unchanged. Includes the readback and uncertain-setting fixes from b1/b2.
+
+## Please test
+
+Enable prereleases in HACS, install **3.0.4b3**, and restart Home Assistant (minimum **2026.9.2**).
+
+1. With your usual preferred-mode settings, issue **Start once**, first using Modbus and then cloud. Check whether the Charging switch stays On through the initial handshake instead of briefly bouncing Off. Compare it with the actual power/station status; an accepted Start does not itself prove energy flow.
+2. Verify **Stop**, including a short Start-to-Stop sequence when safe. A delayed Start response must not turn the switch back On after a newer Stop.
+3. If Start displays an error but charging begins afterwards, capture debug logs from before the request through the next minute, with the exact error and timestamps. Check actual state before retrying; do not repeatedly click Start. Redact credentials/tokens before attaching logs.
+
+## Known limits
+
+This beta does **not** claim to fix GoodWe cloud response latency. The reported first cloud request took about 14 seconds for acknowledgement, and positive power first appeared about 39 seconds after the request. Logs do not establish the precise physical start time. The separate unlogged service-error-then-charging case remains unconfirmed.
+
+Hardware confirmation is still requested, especially for Modbus. **3.0.3 remains the stable release** and rollback option. No production deployment accompanies this prerelease.
+
+Thanks to @GregoryDC for the logs and hardware testing.
+
 # 3.0.4b2 — Readback timing and uncertain cloud writes
 
 This beta follows the hardware feedback for 3.0.4b1 in #21. It fixes a remaining readback delay and improves handling of contradictory cloud responses and uncertain setting writes.

@@ -6,6 +6,29 @@ that a change had not yet been released at the time of its experiment. They are
 not claims that every historical investigation remains open. Remaining hardware
 limits are listed under Remaining investigation and in the current release notes.
 
+## 3.0.4b3: accepted Start/Stop presentation (#21)
+
+The mode-restoration path bypassed the cloud/Modbus switch pending-command
+presentation. Retain accepted control intent through delayed readback, using the
+existing bounded grace periods. Preserve latest-request ownership; an older
+policy completion cannot replace a newer Stop. A cached pre-Start idle Modbus
+snapshot cannot immediately cancel the newly accepted intent. Fresh terminal
+reports and the existing timeout release it. No telemetry or write retry changes.
+
+Validation: 208 focused tests and real-HA audit regressions passed on HP840 with
+simulated gateways. Covered stale cloud session, Modbus handshake/terminal state,
+expiry, rejected/uncertain commands, and overlapping Start/Stop. Physical Modbus
+validation remains with the reporter. The full suite returned 1,535 passes and
+one Windows timing-sensitive fallback test failure. That test now controls policy
+time while retaining real async cancellation; all 35 fallback tests pass on
+rerun. No production fallback changes. Packaged as 3.0.4b3; no production deployment.
+
+Reporter evidence: first cloud ACK took 13.795 s; the first positive power sample
+arrived 39.131 s after request (not proof of physical start time). Second Start
+returned an old completed session before the active session. Modbus reads arrived
+about six seconds apart. The separately reported service error followed by actual
+charging was not captured in these logs; its cause remains unconfirmed.
+
 ## 3.0.4b2 candidate: reporter follow-up
 
 - Reporter attachments confirm b1 improves control response. Modbus log shows
