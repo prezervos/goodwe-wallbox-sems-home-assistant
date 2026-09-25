@@ -72,6 +72,9 @@
     },
     "current_limit_invalid": {
       "message": "Geben Sie einen Strom im unterstützten Bereich mit höchstens zwei Dezimalstellen ein."
+    },
+    "setting_outcome_unknown": {
+      "message": "Zeitüberschreitung der Cloud-Einstellung; die Änderung wurde möglicherweise bereits angewendet. Die gemeldete Einstellung wird nachgelesen. Prüfen Sie den Wert vor einem erneuten Versuch."
     }
   },
   "options": {

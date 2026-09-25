@@ -837,3 +837,18 @@ def test_detail_preserves_explicit_vehicle_connection(fields):
     if fields:
         assert result["vehConnStu"] == fields["vehConnStu"]
     assert result["workstate"] == "available_gun_no_insered"
+
+
+def test_set_mode_socket_timeout_is_uncertain_and_never_replayed(caplog):
+    """A response timeout is not a rejection, even if the wallbox applied it."""
+    api = _make_api()
+    api._ensure_plant_id = MagicMock(return_value="PLANT")
+    api._ensure_web_token = MagicMock(return_value=True)
+    api._build_web_headers = MagicMock(return_value={})
+    with patch.object(api._request_gate, "request", side_effect=sems_api_module.requests.Timeout("lost reply")) as request:
+        with pytest.raises(TimeoutError, match="outcome unknown"):
+            api.set_charge_mode_gen2("TEST", 0, 2.6)
+    assert request.call_count == 1
+    assert "device outcome is unknown" in caplog.text
+    assert "after 90s" not in caplog.text
+    api.close()

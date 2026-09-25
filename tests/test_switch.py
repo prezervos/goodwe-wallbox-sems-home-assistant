@@ -133,6 +133,7 @@ def _make_switch(data: dict, current_is_on: bool = False) -> SemsSwitch:
     hass.loop.time.return_value = time.monotonic()
     hass.async_create_task = MagicMock()
     sw.hass = hass
+    sw.async_write_ha_state = MagicMock()
     return sw
 
 
@@ -352,3 +353,77 @@ async def test_rejected_command_clears_optimism_and_raises(enabled):
 def test_configuration_switch_keeps_unknown_distinct_from_off(class_name, field, reported):
     entity = getattr(_switch_mod, class_name)(_FakeCoordinator({SAMPLE_SN: {field: reported}}), SAMPLE_SN, None)
     assert entity.is_on is reported
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+async def test_policy_control_keeps_intent_until_reported(enabled):
+    """A stale session after ACK must not bounce the accepted control."""
+    from unittest.mock import AsyncMock
+    observed = dict(STANDBY_DATA if enabled else CHARGING_DATA)
+    entity = _make_switch(observed, not enabled)
+    entity.async_write_ha_state = MagicMock()
+    policy = types.SimpleNamespace(enabled=True, async_start=AsyncMock(), async_stop=AsyncMock())
+    entity.coordinator.charge_mode_policy = policy
+    await (entity.async_turn_on() if enabled else entity.async_turn_off())
+    assert entity._attr_is_on is enabled
+    assert entity._compute_is_on_from_data(observed) is enabled
+    assert entity.coordinator.data[SAMPLE_SN] == observed
+    entity.api.change_status_gen2.assert_not_called()
+    matching = CHARGING_DATA if enabled else STANDBY_DATA
+    assert entity._compute_is_on_from_data(matching) is enabled
+    assert entity._last_command_target is None
+    (policy.async_start if enabled else policy.async_stop).assert_awaited_once()
+
+
+async def test_policy_older_start_completion_cannot_replace_stop():
+    import asyncio
+    from unittest.mock import AsyncMock
+    entity = _make_switch(STANDBY_DATA)
+    entity.async_write_ha_state = MagicMock()
+    entered, release = asyncio.Event(), asyncio.Event()
+    async def start():
+        entered.set()
+        await release.wait()
+    entity.coordinator.charge_mode_policy = types.SimpleNamespace(
+        enabled=True, async_start=start, async_stop=AsyncMock())
+    older = asyncio.create_task(entity.async_turn_on())
+    await entered.wait()
+    await entity.async_turn_off()
+    release.set()
+    await older
+    assert entity._attr_is_on is False
+    assert entity._last_command_target is False
+
+
+@pytest.mark.parametrize("error", [RuntimeError("rejected"), TimeoutError("uncertain")])
+async def test_failed_policy_does_not_present_acknowledged_start(error):
+    from unittest.mock import AsyncMock
+    entity = _make_switch(STANDBY_DATA)
+    entity.async_write_ha_state = MagicMock()
+    entity.coordinator.charge_mode_policy = types.SimpleNamespace(
+        enabled=True, async_start=AsyncMock(side_effect=error))
+    with pytest.raises(type(error)):
+        await entity.async_turn_on()
+    assert entity._attr_is_on is False
+    assert entity._last_command_target is None
+    entity.api.change_status_gen2.assert_not_called()
+
+
+@pytest.mark.parametrize("terminal", [4, 5, 8])
+def test_modbus_accepted_policy_waits_for_new_terminal_report(terminal):
+    data = {"modbus_status_raw": 1, "modbus_car_connected": 1}
+    coordinator = _FakeCoordinator({SAMPLE_SN: data})
+    entity = _switch_mod.ModbusStartStopSwitch(coordinator, SAMPLE_SN, MagicMock())
+    entity._set_pending_command(True)
+    assert entity.is_on is True  # Cached pre-Start idle is not a rejection.
+    coordinator.data[SAMPLE_SN] = {"modbus_status_raw": terminal, "modbus_car_connected": 1}
+    assert entity.is_on is False
+    assert entity._pending_state is None
+
+
+def test_modbus_unconfirmed_policy_intent_expires():
+    coordinator = _FakeCoordinator({SAMPLE_SN: {"modbus_status_raw": 1, "modbus_car_connected": 1}})
+    entity = _switch_mod.ModbusStartStopSwitch(coordinator, SAMPLE_SN, MagicMock())
+    entity._set_pending_command(True)
+    entity._pending_set_at -= _switch_mod._MODBUS_PENDING_TIMEOUT + 1
+    assert entity.is_on is False

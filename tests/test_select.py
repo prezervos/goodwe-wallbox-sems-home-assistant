@@ -7,6 +7,7 @@ import importlib.util
 import time
 from unittest.mock import MagicMock
 import pytest
+from homeassistant.exceptions import HomeAssistantError
 
 # ---------------------------------------------------------------------------
 # All HA stubs are set up by conftest.py before this file is collected.
@@ -279,7 +280,7 @@ class TestSelectOption:
         entity = _make_entity(chargeMode=0, set_charge_power=6.0)  # currently Fast
         entity.api.set_charge_mode_gen2 = MagicMock(return_value=False)
         entity.coordinator.schedule_delayed_refresh = MagicMock()
-        with pytest.raises(Exception):  # HomeAssistantError
+        with pytest.raises(HomeAssistantError):
             await entity.async_select_option("pv_priority")
         # _attr_current_option must be reverted to "fast" (chargeMode=0 in coordinator)
         assert entity._attr_current_option == "fast"
@@ -288,14 +289,6 @@ class TestSelectOption:
         # A refresh must be scheduled so the UI catches up with the real device
         entity.coordinator.schedule_delayed_refresh.assert_called_once_with(3.0)
 
-    @pytest.mark.asyncio
-    async def test_mode_switch_revert_calls_write_ha_state_on_failure(self):
-        """async_write_ha_state must be called after reverting so the UI
-        reflects the correct option without waiting for the next poll."""
-        entity = _make_entity(chargeMode=0, set_charge_power=6.0)
-        entity.api.set_charge_mode_gen2 = MagicMock(return_value=False)
-        with pytest.raises(Exception):  # HomeAssistantError
-            await entity.async_select_option("pv_priority")
         entity.async_write_ha_state.assert_called()
 
 

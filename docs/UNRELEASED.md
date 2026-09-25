@@ -6,6 +6,64 @@ that a change had not yet been released at the time of its experiment. They are
 not claims that every historical investigation remains open. Remaining hardware
 limits are listed under Remaining investigation and in the current release notes.
 
+## 3.0.4b3: accepted Start/Stop presentation (#21)
+
+The mode-restoration path bypassed the cloud/Modbus switch pending-command
+presentation. Retain accepted control intent through delayed readback, using the
+existing bounded grace periods. Preserve latest-request ownership; an older
+policy completion cannot replace a newer Stop. A cached pre-Start idle Modbus
+snapshot cannot immediately cancel the newly accepted intent. Fresh terminal
+reports and the existing timeout release it. No telemetry or write retry changes.
+
+Validation: 208 focused tests and real-HA audit regressions passed on HP840 with
+simulated gateways. Covered stale cloud session, Modbus handshake/terminal state,
+expiry, rejected/uncertain commands, and overlapping Start/Stop. Physical Modbus
+validation remains with the reporter. The full suite returned 1,535 passes and
+one Windows timing-sensitive fallback test failure. That test now controls policy
+time while retaining real async cancellation; all 35 fallback tests pass on
+rerun. No production fallback changes. Packaged as 3.0.4b3; no production deployment.
+
+Reporter evidence: first cloud ACK took 13.795 s; the first positive power sample
+arrived 39.131 s after request (not proof of physical start time). Second Start
+returned an old completed session before the active session. Modbus reads arrived
+about six seconds apart. The separately reported service error followed by actual
+charging was not captured in these logs; its cause remains unconfirmed.
+
+## 3.0.4b2 candidate: reporter follow-up
+
+- Reporter attachments confirm b1 improves control response. Modbus log shows
+  Start confirmed 17 seconds after ACK, power readback in 1.3 seconds, Stop in six.
+- Correct the remaining default HA ten-second debounce with shared five-second
+  coalescing; verify the second unresolved read in real HA, including mutation.
+- Use newly fetched SEMS+ session state for cloud confirmation, preserving distinct
+  native/v3 semantics and fencing pre-command reads.
+- Reconcile uncertain cloud setting timeouts through reads only; keep a translated
+  service error and never replay writes. Log measured elapsed response time.
+- Cloud server latency and Modbus/cloud ownership remain hardware/service limits.
+
+## 3.0.4b1 candidate: bounded confirmation after controls
+
+- Cloud: progressively spaced readback (target offsets 5/10/20/35/60 seconds).
+- Modbus: five-second readback for at most one minute after accepted controls.
+- Native TCP keeps its existing immediate reporting and 2/5-second polling.
+- One latest target per setting; Start/Stop supersede each other. Never replay a
+  write, fabricate telemetry, or notify persistently on confirmation expiry.
+- Cloud configuration uses its own SEMS+ readback, including the reported power
+  limit; ordinary telemetry cannot substitute for configuration confirmation.
+- Failed reads yield to existing recovery; handover and unload invalidate timers.
+- Diagnostics expose pending/confirmed/unconfirmed/failure outcomes.
+
+Validation: 1,510 tests passed in the full offline suite on HP840. After the final
+read-source/cancellation refinements, 459 focused tests passed, including 30 new
+confirmation cases. Ruff F checks and whitespace checks passed. After restoring
+the existing Docker runtime, six real-HA smoke runs passed: audit regressions
+(including actual cloud/Modbus timers and latest-command confirmation), cloud
+controls, native controls/handover, cloud settings, and cloud/native lifecycle.
+These tests use simulated device/API responses and do not establish physical
+Modbus timing, which still needs reporter confirmation.
+No physical charging or production deployment performed. Prepared for the
+3.0.4b1 prerelease; stable 3.0.3 remains unchanged.
+
 ## 3.0.3 development history
 
 ### Modbus setup with an invalid initial power limit (#21 follow-up)

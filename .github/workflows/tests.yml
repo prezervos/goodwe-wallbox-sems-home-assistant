@@ -9,6 +9,7 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       matrix:
         python-version: ["3.12", "3.13"]
@@ -50,6 +51,9 @@ jobs:
 
       - name: Real HA external mode changes and remembered preference
         run: python scripts/ha_native_runtime_smoke.py custom_components --mode-preference-only
+
+      - name: Real HA cloud settings and late readback
+        run: python scripts/ha_native_runtime_smoke.py custom_components --cloud-settings-only
 
       - name: Real HA configuration value semantics
         run: python scripts/ha_config_values_smoke.py custom_components

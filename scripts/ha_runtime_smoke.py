@@ -24,6 +24,8 @@ from homeassistant.helpers import entity_registry as er
 class Gateway:
     """Simulate explicit device reports without opening network connections."""
 
+    supports_timestamped_observation = True
+
     def __init__(self) -> None:
         self.mode = 0
         self.power = 4.2
@@ -40,7 +42,7 @@ class Gateway:
     def configure_gen2(self, *args: object) -> None:
         """Accept simulated configuration."""
 
-    def get_data_gen2(self, serial: str) -> dict[str, object]:
+    def _snapshot(self, serial: str) -> dict[str, object]:
         """Return a fresh simulated report."""
         self.tick += self.behavior != "stale"
         return {
@@ -60,6 +62,16 @@ class Gateway:
                 + timedelta(seconds=self.tick)
             ).isoformat(),
         }
+
+    def get_data_gen2(self, serial):
+        """Return configuration independently from the telemetry endpoint."""
+        return self._snapshot(serial)
+
+    def fetch_status_observation(self, serial: str) -> dict[str, object]:
+        """Keep the old telemetry allocation distinct from configured power."""
+        report = self._snapshot(serial)
+        report["set_charge_power"] = 4.2
+        return report
 
     def fetch_last_charge(self, serial: str) -> dict[str, int]:
         """Report simulated charging state."""

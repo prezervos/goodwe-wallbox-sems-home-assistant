@@ -258,10 +258,11 @@ def test_no_background_supervisor_without_explicit_opt_in_or_cloud_account():
 @pytest.mark.asyncio
 async def test_slow_cloud_refresh_cannot_extend_trial_budget():
     import asyncio
-    import time
+    from types import SimpleNamespace
 
     policy = subject()
-    policy.trial_deadline = time.monotonic() + 0.02
+    clock = SimpleNamespace(now=1000.0)
+    policy.trial_deadline = clock.now + 0.02
     cancelled = asyncio.Event()
 
     async def refresh():
@@ -270,10 +271,14 @@ async def test_slow_cloud_refresh_cannot_extend_trial_budget():
         try:
             await asyncio.Event().wait()
         finally:
+            # Windows event-loop timers may fire slightly before monotonic's
+            # deadline. Control only policy time; retain real async cancellation.
+            clock.now = policy.trial_deadline
             cancelled.set()
 
     policy.owner.async_refresh.side_effect = refresh
-    await asyncio.wait_for(policy.tick(), 1)
+    with patch.object(module, "time", SimpleNamespace(monotonic=lambda: clock.now)):
+        await asyncio.wait_for(policy.tick(), 1)
     assert cancelled.is_set()
     assert policy.owner.local and policy.trial_deadline is None
     policy.owner._set_local.assert_awaited_once_with(True)

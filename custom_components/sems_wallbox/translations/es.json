@@ -72,6 +72,9 @@
     },
     "current_limit_invalid": {
       "message": "Introduzca una corriente dentro del rango admitido con un máximo de dos decimales."
+    },
+    "setting_outcome_unknown": {
+      "message": "La solicitud de ajuste en la nube agotó el tiempo de espera; el cambio puede haberse aplicado. Se comprobará el ajuste informado mediante lectura. Revise el valor antes de reintentarlo."
     }
   },
   "options": {

@@ -72,6 +72,9 @@
     },
     "current_limit_invalid": {
       "message": "Enter a current within the supported range using at most two decimal places."
+    },
+    "setting_outcome_unknown": {
+      "message": "The cloud setting request timed out; the change may already have been applied. Readback will check the reported setting. Check its value before retrying."
     }
   },
   "options": {

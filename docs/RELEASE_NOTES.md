@@ -1,3 +1,87 @@
+# 3.0.4b3 — Consistent Start/Stop feedback
+
+## Fixed
+
+- **Charging switch feedback with a preferred mode:** cloud and Modbus Start/Stop now retain the accepted control intent while telemetry catches up, including when the saved charging-mode policy handles the command. That path previously bypassed the existing pending-command display and could briefly show Off after an accepted Start.
+- **Latest request wins:** a delayed completion of an older policy Start cannot overwrite a newer Stop in the switch presentation.
+- **Modbus cached state:** a cached pre-Start idle snapshot no longer immediately cancels newly acknowledged policy intent. Fresh terminal reports and the existing pending timeout still clear it.
+- **Regression coverage:** delayed cloud sessions, Modbus handshake/terminal reports, expiry, rejected/uncertain commands and overlapping Start/Stop. Stabilize a Windows-sensitive deadline test while retaining real async cancellation.
+
+The Charging switch represents control/session state; measured power and charging activity remain independently reported. No additional Start writes are sent and telemetry is not fabricated. Native TCP behavior, entity identities, saved preferences and normal polling settings are unchanged. Includes the readback and uncertain-setting fixes from b1/b2.
+
+## Please test
+
+Enable prereleases in HACS, install **3.0.4b3**, and restart Home Assistant (minimum **2026.9.2**).
+
+1. With your usual preferred-mode settings, issue **Start once**, first using Modbus and then cloud. Check whether the Charging switch stays On through the initial handshake instead of briefly bouncing Off. Compare it with the actual power/station status; an accepted Start does not itself prove energy flow.
+2. Verify **Stop**, including a short Start-to-Stop sequence when safe. A delayed Start response must not turn the switch back On after a newer Stop.
+3. If Start displays an error but charging begins afterwards, capture debug logs from before the request through the next minute, with the exact error and timestamps. Check actual state before retrying; do not repeatedly click Start. Redact credentials/tokens before attaching logs.
+
+## Known limits
+
+This beta does **not** claim to fix GoodWe cloud response latency. The reported first cloud request took about 14 seconds for acknowledgement, and positive power first appeared about 39 seconds after the request. Logs do not establish the precise physical start time. The separate unlogged service-error-then-charging case remains unconfirmed.
+
+Hardware confirmation is still requested, especially for Modbus. **3.0.3 remains the stable release** and rollback option. No production deployment accompanies this prerelease.
+
+Thanks to @GregoryDC for the logs and hardware testing.
+
+# 3.0.4b2 — Readback timing and uncertain cloud writes
+
+This beta follows the hardware feedback for 3.0.4b1 in #21. It fixes a remaining readback delay and improves handling of contradictory cloud responses and uncertain setting writes.
+
+## Fixed
+
+- **Repeated readback cadence:** configure HA's shared refresh debouncer for five seconds instead of its default ten. Successive unresolved checks no longer acquire an extra ten-second delay. Network/response time still adds latency; normal configured polling intervals remain unchanged.
+- **Cloud Start/Stop confirmation:** the SEMS+ coordinator uses its newly fetched charging-session status, consistent with the source used by the Charging switch. An unreliable detail response saying `available` cannot prematurely confirm Stop or prevent confirmation of an active session. Missing or ambiguous session data stays unconfirmed. Native TCP/v3 keeps its own state interpretation.
+- **Uncertain cloud settings:** a setting request that times out remains a service error with a clearer translated message: the change may already have applied. Bounded read-only checks can subsequently record `confirmed_after_timeout` or `unconfirmed_after_timeout` in diagnostics. This does not resend the write, fabricate telemetry, or turn a timeout into an acknowledged success. Superseding commands, cancellation, authentication recovery and transport changes remain protected.
+- **Timeout logs:** report actual elapsed set-mode response time rather than a hard-coded 90 seconds when a shorter operation budget applied.
+
+## Validation
+
+Regression coverage now exercises two successive unresolved checks through real HA timers/debouncing, contradictory SEMS+ detail/session reports, old in-flight reads, uncertain setting readback, cancellation and latest-command handling. A mutation check restored the old ten-second debounce and confirmed that the new second-read test detects it. No physical charging or production deployment was performed for beta2.
+
+## Please test
+
+Install **3.0.4b2** with prereleases enabled in HACS and restart Home Assistant. The minimum remains **2026.9.2**; entity identities, saved preferences and normal polling options are unchanged.
+
+1. **Modbus:** issue Start once and record the delay until the Charging switch/station status reflect charging. If handshaking lasts through several checks, include the debug log so we can verify consecutive read intervals. Then verify Stop.
+2. **Cloud:** verify Start and Stop again. If the detail API still says `available`, downloaded diagnostics should nevertheless show correct confirmation based on the current session report.
+3. **Cloud power limit:** during a suitable session, change the limit once. If the cloud times out, check the reported limit before retrying. Send the timestamp, requested/reported limit, service message and diagnostics after readback completes (up to one minute after the request finishes). A timeout may still occur; this beta improves reconciliation and explains the uncertainty rather than promising faster GoodWe processing.
+
+Please review attachments for private information before posting. Stable **3.0.3** remains available for rollback. This update does not claim to restore SEMS connectivity while Modbus owns the charger or resolve every firmware-level interruption.
+
+Thanks to @GregoryDC for the logs and continued hardware testing.
+
+# 3.0.4b1 — Faster control feedback (prerelease)
+
+This prerelease shortens the delay before controls reflect independently reported wallbox state. It targets the delayed Modbus Start feedback reported in #21; hardware confirmation is still requested.
+
+## Changes
+
+- After an accepted Modbus control, read back every five seconds for up to one minute, stopping earlier when the requested state is confirmed or the device reports rejection.
+- After an accepted cloud control, use progressively spaced readback at target offsets of 5, 10, 20, 35 and 60 seconds. Existing reads and in-flight requests are reused; response latency, request throttling and HA scheduling can delay these targets.
+- Track only the latest request per setting. Start and Stop supersede each other. No control writes are replayed by this readback mechanism.
+- Confirm configuration against the appropriate settings source, not measured charging watts or an optimistic UI state. Preserve unknown values when data is missing.
+- Stop accelerated reads on read failure, transport change or unload. Normal polling and existing recovery remain in charge. Expiry creates no persistent notification and does not stop charging.
+- Add credential-free confirmation outcomes to downloaded diagnostics. Native Socket A TCP retains its existing immediate reporting and short polling cadence.
+- Audit and consolidate regression tests, strengthen stale-read and lifecycle coverage, and add real-HA timer/service checks.
+
+## Validation
+
+The full offline suite passed 1,510 tests. Final refinements passed 459 focused tests, including 30 confirmation cases. Six affected real-HA smoke runs passed in Home Assistant 2026.9.2, covering cloud/Modbus timers, latest-command handling, cloud and native controls, settings, handover and lifecycle. Hardware/API responses in these runs are simulated; no physical charging was performed for this change.
+
+## Please test (#21)
+
+1. Install **3.0.4b1** through HACS with prereleases enabled, then restart Home Assistant. Minimum HA version remains **2026.9.2**; existing entity IDs, preferences and normal polling settings are preserved.
+2. In Modbus mode, keep your usual idle polling interval and issue Start once. Record when the switch and station status leave Handshaking and report charging. Do not repeatedly press Start; observe actual charging independently.
+3. Check an explicit power-limit or charge-mode change and one Stop when appropriate. Compare the reported configuration with the requested setting; actual consumption need not equal the power limit. Do not change installation/current-protection settings for this test.
+4. If possible, repeat through cloud. Report the transport, timing, requested/reported values and any charging interruption. Cloud latency may still exceed five seconds.
+5. If feedback is still delayed or a change remains unconfirmed, download the integration diagnostics after the event and provide its timestamp and the relevant log excerpt. The new `write_confirmation` section records the outcome. Review diagnostic/log attachments for private information before posting.
+
+This prerelease does not claim a general fix for firmware-level Modbus charging interruptions, restore SEMS cloud visibility while Modbus owns the charger, or prove every model's timing. You can return to stable **3.0.3** if needed.
+
+Thanks to @GregoryDC for the detailed report and continued hardware testing.
+
 # 3.0.3 — Cloud state, power controls and TCP reliability
 
 This maintenance release fixes cloud status and authentication inconsistencies, restores Fast-mode selection from PV modes, and improves native TCP Stop verification. It includes the fixes previously tested in 3.0.3b1–b3.

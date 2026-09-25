@@ -7,10 +7,13 @@
 
 Home Assistant custom integration for the **GoodWe Wallbox**.
 
-The 3.0.3 update fixes cloud connection-state and shared-authentication issues,
-PV-to-Fast power preparation, diagnostic limit readback and native TCP Stop
-verification. It includes the 3.0.3 beta fixes; the separate Modbus charging
-interruption remains under investigation. See [release notes](docs/RELEASE_NOTES.md).
+The **3.0.4b3 prerelease** adds bounded readback after cloud and Modbus controls
+so accepted changes can be reflected before the next normal polling interval.
+Beta3 fixes pending Start/Stop presentation when restoring a preferred mode;
+it includes beta2 readback timing and uncertain-setting reconciliation fixes.
+Native Socket A TCP keeps its existing short polling cadence. Hardware feedback
+is requested; **3.0.3 remains the stable release**. See the changes and test steps
+in [release notes](docs/RELEASE_NOTES.md).
 
 Supports cloud, local Modbus and optional native Socket A TCP connections:
 

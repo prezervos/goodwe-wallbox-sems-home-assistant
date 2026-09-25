@@ -13,6 +13,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
+from .write_confirmation import WriteConfirmation, confirmation_read, readback_debouncer
 from .const import CONF_STATION_ID, DEFAULT_SCAN_INTERVAL_IDLE, DEFAULT_SCAN_INTERVAL_CHARGING, CONF_SCAN_INTERVAL_CHARGING
 from .sems_api import SemsApi, OutOfRetries
 from .cloud_observation import CloudAuthenticationError
@@ -52,6 +53,7 @@ class SemsUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
 
         self._pending_refresh_cancel = None
+        self.write_confirmation = WriteConfirmation(self, cloud_session=True)
         self._closed = False
         entry.async_on_unload(self._cancel_delayed_refresh)
 
@@ -60,6 +62,7 @@ class SemsUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             _LOGGER,
             name="SEMS API wallbox",
             config_entry=entry,
+            request_refresh_debouncer=readback_debouncer(hass, _LOGGER),
             update_interval=timedelta(seconds=self._interval_idle),
         )
 
@@ -71,6 +74,7 @@ class SemsUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     @callback
     def _cancel_delayed_refresh(self) -> None:
         """Cancel integration-owned timers when the config entry unloads."""
+        self.write_confirmation.close()
         self._closed = True
         if self._pending_refresh_cancel is not None:
             self._pending_refresh_cancel()
@@ -95,6 +99,7 @@ class SemsUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         self._pending_refresh_cancel = async_call_later(self.hass, delay, _do_refresh)
 
+    @confirmation_read
     async def _async_update_data(self) -> dict[str, Any]:
         """Fetch data from the SEMS API."""
         try:

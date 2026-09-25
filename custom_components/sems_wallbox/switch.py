@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from .write_confirmation import confirm_write
 from .optimistic_write import optimistic_write
 
 import logging
@@ -115,6 +116,23 @@ async def async_setup_entry(
 
     config_entry.async_on_unload(
         coordinator.async_add_listener(add_reported_minimum_power))
+
+
+async def _async_charging_policy(entity, enabled: bool) -> bool:
+    """Present an acknowledged policy command without replaying its device write.
+
+    Policy preparation bypasses the platform write methods, but must not bypass
+    their pending-command presentation. An older completion must never overwrite
+    a newer Start/Stop request.
+    """
+    token = object()
+    entity._charging_policy_request = token
+    handled = await async_apply_policy(
+        entity.coordinator, "start" if enabled else "stop")
+    if handled and entity._charging_policy_request is token:
+        entity._set_pending_command(enabled)
+        entity.async_write_ha_state()
+    return handled
 
 
 class SemsSwitch(CoordinatorEntity, SwitchEntity):
@@ -244,24 +262,30 @@ class SemsSwitch(CoordinatorEntity, SwitchEntity):
         )
         return api_is_on
 
+    @confirm_write("charging", value=lambda entity, value: False)
     async def async_turn_off(self, **kwargs):
         """Stop charging and expose a rejected command to HA callers."""
-        if not await async_apply_policy(self.coordinator, "stop"):
+        if not await _async_charging_policy(self, False):
             await self._async_command(False)
 
+    @confirm_write("charging", value=lambda entity, value: True)
     async def async_turn_on(self, **kwargs):
         """Start once; do not replay a command with an uncertain outcome."""
-        if not await async_apply_policy(self.coordinator, "start"):
+        if not await _async_charging_policy(self, True):
             await self._async_command(True)
+
+    def _set_pending_command(self, enabled: bool) -> None:
+        """Keep the accepted control intent until telemetry catches up."""
+        self._last_command_target = enabled
+        self._last_command_ts = self.hass.loop.time()
+        self._attr_is_on = enabled
 
     async def _async_command(self, enabled: bool) -> None:
         """Keep optimistic state only while an accepted command is pending."""
         from .ui_errors import operation_error
 
         action = "start" if enabled else "stop"
-        self._last_command_target = enabled
-        self._last_command_ts = self.hass.loop.time()
-        self._attr_is_on = enabled
+        self._set_pending_command(enabled)
         self.async_write_ha_state()
         try:
             accepted = await async_execute(self.hass,
@@ -370,6 +394,7 @@ class _SemsConfigSwitch(CoordinatorEntity, SwitchEntity):
     def _handle_coordinator_update(self) -> None:
         self.async_write_ha_state()
 
+    @confirm_write(lambda entity: entity._data_key)
     @mode_setting_write
     @optimistic_write
     async def _async_set(self, state: bool) -> None:
@@ -402,6 +427,7 @@ class SemsPlugAndChargeSwitch(_SemsConfigSwitch):
     _set_config_on = {"chargedNow": 1}
     _set_config_off = {"chargedNow": 0}
 
+    @confirm_write(lambda entity: entity._data_key)
     @mode_setting_write
     async def _async_set(self, state: bool) -> None:
         """Send one configuration write and retain only device-reported state."""
@@ -481,6 +507,7 @@ class SemsMinimumPowerSwitch(_SemsConfigSwitch):
         value = (self.coordinator.data.get(self.sn) or {}).get(self._data_key)
         return value if type(value) is bool else None
 
+    @confirm_write(lambda entity: entity._data_key)
     @mode_setting_write
     async def _async_set(self, state: bool) -> None:
         """Read before writing and keep only reported state after acknowledgement."""
@@ -570,6 +597,7 @@ class _ModbusSwitch(CoordinatorEntity, SwitchEntity):
     def _handle_coordinator_update(self) -> None:
         self.async_write_ha_state()
 
+    @confirm_write(lambda entity: getattr(entity, "_confirmation_field", None))
     @mode_setting_write
     @optimistic_write
     async def _async_set(self, state: bool) -> None:
@@ -603,15 +631,23 @@ class ModbusStartStopSwitch(_ModbusSwitch):
 
     _attr_translation_key = "modbus_start_charging"
 
+    @confirm_write("charging", value=lambda entity, value: True)
     async def async_turn_on(self, **kwargs):
         """Apply the optional verified mode policy before Modbus Start."""
-        if not await async_apply_policy(self.coordinator, "start"):
+        if not await _async_charging_policy(self, True):
             await super().async_turn_on(**kwargs)
 
+    @confirm_write("charging", value=lambda entity, value: False)
     async def async_turn_off(self, **kwargs):
         """Invalidate pending preparation before Modbus Stop."""
-        if not await async_apply_policy(self.coordinator, "stop"):
+        if not await _async_charging_policy(self, False):
             await super().async_turn_off(**kwargs)
+
+    def _set_pending_command(self, enabled: bool) -> None:
+        """Retain accepted intent while the device completes its handshake."""
+        self._pending_state = enabled
+        self._pending_set_at = time.monotonic()
+        self._pending_observation = self.coordinator.data.get(self.sn)
 
     @property
     def unique_id(self) -> str:
@@ -640,7 +676,9 @@ class ModbusStartStopSwitch(_ModbusSwitch):
         # If we're waiting for charging to confirm (pending=True) but the wallbox
         # is already in a clearly-stopped state (completed, idle, failed …), there
         # is no point keeping the optimistic ON for 90 s -- drop it immediately.
-        if self._pending_state is True and raw_status in _MODBUS_TERMINAL_STOPPED:
+        if (self._pending_state is True
+                and data is not getattr(self, "_pending_observation", None)
+                and raw_status in _MODBUS_TERMINAL_STOPPED):
             _LOGGER.debug(
                 "%s: clearing optimistic ON -- wallbox in terminal state %s",
                 self.unique_id, raw_status,
@@ -654,6 +692,8 @@ class ModbusStartStopSwitch(_ModbusSwitch):
 
 class ModbusMaintainMinPowerSwitch(_ModbusSwitch):
     """Enable / disable maintain minimum charging power (reg 10024)."""
+
+    _confirmation_field = "ensure_minimum_charging_power"
 
     _attr_translation_key = "modbus_maintain_min_power"
     _attr_entity_category = EntityCategory.CONFIG
@@ -681,6 +721,8 @@ class ModbusMaintainMinPowerSwitch(_ModbusSwitch):
 class ModbusPlugChargeSwitch(_ModbusSwitch):
     """Enable / disable Plug & Charge function (reg 10019)."""
 
+    _confirmation_field = "modbus_plug_charge_enabled"
+
     _attr_translation_key = "modbus_plug_charge"
     _attr_entity_category = EntityCategory.CONFIG
 
@@ -700,6 +742,8 @@ class ModbusPlugChargeSwitch(_ModbusSwitch):
 class ModbusDynamicLoadMgmtSwitch(_ModbusSwitch):
     """Enable / disable dynamic load management (reg 10025)."""
 
+    _confirmation_field = "modbus_dynamic_load"
+
     _attr_translation_key = "modbus_dynamic_load"
     _attr_entity_category = EntityCategory.CONFIG
 
@@ -718,6 +762,8 @@ class ModbusDynamicLoadMgmtSwitch(_ModbusSwitch):
 
 class ModbusEmsDispatchSwitch(_ModbusSwitch):
     """EMS minimum power dispatch mode (reg 10000: 0=normal, 1=min-power)."""
+
+    _confirmation_field = "modbus_ems_dispatch"
 
     _attr_translation_key = "modbus_ems_dispatch"
     _attr_entity_category = EntityCategory.CONFIG
@@ -743,6 +789,8 @@ class ModbusPhaseSwitchSwitch(_ModbusSwitch):
     units (11 kW and 22 kW). The minimum settable charge power stays at 4.2 kW
     per the protocol spec; the firmware handles phase selection internally.
     """
+
+    _confirmation_field = "modbus_phase_switch_enabled"
 
     _attr_translation_key = "modbus_phase_switch"
     _attr_entity_category = EntityCategory.CONFIG

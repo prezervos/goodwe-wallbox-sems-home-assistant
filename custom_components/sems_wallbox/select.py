@@ -1,5 +1,6 @@
 """Support for select entity controlling GoodWe SEMS Wallbox charge mode."""
 
+from .write_confirmation import confirm_write
 from .optimistic_write import optimistic_write
 
 import logging
@@ -141,6 +142,7 @@ class InverterOperationModeEntity(CoordinatorEntity, SelectEntity):
         """When entity is added to hass."""
         await super().async_added_to_hass()
 
+    @confirm_write("chargeMode", value=lambda entity, value: _OPTION_TO_MODE.get(value))
     @optimistic_write
     async def async_select_option(self, option: str) -> None:
         """Change mode and translate cooldowns from either cloud write."""
@@ -407,6 +409,7 @@ class SemsChargeDurationSelect(CoordinatorEntity, SelectEntity):
     def _handle_coordinator_update(self) -> None:
         self.async_write_ha_state()
 
+    @confirm_write("finish_time", value=lambda entity, value: _DURATION_TO_HOURS.get(value))
     @mode_setting_write
     @optimistic_write
     async def async_select_option(self, option: str) -> None:
@@ -519,6 +522,7 @@ class ModbusChargeModeSelect(CoordinatorEntity, SelectEntity):
     def _handle_coordinator_update(self) -> None:
         self.async_write_ha_state()
 
+    @confirm_write("chargeMode", value=lambda entity, value: _OPTION_TO_MODE.get(value))
     @optimistic_write
     async def async_select_option(self, option: str) -> None:
         if option not in _OPTION_TO_MODE:
@@ -608,6 +612,7 @@ class ModbusChargeDurationSelect(CoordinatorEntity, SelectEntity):
     def _handle_coordinator_update(self) -> None:
         self.async_write_ha_state()
 
+    @confirm_write("modbus_completion_time", value=lambda entity, value: _DURATION_TO_HOURS.get(value))
     @mode_setting_write
     @optimistic_write
     async def async_select_option(self, option: str) -> None:

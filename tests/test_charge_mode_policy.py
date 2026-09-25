@@ -62,7 +62,8 @@ class Adapter:
 def make_policy(adapter, store=None, **kwargs):
     kwargs.setdefault("initial_mode", 0)
     return Policy(
-        adapter, store or Store(), enabled=True, timeout=0.01, interval=0, **kwargs
+        # Allow multiple event-loop turns on Windows (timer resolution can exceed 10 ms).
+        adapter, store or Store(), enabled=True, timeout=0.2, interval=0, **kwargs
     )
 
 
@@ -302,7 +303,7 @@ async def test_cloud_last_charge_blocks_start_even_when_detail_says_idle():
     assert observation.active
 
 
-async def test_real_cloud_switch_dispatches_through_guard_without_optimistic_on():
+async def test_real_cloud_switch_presents_intent_only_after_policy_ack():
     from tests.test_switch import _make_switch, STANDBY_DATA
 
     entity = _make_switch(STANDBY_DATA)
@@ -312,7 +313,8 @@ async def test_real_cloud_switch_dispatches_through_guard_without_optimistic_on(
     await entity.async_turn_on()
     assert adapter.calls[-1] == "start"
     entity.api.change_status_gen2.assert_not_called()
-    entity.async_write_ha_state.assert_not_called()
+    entity.async_write_ha_state.assert_called_once()
+    assert entity._attr_is_on is True
 
 
 async def test_real_cloud_switch_failure_cannot_fall_through_to_legacy_start():
@@ -326,7 +328,7 @@ async def test_real_cloud_switch_failure_cannot_fall_through_to_legacy_start():
         "sems_wallbox_pkg_switch.charge_mode_policy"
     ].ChargeModePolicy
     entity.coordinator.charge_mode_policy = entity_policy_class(
-        adapter, Store(), enabled=True, initial_mode=0, timeout=0.01, interval=0
+        adapter, Store(), enabled=True, initial_mode=0, timeout=0.2, interval=0
     )
     with pytest.raises(HomeAssistantError):
         await entity.async_turn_on()
@@ -351,6 +353,7 @@ async def test_real_cloud_stop_uses_policy():
     from tests.test_switch import _make_switch, STANDBY_DATA
 
     entity = _make_switch(STANDBY_DATA)
+    entity.async_write_ha_state = MagicMock()
     adapter = Adapter(Observation(0))
     entity.coordinator.charge_mode_policy = make_policy(adapter)
     await entity.async_turn_off()
@@ -362,11 +365,19 @@ async def test_real_modbus_switch_uses_same_guard():
     from tests.test_switch import _switch_mod
 
     coordinator = types.SimpleNamespace(
+        data={"SN": {"modbus_status_raw": 1, "modbus_car_connected": 1}},
         charge_mode_policy=make_policy(Adapter(Observation(0))),
         schedule_delayed_refresh=MagicMock(),
     )
     entity = _switch_mod.ModbusStartStopSwitch(coordinator, "SN", MagicMock())
+    entity.async_write_ha_state = MagicMock()
     await entity.async_turn_on()
+    assert entity.is_on is True
+    coordinator.data["SN"] = {"modbus_status_raw": 2, "modbus_car_connected": 1}
+    assert entity.is_on is True
+    coordinator.data["SN"] = {"modbus_status_raw": 3, "modbus_car_connected": 2}
+    assert entity.is_on is True
+    assert entity._pending_state is None
     assert coordinator.charge_mode_policy.adapter.calls == ["read", "start"]
     await entity.async_turn_off()
     assert coordinator.charge_mode_policy.adapter.calls[-1] == "stop"
@@ -596,7 +607,7 @@ async def test_external_pv_reset_through_real_switch_and_transport(
     transport_adapter = runtime_adapter.ModeTransportAdapter(hass, SAMPLE_SN, gateway)
     store = Store({"mode": 0})
     policy = runtime_policy.ChargeModePolicy(
-        transport_adapter, store, enabled=True, initial_mode=2, timeout=0.01, interval=0
+        transport_adapter, store, enabled=True, initial_mode=2, timeout=0.2, interval=0
     )
     await policy.async_load()
     if reload_policy:
@@ -606,7 +617,7 @@ async def test_external_pv_reset_through_real_switch_and_transport(
             store,
             enabled=True,
             initial_mode=2,
-            timeout=0.01,
+            timeout=0.2,
             interval=0,
         )
         await policy.async_load()
@@ -920,11 +931,11 @@ async def test_verification_deadline_interrupts_async_wait_before_start():
 async def test_no_preference_preserves_observed_mode_after_power_seed_and_reload(mode):
     store = Store()
     adapter = Adapter(Observation(mode, power=4.2))
-    policy = Policy(adapter, store, enabled=True, timeout=0.01, interval=0)
+    policy = Policy(adapter, store, enabled=True, timeout=0.2, interval=0)
     await policy.async_load()
     await policy.async_seed_power(4.2)
     assert store.saved == {"mode": None, "power": 4.2}
-    restored = Policy(adapter, store, enabled=True, timeout=0.01, interval=0)
+    restored = Policy(adapter, store, enabled=True, timeout=0.2, interval=0)
     await restored.async_load()
     await restored.async_start()
     assert restored.desired_mode is None
@@ -999,7 +1010,7 @@ async def test_failed_mode_adoption_preserves_existing_intent(failure):
     await policy.async_load()
     if failure=="storage":
         store.async_save = AsyncMock(side_effect=OSError("disk unavailable"))
-    with pytest.raises((Error,OSError)):
+    with pytest.raises(OSError if failure == "storage" else Error):
         await policy.async_adopt_current_mode()
     assert store.saved == {"mode":2,"power":7.0}
     assert policy.desired_mode == 2

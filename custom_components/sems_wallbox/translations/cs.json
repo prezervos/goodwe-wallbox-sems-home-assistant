@@ -72,6 +72,9 @@
     },
     "current_limit_invalid": {
       "message": "Zadejte proud v podporovaném rozsahu s nejvýše dvěma desetinnými místy."
+    },
+    "setting_outcome_unknown": {
+      "message": "Vypršel časový limit cloudového požadavku; změna již mohla být provedena. Následné čtení ověří hlášené nastavení. Před opakováním zkontrolujte jeho hodnotu."
     }
   },
   "options": {

@@ -558,6 +558,7 @@ class SemsApi:
                 "SEMS gen2 set-mode (exclusive): POST %s payload=%s",
                 _eu_set_mode_url, payload,
             )
+            request_started = time.monotonic()
             try:
                 set_success = False
                 for attempt in range(1, _SetModeR0305Retries + 2):
@@ -617,12 +618,13 @@ class SemsApi:
                     return False
 
                 return True
-            except requests.exceptions.Timeout:
+            except requests.exceptions.Timeout as error:
                 _LOGGER.warning(
-                    "SEMS gen2 set-mode timed out after %ss (sn=%s)",
-                    _SetModeTimeout, wallboxSn,
+                    "SEMS gen2 set-mode response timed out after %.1fs; "
+                    "device outcome is unknown (sn=%s)",
+                    time.monotonic() - request_started, wallboxSn,
                 )
-                return False
+                raise TimeoutError("Cloud setting response timed out; outcome unknown") from error
         except OutOfRetries:
             raise
         except (CloudAuthenticationError, CloudRateLimitedError, BudgetCancelled, TimeoutError):

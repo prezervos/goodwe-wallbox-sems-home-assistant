@@ -177,25 +177,17 @@ class TestMinMax:
         entity = _make_entity(max_charge_power=22.0)
         assert entity.native_max_value == 22.0
 
-    def test_min_fallback_to_default_when_none(self):
-        entity = _make_entity()
-        entity.coordinator.data[SAMPLE_SN]["min_charge_power"] = None
-        assert entity.native_min_value == entity._model_limits()[0]
-
-    def test_max_fallback_to_default_when_none(self):
-        entity = _make_entity()
-        entity.coordinator.data[SAMPLE_SN]["max_charge_power"] = None
-        assert entity.native_max_value == entity._model_limits()[1]
-
-    def test_min_fallback_on_invalid_string(self):
-        entity = _make_entity()
-        entity.coordinator.data[SAMPLE_SN]["min_charge_power"] = "bad"
-        assert entity.native_min_value == entity._model_limits()[0]
-
-    def test_max_fallback_on_invalid_string(self):
-        entity = _make_entity()
-        entity.coordinator.data[SAMPLE_SN]["max_charge_power"] = "bad"
-        assert entity.native_max_value == entity._model_limits()[1]
+    @pytest.mark.parametrize("model,expected", [
+        ("GW7K-HCA", (1.4, 7.0)),
+        ("GW11K-HCA", (4.2, 11.0)),
+        ("gw22k-hca", (4.2, 22.0)),
+        (None, (1.4, 7.0)),
+    ])
+    @pytest.mark.parametrize("missing", [None, "bad"])
+    def test_missing_bounds_use_explicit_model_contract(self, model, expected, missing):
+        entity = _make_entity(min_charge_power=missing, max_charge_power=missing)
+        entity.coordinator.data[SAMPLE_SN]["model"] = model
+        assert (entity.native_min_value, entity.native_max_value) == expected
 
 
 # ---------------------------------------------------------------------------

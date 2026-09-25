@@ -91,8 +91,9 @@ Adapt scenarios to verified GoodWe capabilities; do not copy Peblar command sema
   reload/unload, packet validation, endpoint ownership and diagnostic redaction.
 
 RFID, firmware update and socket-lock tests are not applicable without implemented
-GoodWe capabilities. A portable cloud/native Auto start setter remains unverified
-on original HCA; do not generalize existing Modbus controls to that device. Session
+GoodWe capabilities. Native TCP Auto start has protocol, entity and concurrency coverage on original
+HCA, including changes while charging. Cloud Auto start remains capability-gated;
+do not infer its support from an accepted API write or from Modbus controls. Session
 energy continuity and optional native lifetime reads have separate coverage below. Latest-intent buffering is covered below; a
 physical deferred Stop passed after the shared-session correction, as recorded in
 `VALIDATION.md`. Earlier failures remain in `VALIDATION.md`.
@@ -341,3 +342,83 @@ It verifies cloud-only recovery and automatic TCP fallback/return together with
 MQTT reconnection, polling and freshness guards. Scheduler/supervisor delays are
 shortened explicitly; Retry-After uses real elapsed time. Existing cadence and
 race smoke modes remain separate so targeted checks do not rerun long waits.
+
+
+## Test maintenance contracts
+
+Unit tests use central lightweight HA stubs from `tests/conftest.py`; real HA
+scripts run separately and must not import that conftest. Unexpected requests HTTP
+calls fail unit tests locally. Native protocol peers use loopback sockets only.
+
+The normal cloud control fixtures advertise timestamped observation, matching
+`SemsApi`. Keep SEMS+ configured power separate from the older telemetry allocation;
+matching values at every endpoint hide regressions. The Fast-preparation matrix
+labels its older reader explicitly as `legacy_cloud`, alongside cloud and Modbus.
+Compatibility tests remain relevant while the corresponding production path exists.
+
+Run the additional real-HA settings race scenario with:
+
+```sh
+python scripts/ha_native_runtime_smoke.py /absolute/path/to/custom_components --cloud-settings-only
+```
+
+It uses real services, executor work and background configuration refreshes. An
+old read is held across a power write, then released; it must not republish the
+old limit. Configuration/telemetry disagreement, failed reads, unknown state and
+recovery are checked on registered HA entities. All barriers have bounded waits
+and release in cleanup. No physical charging is involved.
+
+HTTP fixtures should model status, JSON and `raise_for_status`, preferably with
+`requests.Response`. Assert the specific expected exception and renewed token,
+not merely that something failed. Expected model ranges must be independent
+constants, not calls to the implementation being tested. Preserve distinct missing,
+zero, stale, superseded and transport-epoch cases when consolidating scenarios.
+
+For the complete current real-HA command list, follow `.github/workflows/tests.yml`.
+Test results prove simulated contracts, not physical behavior on untested Modbus
+hardware or unobserved firmware versions.
+
+
+## Bounded control readback (3.0.4 prereleases)
+
+Accepted HA controls initiate read-only confirmation. Cloud attempts target 5, 10,
+20, 35 and 60 seconds after command completion; Modbus targets five-second reads
+for up to 60 seconds. Slow responses, HA refresh coalescing and API recovery may
+postpone a read; missed slots are skipped, never replayed as a burst. Native TCP
+retains its existing immediate updates and 2/5-second polling.
+
+Each normalized setting keeps only its latest requested value. Start and Stop
+share one key. A later command invalidates an earlier command's late completion.
+Staged Fast-mode power preferences do not initiate readback until actually written.
+Only successful coordinator/configuration reads can confirm a request; optimistic
+entity presentation and a request ACK cannot. Power confirmation uses the reported
+configured limit, not measured charging power. Cloud settings readback uses SEMS+
+configuration rather than the potentially stale limit in v3 telemetry.
+
+Normal polling and MQTT-triggered reads can satisfy the same pending requests.
+Cloud settings temporarily bypass their five-minute cache interval when needed.
+Read failures stop accelerated reads and retain existing authentication/rate-limit
+recovery. Transport changes and unload cancel pending confirmation. Expiry only
+records `unconfirmed` in diagnostics: it does not repeat writes, stop charging,
+change entity telemetry or create persistent notifications. A PV waiting state
+without a verified enabled-session indicator remains unconfirmed; it is not
+misrepresented as successful charging.
+
+Focused scenarios: `tests/test_write_confirmation.py`. Physical validation of
+Modbus readback timing still requires a supported Modbus wallbox.
+
+Beta2 configures the shared HA request-refresh debouncer with a five-second
+cooldown. An actual second-timer regression guards against the default ten-second
+cooldown; a mutation check proves that test fails with the old setting. The cloud
+SEMS+ coordinator confirms Start from session work status 6, and Stop from known
+terminal statuses 8/10. Missing or other statuses do not confirm Stop merely
+because detail says available. Native v3 and Modbus keep separate interpretations.
+A coordinator read begun before the accepted request cannot confirm it. This
+fences local in-flight reads; it does not prove the server has no internal cache.
+
+A cloud setting timeout retains the service error and arms read-only reconciliation
+for the latest setting. Outcomes are pending_after_timeout, confirmed_after_timeout
+or unconfirmed_after_timeout; ordinary read failure/cancellation outcomes still
+apply. A matching report confirms the requested value, not which request caused
+it. No write replay or automatic service success is inferred. Start/Stop and
+Modbus timeout handling are not changed by this setting-only reconciliation.
