@@ -12,6 +12,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
+from .write_confirmation import WriteConfirmation, confirmation_read
 from .const import (
     CONF_STATION_ID,
     DEFAULT_SCAN_INTERVAL_IDLE,
@@ -47,6 +48,7 @@ class ModbusUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         ))
 
         self._pending_refresh_cancel = None
+        self.write_confirmation = WriteConfirmation(self, modbus=True)
         self._closed = False
         entry.async_on_unload(self._cancel_delayed_refresh)
         super().__init__(
@@ -60,6 +62,7 @@ class ModbusUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     @callback
     def _cancel_delayed_refresh(self) -> None:
         """Cancel the custom timer as well as HA's coordinator-owned timers."""
+        self.write_confirmation.close()
         self._closed = True
         if self._pending_refresh_cancel is not None:
             self._pending_refresh_cancel()
@@ -80,6 +83,7 @@ class ModbusUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         self._pending_refresh_cancel = async_call_later(self.hass, delay, _do_refresh)
 
+    @confirmation_read
     async def _async_update_data(self) -> dict[str, Any]:
         """Fetch data from the wallbox via Modbus TCP."""
         try:

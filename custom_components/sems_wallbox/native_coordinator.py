@@ -10,6 +10,7 @@ from datetime import timedelta
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
+from .write_confirmation import WriteConfirmation, confirmation_read
 from .charge_mode_adapter import ModeTransportAdapter
 from .charge_mode_policy import ChargeModePolicy, ModeVerificationError
 from .cloud_observation import CloudAuthenticationError
@@ -108,6 +109,7 @@ class NativeCoordinator(DataUpdateCoordinator):
             config_entry=entry,
             update_interval=timedelta(seconds=5),
         )
+        self.write_confirmation = WriteConfirmation(self)
         self.entry = entry
         self.serial = entry.data["wallbox_serial_No"]
         config = {**entry.data, **entry.options}
@@ -249,6 +251,7 @@ class NativeCoordinator(DataUpdateCoordinator):
         self.transitioning = True
         self.last_update_success = False
         self.async_update_listeners()
+        self.write_confirmation.cancel()
         self.routing_epoch += 1
         self.update_interval = timedelta(seconds=5)
         try:
@@ -343,6 +346,7 @@ class NativeCoordinator(DataUpdateCoordinator):
         finally:
             await self.async_refresh()
 
+    @confirmation_read
     async def _async_update_data(self):
         epoch = self.routing_epoch
         try:
@@ -526,6 +530,7 @@ class NativeCoordinator(DataUpdateCoordinator):
         """Restore the owned cloud endpoint before closing the listener."""
         if self._closed:
             return
+        self.write_confirmation.close()
         if (push := getattr(self, "cloud_push", None)) is not None:
             await push.close()
         await self.cloud_settings.close()
@@ -552,6 +557,7 @@ class NativeCoordinator(DataUpdateCoordinator):
             self.charge_mode_policy.async_close, self.transport.async_close,
             super().async_shutdown,
         ))
+        self.write_confirmation.close()
         self._closed = True
         for operation in operations:
             try:

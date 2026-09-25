@@ -58,7 +58,8 @@ async def test_stop_suppresses_retries_but_drains_the_transmitted_write(monkeypa
         assert not stopping.done()
         release.set()
         outcomes = await asyncio.wait_for(asyncio.gather(pending, stopping, return_exceptions=True), 1)
-        assert isinstance(outcomes[0], BaseException)
+        expected = asyncio.CancelledError if cancel_caller else importlib.import_module(PACKAGE + ".charge_mode_policy").RequestSuperseded
+        assert isinstance(outcomes[0], expected), outcomes[0]
         assert outcomes[1] is None
         assert calls == ["http", "stop"]
         assert 0 < timeouts[0] <= 1

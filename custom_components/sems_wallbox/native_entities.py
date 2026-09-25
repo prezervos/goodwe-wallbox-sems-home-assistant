@@ -18,6 +18,7 @@ from .charge_mode_policy import ModeVerificationError
 from .native_power_limits import power_bounds, power_tenths
 from .observed_state import vehicle_state
 from .ui_errors import operation_error
+from .write_confirmation import confirm_write
 
 MODES = {0: "fast", 1: "pv_priority", 2: "pv_and_battery"}
 
@@ -129,6 +130,13 @@ class ControlEntity(NativeEntity):
                         settings.invalidate()
 
             operation = update_setting
+        original = operation
+
+        @confirm_write({"charging": "charging", "mode": "chargeMode", "power": "set_charge_power"}[key])
+        async def confirmed(entity, requested):
+            await original()
+
+        operation = lambda: confirmed(self, value)
         control = getattr(self.coordinator, "control_fallback", None)
         if key == "charging" and control is not None and control.submit(
             value, lambda: self.invoke(operation)

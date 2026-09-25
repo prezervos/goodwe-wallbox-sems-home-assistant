@@ -1,17 +1,15 @@
-"""
-Shared HA stubs loaded before any test setup.
+"""Provide lightweight Home Assistant contracts for offline unit tests.
 
-Since tests/ is inside the HA integration root (which has __init__.py),
-pytest in importlib mode will try to load the integration __init__.py as
-part of the package hierarchy. This conftest ensures:
-  1. All homeassistant.* stubs exist before that happens.
-  2. The integration sub-modules (const, sems_api, coordinator, config_flow)
-     are pre-registered under every possible package name pytest might assign
-     to the project root (__init__.py), so relative imports work.
+Production modules are loaded from custom_components/sems_wallbox under isolated
+package names. Actual HA lifecycle, registry and service behavior is covered by
+scripts/ha_*_smoke.py in separate processes with the real HA dependency.
 """
 
 import sys
 import types
+
+import pytest
+import requests
 
 
 def _register(name: str) -> types.ModuleType:
@@ -105,10 +103,11 @@ ce_mod = _register("homeassistant.config_entries")
 if not hasattr(ce_mod, "ConfigEntry"):
     class ConfigEntry:
         entry_id = "test_entry"
-        options = {}
-        data = {}
+        def __init__(self):
+            self.options = {}
+            self.data = {}
     ce_mod.ConfigEntry = ConfigEntry
-    ce_mod.ConfigEntryNotReady = Exception
+    ce_mod.ConfigEntryNotReady = type("ConfigEntryNotReady", (exc_mod.HomeAssistantError,), {})
 
 # --------------------------------------------------------------------------
 # homeassistant.components.*
@@ -192,22 +191,6 @@ ep_mod = _register("homeassistant.helpers.entity_platform")
 if not hasattr(ep_mod, "AddEntitiesCallback"):
     ep_mod.AddEntitiesCallback = object
 
-# --------------------------------------------------------------------------
-# Block pytest from loading the integration's __init__.py
-#
-# When tests/ is a sub-package of the project root, pytest (importlib mode)
-# walks up and tries to import the project root's __init__.py.  In importlib
-# mode, the module name for <rootdir>/__init__.py is computed as "__init__"
-# (relative path stripped of suffix), so pytest looks for sys.modules["__init__"].
-# Pre-registering a stub under that key makes pytest return early without
-# loading the actual file (which would fail with a relative-import error
-# because it lacks proper package context in this testing scenario).
-# --------------------------------------------------------------------------
-if "__init__" not in sys.modules:
-    sys.modules["__init__"] = types.ModuleType("__init__")
-
-
-
 # Minimal selector validation; actual serialization/translations use real HA smoke tests.
 selector_mod = _register("homeassistant.helpers.selector")
 if not hasattr(selector_mod, "SelectSelector"):
@@ -242,3 +225,15 @@ if not hasattr(selector_mod, "NumberSelector"):
     selector_mod.NumberSelector = NumberSelector
     selector_mod.NumberSelectorConfig = dict
     selector_mod.NumberSelectorMode = types.SimpleNamespace(BOX="box")
+
+
+# A missing API mock must fail locally rather than contact a real SEMS endpoint.
+
+
+@pytest.fixture(autouse=True)
+def forbid_unmocked_http(monkeypatch):
+    """Keep unit tests offline; protocol tests use their own loopback sockets."""
+    def reject_request(*args, **kwargs):
+        pytest.fail("Unexpected HTTP request: install an explicit response fixture")
+
+    monkeypatch.setattr(requests.sessions.Session, "request", reject_request)

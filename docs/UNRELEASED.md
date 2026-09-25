@@ -6,6 +6,29 @@ that a change had not yet been released at the time of its experiment. They are
 not claims that every historical investigation remains open. Remaining hardware
 limits are listed under Remaining investigation and in the current release notes.
 
+## 3.0.4b1 candidate: bounded confirmation after controls
+
+- Cloud: progressively spaced readback (target offsets 5/10/20/35/60 seconds).
+- Modbus: five-second readback for at most one minute after accepted controls.
+- Native TCP keeps its existing immediate reporting and 2/5-second polling.
+- One latest target per setting; Start/Stop supersede each other. Never replay a
+  write, fabricate telemetry, or notify persistently on confirmation expiry.
+- Cloud configuration uses its own SEMS+ readback, including the reported power
+  limit; ordinary telemetry cannot substitute for configuration confirmation.
+- Failed reads yield to existing recovery; handover and unload invalidate timers.
+- Diagnostics expose pending/confirmed/unconfirmed/failure outcomes.
+
+Validation: 1,510 tests passed in the full offline suite on HP840. After the final
+read-source/cancellation refinements, 459 focused tests passed, including 30 new
+confirmation cases. Ruff F checks and whitespace checks passed. After restoring
+the existing Docker runtime, six real-HA smoke runs passed: audit regressions
+(including actual cloud/Modbus timers and latest-command confirmation), cloud
+controls, native controls/handover, cloud settings, and cloud/native lifecycle.
+These tests use simulated device/API responses and do not establish physical
+Modbus timing, which still needs reporter confirmation.
+No physical charging or production deployment performed. Prepared for the
+3.0.4b1 prerelease; stable 3.0.3 remains unchanged.
+
 ## 3.0.3 development history
 
 ### Modbus setup with an invalid initial power limit (#21 follow-up)

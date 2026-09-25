@@ -35,6 +35,7 @@ async def test_cloud_handover_waits_for_protective_stop():
         transitioning=False,
         last_update_success=True,
         routing_epoch=0,
+        write_confirmation=types.SimpleNamespace(cancel=Mock()),
         async_update_listeners=Mock(),
         _mark_cloud_handover=AsyncMock(),
     )
@@ -50,6 +51,7 @@ async def test_cloud_handover_waits_for_protective_stop():
         await operation
         owner.endpoint.async_restore.assert_awaited_once()
         owner.transport.async_disconnect.assert_awaited_once_with(expected=True)
+        owner.write_confirmation.cancel.assert_called_once()
         assert not owner.local
         assert not owner.transitioning
     finally:

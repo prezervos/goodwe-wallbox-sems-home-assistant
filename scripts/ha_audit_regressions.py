@@ -510,6 +510,83 @@ async def cancelled_cleanup():
         print("PASS: repeated cleanup cancellation leaves no peer or reader task")
 
 
+async def control_readback_timers():
+    """Exercise real HA timers and entity writes with isolated fake gateways."""
+    from custom_components.sems_wallbox.coordinator import SemsUpdateCoordinator
+    from custom_components.sems_wallbox.modbus_coordinator import ModbusUpdateCoordinator
+    from custom_components.sems_wallbox.switch import SemsSwitch, ModbusStartStopSwitch
+
+    for modbus in (False, True):
+        with tempfile.TemporaryDirectory(prefix="goodwe-readback-") as folder:
+            hass = HomeAssistant(folder)
+            entry = ConfigEntry(
+                version=1, minor_version=1, domain="sems_wallbox", title="Readback",
+                unique_id=SERIAL, source="user", discovery_keys={}, subentries_data=[],
+                options={"scan_interval": 60, "scan_interval_charging": 30},
+                data={"wallbox_serial_No": SERIAL},
+            )
+            data = {"sn": SERIAL, "status": "standby", "chargeMode": 0,
+                    "set_charge_power": 4.2, "power": 0}
+            if modbus:
+                data.update(modbus_status_raw=2, modbus_car_connected=1)
+            client = Mock()
+            client.read_all.side_effect = lambda: dict(data)
+            client.get_data_gen2.side_effect = lambda serial: dict(data)
+            client.fetch_last_charge.return_value = None
+            client.write_start_stop.return_value = True
+            client.change_status_gen2.return_value = True
+            coordinator = (ModbusUpdateCoordinator if modbus else SemsUpdateCoordinator)(
+                hass, entry, client)
+            coordinator.data = {SERIAL: dict(data)}
+            coordinator.last_update_success = True
+            coordinator.charge_mode_policy = None
+            entity = (ModbusStartStopSwitch(coordinator, SERIAL, client) if modbus
+                      else SemsSwitch(coordinator, SERIAL, client, False))
+            entity.hass = hass
+            entity.async_write_ha_state = Mock()
+            monitor = coordinator.write_confirmation
+            read = client.read_all if modbus else client.get_data_gen2
+            write = client.write_start_stop if modbus else client.change_status_gen2
+            try:
+                await entity.async_turn_on()
+                assert write.call_count == 1
+                assert monitor.pending["charging"].value is True
+                assert coordinator._pending_refresh_cancel is None
+                # The actual HA timer must request a read without normal polling.
+                await asyncio.sleep(5.3)
+                await hass.async_block_till_done()
+                assert read.call_count == 1, (modbus, read.call_count)
+                assert monitor.results["charging"] == "pending"
+                assert coordinator.update_interval.total_seconds() == 60
+                # A normal/MQTT-triggered authoritative read satisfies the same plan.
+                data.update(status="charging")
+                if modbus:
+                    data.update(modbus_status_raw=3, modbus_car_connected=2)
+                await coordinator.async_refresh()
+                assert monitor.results["charging"] == "confirmed"
+                assert not monitor.pending and monitor._cancel is None
+                assert coordinator.update_interval.total_seconds() == (30 if modbus else 60)
+                assert write.call_count == 1
+                # Superseding controls preserve only Stop and never replay Start.
+                await entity.async_turn_on()
+                await entity.async_turn_off()
+                assert monitor.pending["charging"].value is False
+                data.update(status="standby")
+                if modbus:
+                    data.update(modbus_status_raw=1, modbus_car_connected=1)
+                await coordinator.async_refresh()
+                assert monitor.results["charging"] == "confirmed"
+                assert write.call_count == 3
+                await entity.async_turn_on()
+                coordinator._cancel_delayed_refresh()
+                assert not monitor.pending and monitor._cancel is None
+            finally:
+                coordinator._cancel_delayed_refresh()
+                await coordinator.async_shutdown()
+                await hass.async_stop(force=True)
+    print("PASS: real HA cloud/Modbus control timers, stale read, confirmation, latest Stop and unload")
+
+
 async def main():
     with patch(
         "requests.sessions.Session.request",
@@ -523,6 +600,7 @@ async def main():
         await modbus_wire_checks()
         await modbus_fields_and_services()
         await modbus_polling_is_read_only()
+        await control_readback_timers()
 
 
 if __name__ == "__main__":

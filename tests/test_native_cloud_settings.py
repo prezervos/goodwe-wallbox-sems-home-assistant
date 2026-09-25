@@ -1,5 +1,6 @@
 """Cloud compatibility tests with no network or wallbox writes."""
 
+import asyncio
 import importlib
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -643,17 +644,33 @@ async def test_control_write_invalidates_configuration_before_telemetry_refresh(
 @pytest.mark.asyncio
 async def test_initial_mode_does_not_discard_pending_configuration_read():
     instance = owner()
-    instance.cloud_settings.request_refresh = Mock()
+    entered, release = asyncio.Event(), asyncio.Event()
 
     async def execute(function, *args):
         data = function(*args)
-        instance.cloud_settings.observe_mode(0)
+        entered.set()
+        await asyncio.wait_for(release.wait(), 2)
         return data
 
     instance.hass.async_add_executor_job = execute
-    await instance.cloud_settings.refresh()
-    assert instance.cloud_settings.valid
-    assert instance.cloud_settings.next_refresh > 0
-    instance.cloud_settings.observe_mode(1)
-    assert not instance.cloud_settings.valid
-    assert instance.cloud_settings.next_refresh == 0
+    instance.hass.async_create_task = asyncio.create_task
+    settings = instance.cloud_settings
+    settings.request_refresh()
+    first = settings._task
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        settings.observe_mode(0)
+        assert settings._task is first
+        release.set()
+        await asyncio.wait_for(first, 2)
+        assert settings.valid
+        assert settings.next_refresh > 0
+        instance.cloud.get_data_gen2.assert_called_once()
+        settings.observe_mode(1)
+        assert not settings.valid
+        assert settings._task is not first
+        await asyncio.wait_for(settings._task, 2)
+        assert instance.cloud.get_data_gen2.call_count == 2
+    finally:
+        release.set()
+        await settings.close()

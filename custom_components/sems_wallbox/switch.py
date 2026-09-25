@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from .write_confirmation import confirm_write
 from .optimistic_write import optimistic_write
 
 import logging
@@ -244,11 +245,13 @@ class SemsSwitch(CoordinatorEntity, SwitchEntity):
         )
         return api_is_on
 
+    @confirm_write("charging", value=lambda entity, value: False)
     async def async_turn_off(self, **kwargs):
         """Stop charging and expose a rejected command to HA callers."""
         if not await async_apply_policy(self.coordinator, "stop"):
             await self._async_command(False)
 
+    @confirm_write("charging", value=lambda entity, value: True)
     async def async_turn_on(self, **kwargs):
         """Start once; do not replay a command with an uncertain outcome."""
         if not await async_apply_policy(self.coordinator, "start"):
@@ -370,6 +373,7 @@ class _SemsConfigSwitch(CoordinatorEntity, SwitchEntity):
     def _handle_coordinator_update(self) -> None:
         self.async_write_ha_state()
 
+    @confirm_write(lambda entity: entity._data_key)
     @mode_setting_write
     @optimistic_write
     async def _async_set(self, state: bool) -> None:
@@ -402,6 +406,7 @@ class SemsPlugAndChargeSwitch(_SemsConfigSwitch):
     _set_config_on = {"chargedNow": 1}
     _set_config_off = {"chargedNow": 0}
 
+    @confirm_write(lambda entity: entity._data_key)
     @mode_setting_write
     async def _async_set(self, state: bool) -> None:
         """Send one configuration write and retain only device-reported state."""
@@ -481,6 +486,7 @@ class SemsMinimumPowerSwitch(_SemsConfigSwitch):
         value = (self.coordinator.data.get(self.sn) or {}).get(self._data_key)
         return value if type(value) is bool else None
 
+    @confirm_write(lambda entity: entity._data_key)
     @mode_setting_write
     async def _async_set(self, state: bool) -> None:
         """Read before writing and keep only reported state after acknowledgement."""
@@ -570,6 +576,7 @@ class _ModbusSwitch(CoordinatorEntity, SwitchEntity):
     def _handle_coordinator_update(self) -> None:
         self.async_write_ha_state()
 
+    @confirm_write(lambda entity: getattr(entity, "_confirmation_field", None))
     @mode_setting_write
     @optimistic_write
     async def _async_set(self, state: bool) -> None:
@@ -603,11 +610,13 @@ class ModbusStartStopSwitch(_ModbusSwitch):
 
     _attr_translation_key = "modbus_start_charging"
 
+    @confirm_write("charging", value=lambda entity, value: True)
     async def async_turn_on(self, **kwargs):
         """Apply the optional verified mode policy before Modbus Start."""
         if not await async_apply_policy(self.coordinator, "start"):
             await super().async_turn_on(**kwargs)
 
+    @confirm_write("charging", value=lambda entity, value: False)
     async def async_turn_off(self, **kwargs):
         """Invalidate pending preparation before Modbus Stop."""
         if not await async_apply_policy(self.coordinator, "stop"):
@@ -655,6 +664,8 @@ class ModbusStartStopSwitch(_ModbusSwitch):
 class ModbusMaintainMinPowerSwitch(_ModbusSwitch):
     """Enable / disable maintain minimum charging power (reg 10024)."""
 
+    _confirmation_field = "ensure_minimum_charging_power"
+
     _attr_translation_key = "modbus_maintain_min_power"
     _attr_entity_category = EntityCategory.CONFIG
 
@@ -681,6 +692,8 @@ class ModbusMaintainMinPowerSwitch(_ModbusSwitch):
 class ModbusPlugChargeSwitch(_ModbusSwitch):
     """Enable / disable Plug & Charge function (reg 10019)."""
 
+    _confirmation_field = "modbus_plug_charge_enabled"
+
     _attr_translation_key = "modbus_plug_charge"
     _attr_entity_category = EntityCategory.CONFIG
 
@@ -700,6 +713,8 @@ class ModbusPlugChargeSwitch(_ModbusSwitch):
 class ModbusDynamicLoadMgmtSwitch(_ModbusSwitch):
     """Enable / disable dynamic load management (reg 10025)."""
 
+    _confirmation_field = "modbus_dynamic_load"
+
     _attr_translation_key = "modbus_dynamic_load"
     _attr_entity_category = EntityCategory.CONFIG
 
@@ -718,6 +733,8 @@ class ModbusDynamicLoadMgmtSwitch(_ModbusSwitch):
 
 class ModbusEmsDispatchSwitch(_ModbusSwitch):
     """EMS minimum power dispatch mode (reg 10000: 0=normal, 1=min-power)."""
+
+    _confirmation_field = "modbus_ems_dispatch"
 
     _attr_translation_key = "modbus_ems_dispatch"
     _attr_entity_category = EntityCategory.CONFIG
@@ -743,6 +760,8 @@ class ModbusPhaseSwitchSwitch(_ModbusSwitch):
     units (11 kW and 22 kW). The minimum settable charge power stays at 4.2 kW
     per the protocol spec; the firmware handles phase selection internally.
     """
+
+    _confirmation_field = "modbus_phase_switch_enabled"
 
     _attr_translation_key = "modbus_phase_switch"
     _attr_entity_category = EntityCategory.CONFIG

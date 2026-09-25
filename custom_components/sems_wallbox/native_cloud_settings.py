@@ -28,6 +28,7 @@ from homeassistant.const import EntityCategory
 
 from .charge_mode_policy import ModeVerificationError
 from .native_entities import NativeEntity
+from .write_confirmation import confirm_write
 from .minimum_power import write_minimum_power
 from .ui_errors import operation_error
 
@@ -277,6 +278,7 @@ class CloudSettings:
                 return
             epoch = self.owner.routing_epoch
             revision = self._revision
+            read_started = time.monotonic()
             self.next_refresh = time.monotonic() + 300
             try:
                 data = await async_execute(self.owner.hass,
@@ -304,6 +306,12 @@ class CloudSettings:
                 return
             self.valid = isinstance(data, dict) and data.get("sn") == self.owner.serial
             self.values = dict(data) if self.valid else {}
+            monitor = getattr(self.owner, "write_confirmation", None)
+            if monitor is not None:
+                if self.valid:
+                    monitor.observed(self.values, source="settings", read_started=read_started)
+                else:
+                    monitor.failed()
             self.owner.async_update_listeners()
 
     async def write(self, setting, value):
@@ -433,6 +441,8 @@ class CloudSettingEntity(NativeEntity):
         """Refresh configuration explicitly without writing any device settings."""
         await self.settings.refresh()
 
+    @confirm_write(lambda entity: entity.setting.field,
+                   value=lambda entity, value: bool(value) if entity.setting.platform == "switch" else value)
     async def write(self, value):
         await self.invoke(
             lambda: self.settings.write(self.setting, value), refresh=False
