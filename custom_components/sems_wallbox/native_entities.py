@@ -17,6 +17,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from .charge_mode_policy import ModeVerificationError
 from .native_power_limits import power_bounds, power_tenths
 from .observed_state import vehicle_state
+from .cloud_command import CloudCommandError
 from .ui_errors import operation_error
 from .write_confirmation import confirm_write
 
@@ -93,6 +94,7 @@ class NativeEntity(CoordinatorEntity):
         try:
             await operation()
         except (
+            CloudCommandError,
             ModeVerificationError,
             ConnectionError,
             TimeoutError,

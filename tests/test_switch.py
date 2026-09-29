@@ -427,3 +427,32 @@ def test_modbus_unconfirmed_policy_intent_expires():
     entity._set_pending_command(True)
     entity._pending_set_at -= _switch_mod._MODBUS_PENDING_TIMEOUT + 1
     assert entity.is_on is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("policy_enabled", [False, True])
+async def test_cloud_command_error_is_localized_without_optimistic_success(policy_enabled):
+    import importlib
+    from unittest.mock import AsyncMock
+    from homeassistant.exceptions import HomeAssistantError
+    command = importlib.import_module(_switch_mod.__package__ + ".cloud_command")
+    entity = _make_switch(STANDBY_DATA)
+    error = command.CloudCommandError("start", "C0001", uncertain=True)
+    if policy_enabled:
+        entity.coordinator.charge_mode_policy = types.SimpleNamespace(
+            enabled=True, async_start=AsyncMock(side_effect=error))
+    else:
+        async def execute(function, *args):
+            return function(*args)
+        entity.hass.async_add_executor_job = execute
+        entity.api.change_status_gen2.side_effect = error
+    with pytest.raises(HomeAssistantError) as caught:
+        await entity.async_turn_on()
+    assert caught.value.translation_key == "cloud_command_outcome_unknown"
+    assert caught.value.translation_placeholders == {"code": "C0001"}
+    assert entity._attr_is_on is False
+    if policy_enabled:
+        entity.coordinator.charge_mode_policy.async_start.assert_awaited_once()
+        entity.api.change_status_gen2.assert_not_called()
+    else:
+        entity.api.change_status_gen2.assert_called_once()

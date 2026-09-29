@@ -6,6 +6,37 @@ that a change had not yet been released at the time of its experiment. They are
 not claims that every historical investigation remains open. Remaining hardware
 limits are listed under Remaining investigation and in the current release notes.
 
+## 3.0.4b4: connection state and cloud failure reconciliation (#21)
+
+- Accept the HCA-20 cloud vehConnStu=2 as Connected. Reporter data confirms cable
+  connection during both positive load and zero-load suspension; do not infer
+  completion, actual energy flow or an idle-safe setting state from this code.
+- Allow one peer-close/reset retry for explicitly read-only SEMS+ detail/session
+  and v3 telemetry requests. Reuse the shared HTTP lock/rate gate and remaining
+  timeout/operation budget. DNS/TLS/timeouts, login and all writes keep their
+  existing no-replay behavior.
+- Preserve Start/Stop business codes and categories through CloudCommandError.
+  C0001 and lost transport acknowledgements remain uncertain service failures,
+  with EN/CS/DE/ES UI messages. Bounded read-only reconciliation reports
+  pending_after_error, confirmed_after_error or unconfirmed_after_error without
+  replaying commands, fabricating telemetry or initiating a second TCP write.
+- Control preparation budget expiry without an uncertain dispatched command is
+  not treated as proof that the command was sent. Existing auth/rate handling is
+  retained. No new production automation or entity identities.
+
+Reporter confirms beta3 removed the switch bounce on cloud and Modbus. Session
+Charging at zero load may mean suspension by the car; Vehicle state describes
+connection and Charging activity describes independently measured energy flow.
+Do not infer target SOC or completion from zero watts. Modbus raw status can
+also remain Charging after CP returns to idle.
+
+Validation: all 1,566 unit tests passed, along with real-HA audit regressions,
+Ruff F checks and whitespace checks. Evidence is retained on HP840 under
+protocol_research/issue21_5834630364.
+Real-HA audit regressions include the actual cloud vehicle sensor and uncertain
+Stop error/readback without another write. No physical charging, production
+changes, external issue messages or publication accompany this development step.
+
 ## 3.0.4b3: accepted Start/Stop presentation (#21)
 
 The mode-restoration path bypassed the cloud/Modbus switch pending-command

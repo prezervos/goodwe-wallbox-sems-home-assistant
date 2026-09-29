@@ -36,6 +36,7 @@ class PendingRead:
     source: str
     last_read: float
     uncertain: bool = False
+    uncertainty: str = "timeout"
 
 
 def matches(field, expected, data, *, cloud_session=False):
@@ -105,7 +106,7 @@ class WriteConfirmation:
         self._schedule()
         return token, getattr(self.owner, "routing_epoch", 0)
 
-    def accepted(self, field, value, ticket, *, source="telemetry", uncertain=False):
+    def accepted(self, field, value, ticket, *, source="telemetry", uncertain=False, uncertainty="timeout"):
         """Arm readback for the newest accepted or uncertain setting request.
 
         Returns:
@@ -128,8 +129,8 @@ class WriteConfirmation:
         if cancel is not None:
             cancel()
             self.owner._pending_refresh_cancel = None
-        self.pending[field] = PendingRead(value, epoch, now, source, now, uncertain)
-        self.results[field] = "pending_after_timeout" if uncertain else "pending"
+        self.pending[field] = PendingRead(value, epoch, now, source, now, uncertain, uncertainty)
+        self.results[field] = f"pending_after_{uncertainty}" if uncertain else "pending"
         self._schedule()
         return True
 
@@ -158,7 +159,7 @@ class WriteConfirmation:
             elif matches(field, target.value, data, cloud_session=self.cloud_session):
                 self.pending.pop(field)
                 self.results[field] = (
-                    "confirmed_after_timeout" if target.uncertain else "confirmed"
+                    f"confirmed_after_{target.uncertainty}" if target.uncertain else "confirmed"
                 )
         self._schedule()
 
@@ -202,7 +203,7 @@ class WriteConfirmation:
             if now > deadline:
                 self.pending.pop(field)
                 self.results[field] = (
-                    "unconfirmed_after_timeout" if target.uncertain else "unconfirmed"
+                    f"unconfirmed_after_{target.uncertainty}" if target.uncertain else "unconfirmed"
                 )
                 continue
             candidates = [
@@ -213,7 +214,7 @@ class WriteConfirmation:
             if not candidates:
                 self.pending.pop(field)
                 self.results[field] = (
-                    "unconfirmed_after_timeout" if target.uncertain else "unconfirmed"
+                    f"unconfirmed_after_{target.uncertainty}" if target.uncertain else "unconfirmed"
                 )
                 continue
             due.append(min(deadline, max(candidates[0], target.last_read + 5)))
@@ -315,6 +316,16 @@ def confirm_write(field, *, value=None):
                 timed_out = isinstance(error, TimeoutError) or (
                     getattr(error, "translation_key", None) == "operation_timeout"
                 )
+                uncertain_command = (
+                    getattr(error, "cloud_command_uncertain", False) is True
+                    or getattr(error, "translation_key", None) == "cloud_command_outcome_unknown"
+                )
+                if key == "charging" and not monitor.modbus and uncertain_command:
+                    monitor.accepted(
+                        key, expected, ticket, source=source,
+                        uncertain=True, uncertainty="error")
+                    # Preserve the failure and never replay/route the write.
+                    raise
                 if key != "charging" and not monitor.modbus and timed_out:
                     # Keep the service failure: matching telemetry can reconcile
                     # the outcome later, but is not an ACK for this request.

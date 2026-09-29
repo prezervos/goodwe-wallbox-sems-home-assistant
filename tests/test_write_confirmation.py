@@ -508,3 +508,26 @@ def test_uncertain_readback_expires_without_claiming_failure_or_success(setup):
     monitor._schedule()
     assert monitor.results["set_charge_power"] == "unconfirmed_after_timeout"
     assert not monitor.pending and clock.timer[2]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("requested", [True, False])
+async def test_uncertain_cloud_command_reads_state_without_replay(setup, requested):
+    from tests.test_sems_api import sems_api_module
+    clock, owner, monitor = setup
+    monitor.cloud_session = True
+    calls = []
+    @module.confirm_write("charging")
+    async def write(entity, value):
+        calls.append(value)
+        raise sems_api_module.CloudCommandError("start" if value else "stop", "C0001", uncertain=True)
+    with pytest.raises(sems_api_module.CloudCommandError):
+        await write(SimpleNamespace(coordinator=owner), requested)
+    assert monitor.results["charging"] == "pending_after_error"
+    monitor.observed({"last_charge_work_status": 6 if requested else 8}, read_started=99)
+    assert monitor.pending
+    clock.now = 105
+    monitor.observed({"last_charge_work_status": 6 if requested else 8}, read_started=105)
+    assert monitor.results["charging"] == "confirmed_after_error"
+    assert calls == [requested]
+    assert not monitor.pending

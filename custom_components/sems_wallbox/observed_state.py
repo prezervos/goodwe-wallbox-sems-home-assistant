@@ -120,9 +120,13 @@ def vehicle_state(values: dict, *, local: bool) -> str | None:
         # while SEMS+ workState incorrectly stayed available_gun_no_insered.
         # This flag proves connection only, not completion or charging activity.
         connection = values["vehConnStu"]
-        if type(connection) is not int or connection not in (0, 1):
+        if type(connection) is not int or connection not in (0, 1, 2):
             return None
         if connection == 0:
             return "not_plugged_in"
+        # HCA-20 reports 2 during charging and zero-load suspension (#21).
+        # It proves connection, not completion or actual power flow.
+        if connection == 2:
+            return "connected"
         return "finished_charging" if legacy_state == "finished_charging" else "connected"
     return legacy_state

@@ -57,7 +57,7 @@ class CloudObservationReader:
                 if not isinstance(token, dict) or not token.get("token"):
                     raise ConnectionError("Shared SEMS session is unavailable")
                 response = self._request_gate.request(self._session.post,
-                    STATUS_URL,
+                    STATUS_URL, retry_read=True,
                     headers={
                         "User-Agent": SEMS_USER_AGENT,
                         "Content-Type": "application/json",

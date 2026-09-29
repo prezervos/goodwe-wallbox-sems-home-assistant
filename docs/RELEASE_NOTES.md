@@ -1,3 +1,31 @@
+# 3.0.4b4 — Cloud connection state and recovery
+
+## Fixed
+
+- **Cloud vehicle connection (#21):** recognize the HCA-20 connection code observed in the reporter's logs during both active charging and zero-load suspension. Vehicle status now shows Connected instead of Unknown. Connection alone does not imply energy flow or completed charging.
+- **Interrupted cloud reads:** retry a peer-closed/reset read once, only for explicitly read-only detail, session and telemetry requests, within the remaining timeout and shared rate limits. No new login or control replay is introduced.
+- **Uncertain Start/Stop responses:** retain the cloud error code and show a translated message when acknowledgement is missing or GoodWe returns C0001. Bounded read-only reconciliation can subsequently confirm the reported state without resending the command or fabricating success.
+
+Includes the control readback and switch-feedback fixes from b1–b3. Entity identities, saved preferences and normal polling settings are unchanged.
+
+## Validation
+
+All 1,566 unit tests and real Home Assistant audit regressions passed on HP840; lint and whitespace checks passed. These runs use simulated gateways and recorded observations. Physical HCA-20/Modbus confirmation remains with the reporter.
+
+## Please test
+
+Install **3.0.4b4** with prereleases enabled in HACS and restart Home Assistant (minimum **2026.9.2**).
+
+1. In cloud mode, verify Vehicle status is Connected while the car draws power and while it remains plugged in at zero load.
+2. Verify one Start and Stop when convenient. If an error appears, inspect actual state before retrying. Send the exact time, error and debug log plus integration diagnostics after approximately one minute of readback.
+3. Recheck Modbus Start/Stop for regressions; this beta does not change its protocol mapping.
+
+A Charging session at zero watts can mean the car has suspended energy intake. It is not proof of completed charging, and the beta deliberately preserves that distinction. It does not promise faster GoodWe responses or resolve every firmware-level Modbus interruption.
+
+**3.0.3 remains the stable release** and rollback option. No production deployment accompanies this prerelease.
+
+Thanks to @GregoryDC for the detailed logs and continued hardware testing.
+
 # 3.0.4b3 — Consistent Start/Stop feedback
 
 ## Fixed

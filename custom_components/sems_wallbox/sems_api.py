@@ -22,6 +22,7 @@ from urllib.parse import urlsplit
 import requests
 from homeassistant import exceptions
 
+from .cloud_command import CloudCommandError
 from .cloud_http import SEMS_USER_AGENT
 from .cloud_rate_limit import CloudRateLimitedError, CloudRequestGate
 from .cloud_observation import CloudAuthenticationError
@@ -732,7 +733,7 @@ class SemsApi:
                 "SEMS gen2 getData: POST %s payload=%s", _eu_detail_url, payload
             )
             resp = self._request_gate.request(requests.post,
-                _eu_detail_url, headers=headers, json=payload, timeout=request_timeout(_RequestTimeout)
+                _eu_detail_url, retry_read=True, headers=headers, json=payload, timeout=request_timeout(_RequestTimeout)
             )
             rj = _response_json(resp)
             if _LOGGER.isEnabledFor(logging.DEBUG):
@@ -752,7 +753,7 @@ class SemsApi:
                     return None
                 headers = self._build_web_headers()
                 resp = self._request_gate.request(requests.post,
-                    _eu_detail_url, headers=headers, json=payload, timeout=request_timeout(_RequestTimeout)
+                    _eu_detail_url, retry_read=True, headers=headers, json=payload, timeout=request_timeout(_RequestTimeout)
                 )
                 rj = _response_json(resp)
                 if _LOGGER.isEnabledFor(logging.DEBUG):
@@ -902,10 +903,21 @@ class SemsApi:
 
     @_serialized_web_request
     def change_status_gen2(self, wallbox_sn: str, action: str) -> bool:
-        """Start or stop charging via EU gateway (Gen2 / HCA series).
+        """Send one charging command through the account's SEMS+ gateway.
 
-        action: "start" -> startCharge endpoint; "stop" -> stopCharge endpoint.
-        Payload identical to set-mode: sn + plantId + productModel.
+        Args:
+            wallbox_sn: Enrolled wallbox serial number.
+            action: "start" or "stop".
+
+        Returns:
+            True for an acknowledged command; False if preparation failed or
+            the existing generic error handling could not confirm the result.
+
+        Raises:
+            CloudCommandError: Server rejected the acknowledgement or its
+                transport result is uncertain. Never automatically replay it.
+            CloudRateLimitedError: The shared server cooldown blocks the request.
+            CloudAuthenticationError: Authentication failed.
         """
         path = _PATH_START_CHARGE if action == "start" else _PATH_STOP_CHARGE
         plant_id = self._ensure_plant_id()
@@ -945,11 +957,14 @@ class SemsApi:
                     "SEMS gen2 %sCharge non-success code=%s body=%s",
                     action, code, resp.text[:300],
                 )
+                raise CloudCommandError(
+                    action, code, rj.get("translationCode"), uncertain=code == "C0001")
             return ok
-        except requests.exceptions.Timeout:
-            _LOGGER.warning("SEMS gen2 %sCharge timed out (sn=%s)", action, wallbox_sn)
-            return False
-        except (CloudAuthenticationError, CloudRateLimitedError, BudgetCancelled, TimeoutError):
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as exc:
+            _LOGGER.warning("SEMS gen2 %sCharge acknowledgement unavailable (sn=%s)", action, wallbox_sn)
+            raise CloudCommandError(
+                action, "transport_error", uncertain=True) from exc
+        except (CloudCommandError, CloudAuthenticationError, CloudRateLimitedError, BudgetCancelled, TimeoutError):
             raise
         except Exception as exc:  # noqa: BLE001
             _LOGGER.error("SEMS gen2 %sCharge failed: %s", action, exc)
@@ -975,7 +990,7 @@ class SemsApi:
         url = self._eu_url(_PATH_GET_LAST_CHARGE)
         params = {"chargeSn": wallbox_sn, "pwId": plant_id}
         try:
-            resp = self._request_gate.request(requests.get, url, headers=headers, params=params, timeout=request_timeout(_RequestTimeout))
+            resp = self._request_gate.request(requests.get, url, retry_read=True, headers=headers, params=params, timeout=request_timeout(_RequestTimeout))
             rj = _response_json(resp)
             if _LOGGER.isEnabledFor(logging.DEBUG):
                 _LOGGER.debug(
@@ -989,7 +1004,7 @@ class SemsApi:
                 if not self._ensure_web_token(renew=True):
                     return None
                 headers = self._build_web_headers()
-                resp = self._request_gate.request(requests.get, url, headers=headers, params=params, timeout=request_timeout(_RequestTimeout))
+                resp = self._request_gate.request(requests.get, url, retry_read=True, headers=headers, params=params, timeout=request_timeout(_RequestTimeout))
                 rj = _response_json(resp)
                 if _LOGGER.isEnabledFor(logging.DEBUG):
                     _LOGGER.debug(

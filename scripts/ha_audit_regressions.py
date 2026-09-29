@@ -606,6 +606,30 @@ async def control_readback_timers():
                     assert read.call_count == before_reads + 1
                     assert monitor.results["set_charge_power"] == "confirmed_after_timeout"
                     assert client.set_charge_mode_gen2.call_count == 1
+                if not modbus:
+                    from custom_components.sems_wallbox.cloud_command import CloudCommandError
+                    from custom_components.sems_wallbox.sensor import SemsWorkStateSensor
+                    from homeassistant.exceptions import HomeAssistantError
+                    sensor = SemsWorkStateSensor(coordinator, SERIAL)
+                    coordinator.data[SERIAL].update(
+                        status="available", vehConnStu=2,
+                        workstate="available_gun_no_insered")
+                    assert sensor.native_value == "connected"
+                    client.change_status_gen2.side_effect = CloudCommandError(
+                        "stop", "C0001", "error_calling_third_party_service", uncertain=True)
+                    before_writes = write.call_count
+                    try:
+                        await entity.async_turn_off()
+                    except HomeAssistantError as error:
+                        assert error.translation_key == "cloud_command_outcome_unknown"
+                        assert error.translation_placeholders == {"code": "C0001"}
+                    else:
+                        raise AssertionError("Uncertain Stop must remain a service error")
+                    assert monitor.results["charging"] == "pending_after_error"
+                    await coordinator.async_refresh()
+                    assert monitor.results["charging"] == "confirmed_after_error"
+                    assert write.call_count == before_writes + 1
+                    client.change_status_gen2.side_effect = None
                 # Policy dispatch must present the same accepted intent as the
                 # direct platform write, without editing measured telemetry.
                 from types import SimpleNamespace

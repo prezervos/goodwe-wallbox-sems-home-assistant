@@ -410,6 +410,7 @@ async def async_apply_policy(coordinator, operation, *args):
     if policy is None:
         return False
     from .ui_errors import operation_error
+    from .cloud_command import CloudCommandError
 
     try:
         if not policy.enabled and not (
@@ -420,7 +421,7 @@ async def async_apply_policy(coordinator, operation, *args):
                 await policy.async_remember_mode(*args)
             return False
         await getattr(policy, "async_" + operation)(*args)
-    except (ModeVerificationError, CloudRateLimitedError) as err:
+    except (ModeVerificationError, CloudRateLimitedError, CloudCommandError) as err:
         raise operation_error(err) from err
     coordinator.schedule_delayed_refresh(1.0)
     return True

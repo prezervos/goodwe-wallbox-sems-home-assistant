@@ -219,12 +219,14 @@ class TestChangeStatusGen2:
 
     @pytest.mark.parametrize("action", ["start", "stop"])
     @pytest.mark.parametrize("code", ["E0001", "A0201"])
-    def test_non_success_code_returns_false(self, action, code):
+    def test_non_success_code_preserves_reason(self, action, code):
         api = self._setup_api()
         resp = self._gen2_response(code=code)
         with patch("requests.post", return_value=resp) as post:
-            result = api.change_status_gen2("SN001", action)
-        assert result is False
+            with pytest.raises(sems_api_module.CloudCommandError) as caught:
+                api.change_status_gen2("SN001", action)
+        assert caught.value.code == code
+        assert not caught.value.cloud_command_uncertain
         post.assert_called_once()
 
     @pytest.mark.parametrize("final_code, expected", [("00000", True), ("C0602", False)])
@@ -236,7 +238,12 @@ class TestChangeStatusGen2:
         ]) as post, patch.object(api, "_fetch_web_token", return_value={
             "uid": "u", "token": "renewed", "timestamp": 2,
         }) as renew:
-            assert api.change_status_gen2("SN001", "stop") is expected
+            if expected:
+                assert api.change_status_gen2("SN001", "stop") is True
+            else:
+                with pytest.raises(sems_api_module.CloudCommandError) as caught:
+                    api.change_status_gen2("SN001", "stop")
+                assert caught.value.code == final_code
         assert post.call_count == 2
         renew.assert_called_once()
 
@@ -260,6 +267,10 @@ class TestChangeStatusGen2:
             if failure in (429, 503):
                 with pytest.raises(sems_api_module.CloudRateLimitedError):
                     api.change_status_gen2("SN001", action)
+            elif failure in ("connection", "timeout"):
+                with pytest.raises(sems_api_module.CloudCommandError) as caught:
+                    api.change_status_gen2("SN001", action)
+                assert caught.value.cloud_command_uncertain
             else:
                 assert api.change_status_gen2("SN001", action) is False
         post.assert_called_once()
@@ -287,6 +298,11 @@ def test_command_status_code_takes_precedence_over_boolean(operation, payload, e
             result = api.set_charge_mode_gen2("SN001", 0, 4.2)
         elif operation == "config":
             result = api.set_config_gen2("SN001", chargedNow=1)
+        elif not expected:
+            with pytest.raises(sems_api_module.CloudCommandError) as caught:
+                api.change_status_gen2("SN001", operation)
+            assert caught.value.code == payload["code"]
+            result = False
         else:
             result = api.change_status_gen2("SN001", operation)
     assert result is expected
@@ -852,3 +868,17 @@ def test_set_mode_socket_timeout_is_uncertain_and_never_replayed(caplog):
     assert "device outcome is unknown" in caplog.text
     assert "after 90s" not in caplog.text
     api.close()
+
+
+@pytest.mark.parametrize("action", ["start", "stop"])
+def test_third_party_failure_preserves_uncertainty_and_category(action):
+    api = TestChangeStatusGen2()._setup_api()
+    reply = TestChangeStatusGen2()._gen2_response(code="C0001")
+    reply.json.return_value = {"code": "C0001", "translationCode": "error_calling_third_party_service"}
+    with patch("requests.post", return_value=reply) as post:
+        with pytest.raises(sems_api_module.CloudCommandError) as caught:
+            api.change_status_gen2("SN001", action)
+    assert caught.value.code == "C0001"
+    assert caught.value.category == "error_calling_third_party_service"
+    assert caught.value.cloud_command_uncertain
+    post.assert_called_once()

@@ -7,7 +7,7 @@
 
 Home Assistant custom integration for the **GoodWe Wallbox**.
 
-The **3.0.4b3 prerelease** adds bounded readback after cloud and Modbus controls
+The **3.0.4b4 prerelease** adds bounded readback after cloud and Modbus controls
 so accepted changes can be reflected before the next normal polling interval.
 Beta3 fixes pending Start/Stop presentation when restoring a preferred mode;
 it includes beta2 readback timing and uncertain-setting reconciliation fixes.
@@ -41,6 +41,12 @@ Supports cloud, local Modbus and optional native Socket A TCP connections:
 | Charge duration | Sensor (min) | Duration of current / last session |
 | Charge power limit | Number (kW) | Set max charge power |
 | Ensure minimum power | Switch | Device minimum-power policy; availability and writable modes depend on model/transport. Tested original HCA changes require idle. |
+
+Vehicle state describes whether a car is connected; it does not prove that
+energy is flowing. A cloud session or raw station status may remain Charging
+while the car suspends charging at zero power. Use measured Charging power or
+Charging activity to distinguish actual energy flow. Zero power alone does not
+prove that the target SOC was reached or that a Stop command was completed.
 
 ### Additional Modbus entities
 

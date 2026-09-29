@@ -6,6 +6,7 @@ import logging
 
 from homeassistant.exceptions import HomeAssistantError
 
+from .cloud_command import CloudCommandError
 from .cloud_rate_limit import CloudRateLimitedError
 
 _LOGGER = logging.getLogger(__name__)
@@ -46,6 +47,13 @@ def operation_error(error: Exception) -> HomeAssistantError:
     key = _MESSAGES.get(str(error))
     cause = error
     while key is None:
+        if isinstance(cause, CloudCommandError):
+            return HomeAssistantError(
+                str(error), translation_domain="sems_wallbox",
+                translation_key=("cloud_command_outcome_unknown"
+                                 if cause.cloud_command_uncertain else "cloud_command_rejected"),
+                translation_placeholders={"code": cause.code},
+            )
         if isinstance(cause, CloudRateLimitedError):
             return HomeAssistantError(
                 str(error), translation_domain="sems_wallbox",

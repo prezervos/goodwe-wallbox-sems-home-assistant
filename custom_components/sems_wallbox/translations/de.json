@@ -75,6 +75,12 @@
     },
     "setting_outcome_unknown": {
       "message": "Zeitüberschreitung der Cloud-Einstellung; die Änderung wurde möglicherweise bereits angewendet. Die gemeldete Einstellung wird nachgelesen. Prüfen Sie den Wert vor einem erneuten Versuch."
+    },
+    "cloud_command_outcome_unknown": {
+      "message": "Die Cloud hat den Befehl nicht bestätigt (Code {code}). Er wurde möglicherweise bereits ausgeführt. Prüfen Sie den gemeldeten Zustand vor einem erneuten Versuch."
+    },
+    "cloud_command_rejected": {
+      "message": "Die Cloud hat den Befehl abgelehnt (Code {code}). Prüfen Sie den Wallbox-Zustand und die Diagnose."
     }
   },
   "options": {
