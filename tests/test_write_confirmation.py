@@ -514,8 +514,9 @@ def test_uncertain_readback_expires_without_claiming_failure_or_success(setup):
 @pytest.mark.parametrize("requested", [True, False])
 @pytest.mark.parametrize("code", ["C0001", "R0305"])
 @pytest.mark.parametrize("confirmed", [True, False])
-async def test_uncertain_cloud_command_reads_state_without_replay(setup, requested, code, confirmed):
+async def test_uncertain_cloud_command_reads_state_without_replay(setup, requested, code, confirmed, caplog):
     from tests.test_sems_api import sems_api_module
+    caplog.set_level("INFO", logger=module.__name__)
     clock, owner, monitor = setup
     monitor.cloud_session = True
     calls = []
@@ -547,3 +548,49 @@ async def test_uncertain_cloud_command_reads_state_without_replay(setup, request
         "confirmed_after_error" if confirmed else "unconfirmed_after_error")
     assert calls == [requested]
     assert not monitor.pending
+
+    messages = [record.getMessage() for record in caplog.records if record.name == module.__name__]
+    assert len(messages) == 2
+    assert "readback started" in messages[0]
+    assert f"requested={requested}" in messages[0]
+    if confirmed:
+        assert "requested state observed" in messages[1]
+        assert "confirmed_after_error" in messages[1]
+        assert "elapsed=10.0s" in messages[1]
+    else:
+        assert "unconfirmed_after_error" in messages[1]
+        assert "outcome remains unknown" in messages[1]
+        assert caplog.records[-1].levelname == "WARNING"
+
+
+@pytest.mark.parametrize("ending", ["failed", "cancel", "close", "supersede"])
+def test_uncertain_readback_interruption_logged_once(setup, caplog, ending):
+    clock, owner, monitor = setup
+    caplog.set_level("INFO", logger=module.__name__)
+    monitor.accepted("charging", True, monitor.begin("charging"), uncertain=True, uncertainty="error")
+    if ending == "supersede":
+        old = monitor.begin("charging")
+        monitor.accepted("charging", False, old)
+        monitor.observed({"status": "standby"})
+        assert monitor.results["charging"] == "confirmed"
+    else:
+        getattr(monitor, ending)()
+        getattr(monitor, ending)()
+    messages = [record.getMessage() for record in caplog.records if record.name == module.__name__]
+    assert len(messages) == 2
+    assert "outcome remains unknown" in messages[1]
+    assert "requested=True" in messages[1]
+    assert "requested state observed" not in messages[1]
+
+
+def test_late_uncertain_start_cannot_log_confirmation_for_newer_stop(setup, caplog):
+    clock, owner, monitor = setup
+    caplog.set_level("INFO", logger=module.__name__)
+    old = monitor.begin("charging")
+    arm(monitor, "charging", False)
+    monitor.accepted("charging", True, old, uncertain=True, uncertainty="error")
+    monitor.observed({"status": "charging"})
+    assert monitor.pending["charging"].value is False
+    monitor.observed({"status": "standby"})
+    assert monitor.results["charging"] == "confirmed"
+    assert not [record for record in caplog.records if record.name == module.__name__]

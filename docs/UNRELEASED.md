@@ -1,12 +1,23 @@
 # Development backlog
 
-Release 3.0.4 packages the fixes summarized in [RELEASE_NOTES.md](RELEASE_NOTES.md).
+Release 3.0.5 packages the fixes summarized in [RELEASE_NOTES.md](RELEASE_NOTES.md).
 The sections below retain the development/validation history, including statements
 that a change had not yet been released at the time of its experiment. They are
 not claims that every historical investigation remains open. Remaining hardware
 limits are listed under Remaining investigation and in the current release notes.
 
-## Unreleased: first-generation cloud entities
+## 3.0.5: uncertain cloud command logging
+
+- Distinguish a rejected cloud command from an uncertain acknowledgement in both
+  service-error fallback text and integration logs. Keep existing translated UI
+  messages and error propagation; an unconfirmed command is not reported as success.
+- Log bounded readback startup and its terminal outcome for uncertain writes:
+  observed requested state, expired verification, read failure, supersession or
+  cancellation. An observed state does not prove causation by the original command.
+- Preserve command ordering, readback cadence, telemetry and the no-replay rule.
+  No persistent notifications or additional API requests are introduced.
+
+## 3.0.5: first-generation cloud entities
 
 - Create cloud entities from the SEMS+ capability list for the wallbox
   generation. Generation1 (HCA) gets the Fast charge power limit, which SEMS+
