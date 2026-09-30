@@ -357,3 +357,53 @@ def test_interruption_without_cable_observation_does_not_claim_completion(workst
     assert sensor_mod.vehicle_state(data, local=False) is None
     entity = SemsWorkStateSensor(_make_coordinator(data), SAMPLE_SN)
     assert entity.native_value == "unknown"
+
+
+@pytest.mark.parametrize("status,source,expected", [
+    (999, "cloud", None), (True, "cloud", None), ("invalid", "cloud", None),
+    (None, "cloud", None), (6, "cloud", 4.2), (8, "cloud", 0.0),
+    (10, "cloud", None), (0, "cloud", None), (0, "modbus", 0.0)])
+def test_power_only_known_states_authorize_zero(status, source, expected):
+    data = {"last_charge_work_status": status, "last_charge_power": 4.2, "source": source, "modbus_status_raw": 0}
+    assert SemsPowerSensor(_make_coordinator(data), SAMPLE_SN).native_value == expected
+
+
+@pytest.mark.parametrize("raw,expected", [(None, None), ("bad", None), (True, None),
+    ("nan", None), ("inf", None), ("-inf", None), ("sNaN", None), ("1e10000", None), (-0.5, None), (-1, None), (0, 0), (5, 5)])
+def test_legacy_numeric_entities_validate_observations(raw, expected):
+    for cls, field in [(SemsStatisticsSensor, "last_charge_energy"),
+                       (sensor_mod.SemsChargePowerLimitSensor, "set_charge_power"),
+                       (sensor_mod.SemsChargeDurationSensor, "last_charge_duration_minutes")]:
+        sensor = cls(_make_coordinator({field: raw}), SAMPLE_SN)
+        assert sensor.native_value == expected
+
+
+@pytest.mark.parametrize("raw", list(range(11)) + [None, True, 999])
+def test_modbus_power_validates_raw_status_before_compatibility_zero(raw):
+    from tests.test_modbus_diagnostics import decoded_blocks
+    data = decoded_blocks({10000: {17: raw if type(raw) is int else 0}})
+    data["modbus_status_raw"] = raw
+    data["last_charge_power"] = 4.2
+    expected = (4.2 if raw == 3 else 0.0) if type(raw) is int and raw in range(11) else None
+    assert SemsPowerSensor(_make_coordinator(data), SAMPLE_SN).native_value == expected
+
+
+def test_total_energy_unavailable_sample_never_emits_a_counter_spike():
+    from tests.test_modbus_diagnostics import decoded_blocks
+    coord = _make_coordinator()
+    entity = sensor_mod.SemsModbusEnergyTotalSensor(coord, SAMPLE_SN)
+    values = []
+    for high, low in [(0, 1200), (0xFFFF, 0xFFFF), (0, 1201)]:
+        coord.data[SAMPLE_SN] = decoded_blocks({10060: {5: high, 6: low}})
+        values.append(entity.native_value)
+    assert values == [120.0, None, 120.1]
+    assert entity._attr_state_class == "total_increasing"
+
+
+@pytest.mark.parametrize("change,expected", [({}, "ok"),
+    ({10000: {1: 0xFFFF}}, None), ({10000: {1: 0xFFFF, 2: 1}}, "fault"),
+    ({10000: {5: 0xFFFF}}, None), ({10000: {5: 1}}, "warning")])
+def test_fault_aggregate_cannot_clear_an_unknown_register(change, expected):
+    from tests.test_modbus_diagnostics import decoded_blocks
+    entity = sensor_mod.SemsModbusFaultSensor(_make_coordinator(decoded_blocks(change)), SAMPLE_SN)
+    assert entity.native_value == expected

@@ -12,7 +12,6 @@ from .cloud_current_limit import (
 )
 from .operation_budget import async_execute
 
-from .mode_parameters import preserved_mode_parameters
 
 import asyncio
 from dataclasses import dataclass
@@ -29,7 +28,6 @@ from homeassistant.const import EntityCategory
 from .charge_mode_policy import ModeVerificationError
 from .native_entities import NativeEntity
 from .write_confirmation import confirm_write
-from .minimum_power import write_minimum_power
 from .ui_errors import operation_error
 
 _LOGGER = logging.getLogger(__name__)
@@ -358,30 +356,13 @@ class CloudSettings:
             api = self.owner.cloud
             if setting.field == "ensure_minimum_charging_power":
                 send = partial(
-                    write_minimum_power, api, self.owner.serial,
-                    self.owner.entry.data.get("pile_generation"), self.values, bool(value),
-                    observation=dict(self.owner.data.get(self.owner.serial) or {}),
+                    api.set_minimum_power_checked, self.owner.serial,
+                    self.owner.entry.data.get("pile_generation"), bool(value),
+                    self.owner.hass.config.time_zone,
                 )
             elif setting.mode_parameter:
-                params = preserved_mode_parameters(self.values, mode)
-                params[setting.parameter] = value
-                power = None
-                if mode == 0:
-                    power = self.owner.charge_mode_policy.desired_power
-                    if power is None:
-                        power = number(self.values.get("set_charge_power"))
-                    if power is None:
-                        raise ModeVerificationError(
-                            "Cannot preserve unreported charging power"
-                        )
-                send = partial(
-                    api.set_charge_mode_gen2,
-                    self.owner.serial,
-                    mode,
-                    power,
-                    None,
-                    **params,
-                )
+                send = partial(api.edit_mode_parameter, self.owner.serial,
+                               mode, setting.parameter, value)
             else:
                 send = partial(
                     api.set_config_gen2, self.owner.serial, **{setting.parameter: value}

@@ -320,7 +320,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     WallboxModbusClient.detect_device_id, host, port
                 )
                 if device_id is None:
-                    errors["base"] = "cannot_connect"
+                    errors["base"] = "cannot_connect_modbus"
                     return self.async_show_form(
                         step_id="modbus",
                         data_schema=_STEP_MODBUS_SCHEMA,
@@ -335,7 +335,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 result = None
 
             if not result:
-                errors["base"] = "cannot_connect"
+                errors["base"] = "cannot_connect_modbus"
             else:
                 sn = result.get("sn") or host
                 return await self._async_create_serial_entry(

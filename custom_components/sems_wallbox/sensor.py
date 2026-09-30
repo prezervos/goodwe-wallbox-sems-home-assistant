@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 import logging
 import math
 from typing import Any
@@ -240,6 +240,17 @@ class SemsWorkStateSensor(CoordinatorEntity, SensorEntity):
         await self.coordinator.async_request_refresh()
 
 
+def _nonnegative_decimal(raw) -> Decimal | None:
+    """Parse a real nonnegative observation, preserving explicit zero."""
+    if raw is None or isinstance(raw, bool):
+        return None
+    try:
+        value = Decimal(str(raw))
+    except (InvalidOperation, ValueError, TypeError):
+        return None
+    return value if value.is_finite() and value >= 0 and math.isfinite(float(value)) else None
+
+
 class SemsPowerSensor(CoordinatorEntity, SensorEntity):
     """Instant power sensor in kW."""
 
@@ -271,10 +282,18 @@ class SemsPowerSensor(CoordinatorEntity, SensorEntity):
         """
         data = self.coordinator.data.get(self.sn, {}) or {}
         work_status = data.get("last_charge_work_status")
-        if work_status is None:
+        if type(work_status) is not int:
             return None
-        if work_status != 6:
+        if data.get("source") == "modbus":
+            raw_status = data.get("modbus_status_raw")
+            if type(raw_status) is not int or raw_status not in range(11):
+                return None
+            if raw_status != 3:
+                return 0.0
+        elif work_status == 8:
             return 0.0
+        if work_status != 6:
+            return None
         raw = data.get("last_charge_power")
         if raw is None or isinstance(raw, bool):
             return None
@@ -329,13 +348,7 @@ class SemsStatisticsSensor(CoordinatorEntity, SensorEntity):
     def native_value(self) -> Decimal | None:
         """Return current session energy in kWh (currentChargeQuantity from getLastCharge)."""
         data = self.coordinator.data.get(self.sn, {}) or {}
-        raw = data.get("last_charge_energy")
-        if raw is None:
-            return None
-        try:
-            return Decimal(str(raw))
-        except Exception:  # noqa: BLE001
-            return None
+        return _nonnegative_decimal(data.get("last_charge_energy"))
 
     @property
     def available(self) -> bool:
@@ -397,13 +410,11 @@ class SemsChargePowerLimitSensor(CoordinatorEntity, SensorEntity):
     @property
     def native_value(self) -> float | None:
         data = self.coordinator.data.get(self.sn, {}) or {}
-        v = data.get("set_charge_power")
-        if v is None:
+        value = _nonnegative_decimal(data.get("set_charge_power"))
+        if value is None:
             return None
-        try:
-            return float(v)
-        except (TypeError, ValueError):
-            return None
+        result = float(value)
+        return result if math.isfinite(result) else None
 
     @property
     def available(self) -> bool:
@@ -450,13 +461,8 @@ class SemsChargeDurationSensor(CoordinatorEntity, SensorEntity):
     @property
     def native_value(self) -> int | None:
         data = self.coordinator.data.get(self.sn, {}) or {}
-        v = data.get("last_charge_duration_minutes")
-        if v is None:
-            return None
-        try:
-            return int(v)
-        except (TypeError, ValueError):
-            return None
+        value = _nonnegative_decimal(data.get("last_charge_duration_minutes"))
+        return int(value) if value is not None else None
 
     @property
     def available(self) -> bool:
@@ -811,8 +817,12 @@ class SemsModbusFaultSensor(CoordinatorEntity, SensorEntity):
         )
         if any(v for v in fault_regs if v):
             return "fault"
+        if any(v is None for v in fault_regs):
+            return None
         if any(v for v in warn_regs if v):
             return "warning"
+        if any(v is None for v in warn_regs):
+            return None
         return "ok"
 
     @property

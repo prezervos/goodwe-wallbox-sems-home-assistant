@@ -318,9 +318,10 @@ def confirm_write(field, *, value=None):
                 )
                 uncertain_command = (
                     getattr(error, "cloud_command_uncertain", False) is True
-                    or getattr(error, "translation_key", None) == "cloud_command_outcome_unknown"
+                    or getattr(error, "translation_key", None) in (
+                        "cloud_command_outcome_unknown", "cloud_setting_outcome_unknown")
                 )
-                if key == "charging" and not monitor.modbus and uncertain_command:
+                if not monitor.modbus and uncertain_command:
                     monitor.accepted(
                         key, expected, ticket, source=source,
                         uncertain=True, uncertainty="error")

@@ -331,6 +331,7 @@ async def modbus_fields_and_services():
             "write_max_charge_power",
             "set_config_gen2",
             "set_charge_mode_gen2",
+            "edit_mode_parameter",
         ):
             getattr(client, method).return_value = False
         cases = [
@@ -653,6 +654,55 @@ async def control_readback_timers():
     print("PASS: real HA cloud/Modbus control timers, stale read, confirmation, latest Stop and unload")
 
 
+async def numeric_observation_serialization():
+    """Validate actual HA sensor/state formatting, including unavailable counters."""
+    import logging
+    from datetime import timedelta
+    from homeassistant.helpers.entity_platform import EntityPlatform
+    from homeassistant import bootstrap, loader
+    from custom_components.sems_wallbox.sensor import (
+        SemsStatisticsSensor, SemsChargeDurationSensor, SemsChargePowerLimitSensor,
+        SemsModbusEnergyTotalSensor,
+    )
+    with tempfile.TemporaryDirectory(prefix="goodwe-numeric-ha-") as folder:
+        hass = HomeAssistant(folder)
+        loader.async_setup(hass)
+        hass.config.skip_pip = True
+        await bootstrap.async_from_config_dict({}, hass)
+        owner = SimpleNamespace(data={SERIAL: {}}, last_update_success=True)
+        platform = EntityPlatform(hass=hass, logger=logging.getLogger(__name__),
+            domain="sensor", platform_name="sems_wallbox", platform=None,
+            scan_interval=timedelta(seconds=60), entity_namespace=None)
+        try:
+            cases = [(SemsStatisticsSensor, "last_charge_energy"),
+                     (SemsChargeDurationSensor, "last_charge_duration_minutes"),
+                     (SemsChargePowerLimitSensor, "set_charge_power"),
+                     (SemsModbusEnergyTotalSensor, "modbus_energy_total")]
+            for index, (cls, field) in enumerate(cases):
+                entity = cls(owner, SERIAL)
+                entity.hass = hass
+                entity.entity_id = f"sensor.audit_numeric_{index}"
+                entity.add_to_platform_start(hass, platform, None)
+                samples = [(0, 0), (1.5, 1 if field.endswith("minutes") else 1.5), (None, None)]
+                # Modbus typed decoding already bounds numeric values and maps
+                # unavailable registers to None; cloud strings need validation.
+                if field != "modbus_energy_total":
+                    samples += [("NaN", None), ("1e10000", None)]
+                for raw, expected in samples:
+                    owner.data[SERIAL] = {field: raw}
+                    assert entity.native_value == expected, (field, raw, entity.native_value)
+                    state = entity.state
+                    hass.states.async_set(entity.entity_id, "unknown" if state is None else state)
+                    recorded = hass.states.get(entity.entity_id).state
+                    if expected is None:
+                        assert recorded == "unknown", (field, raw, recorded)
+                    else:
+                        assert float(recorded) == expected
+        finally:
+            await hass.async_stop(force=True)
+    print("PASS: real HA numeric serialization preserves zero and unknown without nonfinite values")
+
+
 async def main():
     with patch(
         "requests.sessions.Session.request",
@@ -667,6 +717,7 @@ async def main():
         await modbus_fields_and_services()
         await modbus_polling_is_read_only()
         await control_readback_timers()
+        await numeric_observation_serialization()
 
 
 if __name__ == "__main__":

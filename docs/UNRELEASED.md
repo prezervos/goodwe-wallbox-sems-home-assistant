@@ -1,10 +1,61 @@
 # Development backlog
 
-Release 3.0.3 packages the fixes summarized in [RELEASE_NOTES.md](RELEASE_NOTES.md).
+Release 3.0.4 packages the fixes summarized in [RELEASE_NOTES.md](RELEASE_NOTES.md).
 The sections below retain the development/validation history, including statements
 that a change had not yet been released at the time of its experiment. They are
 not claims that every historical investigation remains open. Remaining hardware
 limits are listed under Remaining investigation and in the current release notes.
+
+## 3.0.4: independent audit repairs (2026-09-30)
+
+- Decode Modbus U16/U32 unavailable sentinels as unknown, including energy
+  counters, duration, status and fault aggregation. Preserve legitimate zero
+  and valid partial-FFFF counter words; never publish a sentinel as energy.
+- Drain endpoint-management workers through repeated cancellation before
+  releasing ownership. Normalize EMS switch readback expectations to integers
+  without weakening boolean matching for other controls.
+- Serialize partial cloud mode-parameter edits with an independent fresh
+  configuration read. A previous compound write must be reported before another
+  edit, mode or power command can overwrite its companions. Pending values are
+  guards, not telemetry. Definite rejections clear the candidate; uncertain
+  delivery retains the guard. Start/Stop remain available. This runtime guard
+  is not persisted/replayed across reload; the next edit reads configuration.
+- Retain the newest direct Start/Stop intent when an older request fails.
+  Preserve Stop supersession and the existing operation-budget contract.
+- Verify first-generation minimum-power changes against independently measured,
+  identity-checked telemetry no older than 60 seconds, inside the shared API
+  lock. Configured power and last-session history cannot establish idle.
+  Distinguish an active session from an unverifiable idle state in UI errors.
+- Preserve unknown cloud modes; power-only writes cannot implicitly choose
+  Fast when the mode is missing. Validate session status before reporting zero
+  power and reject invalid/nonfinite/negative numeric observations.
+- Clarify session-energy default labels, complete DE/ES native setup wording,
+  distinguish Modbus setup errors from cloud failures, and correct obsolete
+  release/power-staging documentation. Entity IDs and custom names are unchanged.
+
+Validation and independent review evidence are recorded outside the repository
+in the HP840 `prerelease_full_reaudit_20260930` audit directory. These are software
+regressions with simulated I/O, not new physical compatibility claims. No release
+or production deployment is performed as part of this repair pass.
+
+## 3.0.4: ambiguous cloud Start/Stop R0305 (#21)
+
+- Treat R0305 (remote_control_fail) as an uncertain acknowledgement, not proof
+  that the wallbox rejected the command. Reuse localized uncertain-outcome
+  messages and bounded read-only reconciliation; never replay or route a second
+  write. Preserve genuine rejection, authentication and rate-limit handling.
+- Reporter evidence: one Start at 10:30:21, R0305 at 10:30:52, active session at
+  10:31:00 and positive power at 10:31:43. Stop succeeded normally. Modbus and
+  vehicle-state fixes were confirmed in the supplied b4 logs.
+- Extend existing tests for both command directions, delayed confirmation and
+  expiry without confirmation, single dispatch and localized errors with and
+  without preferred-mode policy. No optimistic success or fabricated telemetry.
+
+Validation: the new R0305 API cases failed before the fix and passed after it.
+All 316 targeted API, switch, readback and fallback tests passed, as did the
+real-HA audit regression script, Ruff F checks and git diff --check on HP840.
+Tests use simulated APIs/devices; no physical charging, production deployment,
+publication or issue comment was performed for this change.
 
 ## 3.0.4b4: connection state and cloud failure reconciliation (#21)
 

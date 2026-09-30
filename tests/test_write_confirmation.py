@@ -512,7 +512,9 @@ def test_uncertain_readback_expires_without_claiming_failure_or_success(setup):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("requested", [True, False])
-async def test_uncertain_cloud_command_reads_state_without_replay(setup, requested):
+@pytest.mark.parametrize("code", ["C0001", "R0305"])
+@pytest.mark.parametrize("confirmed", [True, False])
+async def test_uncertain_cloud_command_reads_state_without_replay(setup, requested, code, confirmed):
     from tests.test_sems_api import sems_api_module
     clock, owner, monitor = setup
     monitor.cloud_session = True
@@ -520,14 +522,28 @@ async def test_uncertain_cloud_command_reads_state_without_replay(setup, request
     @module.confirm_write("charging")
     async def write(entity, value):
         calls.append(value)
-        raise sems_api_module.CloudCommandError("start" if value else "stop", "C0001", uncertain=True)
+        raise sems_api_module.CloudCommandError("start" if value else "stop", code, uncertain=True)
     with pytest.raises(sems_api_module.CloudCommandError):
         await write(SimpleNamespace(coordinator=owner), requested)
     assert monitor.results["charging"] == "pending_after_error"
     monitor.observed({"last_charge_work_status": 6 if requested else 8}, read_started=99)
     assert monitor.pending
-    clock.now = 105
-    monitor.observed({"last_charge_work_status": 6 if requested else 8}, read_started=105)
-    assert monitor.results["charging"] == "confirmed_after_error"
+    reads = []
+
+    async def refresh():
+        reads.append(clock.now)
+        # The first read can still contain the previous session. A later read
+        # confirms the new intent, or all reads retain the opposite state.
+        active = requested if confirmed and len(reads) >= 2 else not requested
+        monitor.observed({"last_charge_work_status": 6 if active else 8}, read_started=clock.now)
+
+    owner.async_request_refresh = refresh
+    while monitor.pending:
+        clock.now = clock.timer[0]
+        monitor._busy = True
+        await monitor._refresh()
+    assert reads == ([105, 110] if confirmed else [105, 110, 120, 135, 160])
+    assert monitor.results["charging"] == (
+        "confirmed_after_error" if confirmed else "unconfirmed_after_error")
     assert calls == [requested]
     assert not monitor.pending

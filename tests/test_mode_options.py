@@ -481,3 +481,18 @@ async def test_failed_mode_capture_does_not_save_enabled_option(flow_module):
     assert result["errors"] == {"base":"mode_capture_failed"}
     assert "data" not in result
     assert entry.options == {"remember_charge_mode":False}
+
+
+@pytest.mark.parametrize("failure", ["detect", "empty", "exception"])
+async def test_modbus_setup_failure_uses_local_connection_error(flow_module, monkeypatch, failure):
+    from unittest.mock import Mock
+    module = importlib.import_module(flow_module.__package__ + ".wallbox_modbus")
+    monkeypatch.setattr(module.WallboxModbusClient, "detect_device_id", Mock(return_value=None))
+    read = Mock(side_effect=OSError("unavailable")) if failure == "exception" else Mock(return_value=None)
+    monkeypatch.setattr(module.WallboxModbusClient, "read_all", read)
+    async def execute(function, *args):
+        return function(*args)
+    flow = flow_module.ConfigFlow()
+    flow.hass = types.SimpleNamespace(async_add_executor_job=execute)
+    result = await flow.async_step_modbus({"modbus_host": "192.0.2.1", "modbus_device_id": 0 if failure == "detect" else 247})
+    assert result["errors"] == {"base": "cannot_connect_modbus"}

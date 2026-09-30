@@ -2,6 +2,8 @@
 
 import asyncio
 import importlib
+import time
+from tests.cloud_settings_harness import bind_settings_api
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -31,7 +33,7 @@ def owner():
         last_update_success=True,
         data={"TEST": {"power": 0.0, "lastUpdate": "original"}},
         entry=SimpleNamespace(data={}),
-        hass=SimpleNamespace(async_add_executor_job=execute),
+        hass=SimpleNamespace(async_add_executor_job=execute, config=SimpleNamespace(time_zone="UTC")),
         async_update_listeners=Mock(),
         charge_mode_policy=SimpleNamespace(
             desired_power=4.2, async_setting_write=serialized
@@ -56,6 +58,9 @@ def owner():
         "currentLimit": 16,
         "rated_max_charge_power": 11,
     }
+    result.cloud.fetch_status_observation = Mock(side_effect=lambda serial: {
+        **result.data[serial], "sn": serial, "lastUpdate": time.time()})
+    bind_settings_api(result.cloud, PACKAGE)
     return result
 
 
@@ -85,7 +90,7 @@ async def test_write_preserves_other_settings_and_saved_power(
     instance = owner()
     descriptor = next(item for item in settings.SETTINGS if item.field == field)
     await instance.cloud_settings.write(descriptor, value)
-    args = ("TEST", 0, 4.2, None) if descriptor.mode_parameter else ("TEST",)
+    args = ("TEST", 0, 11.0, None) if descriptor.mode_parameter else ("TEST",)
     getattr(instance.cloud, method).assert_called_once_with(*args, **payload)
     assert instance.data == {"TEST": {"power": 0.0, "lastUpdate": "original"}}
     # API acknowledgement must not overwrite the reported setting.
@@ -429,7 +434,8 @@ async def test_combined_cloud_minimum_requires_confirmed_idle(status):
     )
     descriptor = next(item for item in settings.SETTINGS
                       if item.field == "ensure_minimum_charging_power")
-    with pytest.raises(ValueError, match="requires an idle wallbox"):
+    with pytest.raises(ValueError, match="requires an idle wallbox" if status == "charging"
+                       else "Cannot verify fresh idle"):
         await instance.cloud_settings.write(descriptor, 0)
     instance.cloud.set_charge_mode_gen2.assert_not_called()
     instance.cloud.set_config_gen2.assert_not_called()

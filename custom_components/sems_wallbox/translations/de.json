@@ -81,6 +81,15 @@
     },
     "cloud_command_rejected": {
       "message": "Die Cloud hat den Befehl abgelehnt (Code {code}). Prüfen Sie den Wallbox-Zustand und die Diagnose."
+    },
+    "cloud_setting_pending": {
+      "message": "Die vorherige Cloud-Einstellung wurde noch nicht bestätigt. Warten Sie auf den gemeldeten Wert, bevor Sie eine weitere Einstellung ändern."
+    },
+    "cloud_setting_outcome_unknown": {
+      "message": "Die Cloud hat die Einstellung nicht bestätigt (Code {code}). Sie wurde möglicherweise bereits angewendet. Der gemeldete Zustand wird geprüft; wiederholen Sie den Schreibvorgang nicht."
+    },
+    "minimum_power_idle_unverified": {
+      "message": "Ein aktueller Ruhezustand lässt sich nicht bestätigen. Warten Sie auf aktuelle Wallbox-Daten und versuchen Sie es erneut."
     }
   },
   "options": {
@@ -94,7 +103,7 @@
           "plant_id": "Plant ID",
           "product_model": "Produktmodell",
           "remember_charge_mode": "Vor dem Laden den in HA gewählten Modus wiederherstellen",
-          "native_enabled": "Enable native TCP controls (development)"
+          "native_enabled": "Native TCP-Steuerung aktivieren (Entwicklung)"
         },
         "data_description": {
           "scan_interval": "Cloud-/Modbus-Abfrageintervall. Lokales TCP nutzt 5 Sekunden, bei aktivem Leistungsschutz 2 Sekunden. Verifiziertes MQTT kann das HTTP-Ersatzintervall verdoppeln.",
@@ -107,14 +116,14 @@
       },
       "native": {
         "title": "TCP und automatischer Wechsel (2/2)",
-        "description": "**Schritt 2 von 2.** Prüfen Sie die TCP-Verbindung und den automatischen Wechsel bei Cloud-Ausfall. Bestätigen Sie diese Seite, um Änderungen beider Seiten zu speichern.\n\nDevelopment: configure a reachable LAN listener. Setup does not redirect the wallbox. Use Local TCP connection to switch Socket A; switching it off or unloading restores the original cloud endpoint. Power is selectable in 0.1 kW steps within the identified model range. Native mode keeps HA charging preferences. A TCP-only entry has no cloud telemetry.\n\nOhne gespeichertes Leistungslimit gilt das Modellminimum (4,2 kW für GW11 HCA). Ändern Sie das Limit über die Ladeleistungsentität; gespeicherte Werte bleiben bei Neuladen und Neustart erhalten.",
+        "description": "**Schritt 2 von 2.** Prüfen Sie die TCP-Verbindung und den automatischen Wechsel bei Cloud-Ausfall. Bestätigen Sie diese Seite, um Änderungen beider Seiten zu speichern.\n\nEntwicklung: Konfigurieren Sie einen erreichbaren LAN-Listener. Die Einrichtung leitet die Wallbox noch nicht um. Mit „Lokale TCP-Verbindung“ schalten Sie Socket A um; Ausschalten oder Entladen der Integration stellt den ursprünglichen Cloud-Endpunkt wieder her. Die Leistung ist in Schritten von 0,1 kW innerhalb des erkannten Modellbereichs einstellbar. Der native Modus behält die Ladepräferenzen von HA bei. Ein reiner TCP-Eintrag hat keine Cloud-Telemetrie.\n\nOhne gespeichertes Leistungslimit gilt das Modellminimum (4,2 kW für GW11 HCA). Ändern Sie das Limit über die Ladeleistungsentität; gespeicherte Werte bleiben bei Neuladen und Neustart erhalten.",
         "data": {
-          "native_host": "Wallbox IPv4 address",
-          "native_advertised_host": "Home Assistant IPv4 address reachable from the wallbox",
-          "native_port": "TCP listener port",
-          "native_discover": "Verify identity using LAN discovery",
-          "wallbox_serial_No": "Serial number (optional with discovery)",
-          "native_ingress_peer": "Trusted TCP proxy IPv4 (optional; for Docker source NAT only)",
+          "native_host": "IPv4-Adresse der Wallbox",
+          "native_advertised_host": "Von der Wallbox erreichbare IPv4-Adresse von Home Assistant",
+          "native_port": "TCP-Listener-Port",
+          "native_discover": "Identität durch LAN-Erkennung prüfen",
+          "wallbox_serial_No": "Seriennummer (bei Erkennung optional)",
+          "native_ingress_peer": "IPv4-Adresse eines vertrauenswürdigen TCP-Proxys (optional; nur für Quell-NAT in Docker)",
           "native_auto_fallback": "Bei Cloud-Ausfall automatisch TCP verwenden"
         },
         "data_description": {
@@ -123,7 +132,7 @@
       }
     },
     "abort": {
-      "cloud_credentials_required": "This entry has no cloud account. Keep native TCP enabled or configure a cloud entry first."
+      "cloud_credentials_required": "Dieser Eintrag hat kein Cloud-Konto. Lassen Sie natives TCP aktiviert oder richten Sie zuerst einen Cloud-Eintrag ein."
     },
     "error": {
       "mode_capture_failed": "Der aktuelle Wallbox-Modus konnte nicht geprüft werden. Verbindung wiederherstellen und erneut versuchen; Wiederherstellung wurde nicht aktiviert.",
@@ -147,7 +156,8 @@
       "invalid_serial": "Geben Sie eine nicht leere Seriennummer ein.",
       "native_configuration_failed": "Die lokalen TCP-Einstellungen konnten nicht geprüft werden. Prüfen Sie Adressen, Port, Seriennummer und Erreichbarkeit der Wallbox.",
       "wrong_device": "Die Verbindung identifiziert nicht die ursprüngliche Wallbox.",
-      "connection_validation_failed": "Die Verbindung konnte nicht geprüft werden. Prüfen Sie die Einstellungen und die Verfügbarkeit des Geräts."
+      "connection_validation_failed": "Die Verbindung konnte nicht geprüft werden. Prüfen Sie die Einstellungen und die Verfügbarkeit des Geräts.",
+      "cannot_connect_modbus": "Die Verbindung zur Wallbox über Modbus TCP ist fehlgeschlagen. Prüfen Sie Adresse, Port, Geräte-ID und ob Modbus aktiviert ist."
     },
     "step": {
       "user": {
@@ -211,15 +221,15 @@
         }
       },
       "native": {
-        "title": "Native TCP connection",
-        "description": "Development: configure a reachable LAN listener. Setup does not redirect the wallbox. Use Local TCP connection to switch Socket A; switching it off or unloading restores the original cloud endpoint. Power is selectable in 0.1 kW steps within the identified model range. Native mode keeps HA charging preferences. A TCP-only entry has no cloud telemetry.\n\nOhne gespeichertes Leistungslimit gilt das Modellminimum (4,2 kW für GW11 HCA). Ändern Sie das Limit über die Ladeleistungsentität; gespeicherte Werte bleiben bei Neuladen und Neustart erhalten.",
+        "title": "Native TCP-Verbindung",
+        "description": "Entwicklung: Konfigurieren Sie einen erreichbaren LAN-Listener. Die Einrichtung leitet die Wallbox noch nicht um. Mit „Lokale TCP-Verbindung“ schalten Sie Socket A um; Ausschalten oder Entladen der Integration stellt den ursprünglichen Cloud-Endpunkt wieder her. Die Leistung ist in Schritten von 0,1 kW innerhalb des erkannten Modellbereichs einstellbar. Der native Modus behält die Ladepräferenzen von HA bei. Ein reiner TCP-Eintrag hat keine Cloud-Telemetrie.\n\nOhne gespeichertes Leistungslimit gilt das Modellminimum (4,2 kW für GW11 HCA). Ändern Sie das Limit über die Ladeleistungsentität; gespeicherte Werte bleiben bei Neuladen und Neustart erhalten.",
         "data": {
-          "native_host": "Wallbox IPv4 address",
-          "native_advertised_host": "Home Assistant IPv4 address reachable from the wallbox",
-          "native_port": "TCP listener port",
-          "native_discover": "Verify identity using LAN discovery",
-          "wallbox_serial_No": "Serial number (optional with discovery)",
-          "native_ingress_peer": "Trusted TCP proxy IPv4 (optional; for Docker source NAT only)",
+          "native_host": "IPv4-Adresse der Wallbox",
+          "native_advertised_host": "Von der Wallbox erreichbare IPv4-Adresse von Home Assistant",
+          "native_port": "TCP-Listener-Port",
+          "native_discover": "Identität durch LAN-Erkennung prüfen",
+          "wallbox_serial_No": "Seriennummer (bei Erkennung optional)",
+          "native_ingress_peer": "IPv4-Adresse eines vertrauenswürdigen TCP-Proxys (optional; nur für Quell-NAT in Docker)",
           "native_auto_fallback": "Bei Cloud-Ausfall automatisch TCP verwenden"
         },
         "data_description": {
@@ -279,7 +289,7 @@
         "name": "Ladeleistung"
       },
       "energy": {
-        "name": "Insgesamt geladene Energie"
+        "name": "Energie der Ladesitzung"
       },
       "set_charge_power_limit": {
         "name": "Zugeteilte Ladeleistung"

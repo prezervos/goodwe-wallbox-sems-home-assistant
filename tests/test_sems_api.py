@@ -871,14 +871,60 @@ def test_set_mode_socket_timeout_is_uncertain_and_never_replayed(caplog):
 
 
 @pytest.mark.parametrize("action", ["start", "stop"])
-def test_third_party_failure_preserves_uncertainty_and_category(action):
+@pytest.mark.parametrize("code,category", [
+    ("C0001", "error_calling_third_party_service"),
+    ("R0305", "remote_control_fail"),
+])
+def test_third_party_failure_preserves_uncertainty_and_category(action, code, category):
     api = TestChangeStatusGen2()._setup_api()
-    reply = TestChangeStatusGen2()._gen2_response(code="C0001")
-    reply.json.return_value = {"code": "C0001", "translationCode": "error_calling_third_party_service"}
+    reply = TestChangeStatusGen2()._gen2_response(code=code)
+    reply.json.return_value = {"code": code, "translationCode": category}
     with patch("requests.post", return_value=reply) as post:
         with pytest.raises(sems_api_module.CloudCommandError) as caught:
             api.change_status_gen2("SN001", action)
-    assert caught.value.code == "C0001"
-    assert caught.value.category == "error_calling_third_party_service"
+    assert caught.value.code == code
+    assert caught.value.category == category
     assert caught.value.cloud_command_uncertain
     post.assert_called_once()
+
+
+@pytest.mark.parametrize("raw,expected", [(None, None), (True, None), (False, None),
+    (999, None), ("0", None), ("bad", None), (0, 0), (1, 1), (2, 2)])
+@pytest.mark.parametrize("alias", ["chargeMode", "mode", "workMode"])
+def test_detail_mode_aliases_preserve_unknown_without_defaulting_to_fast(raw, expected, alias):
+    api = _make_api()
+    api._ensure_plant_id = MagicMock(return_value="PLANT")
+    api._ensure_web_token = MagicMock(return_value=True)
+    api._build_web_headers = MagicMock(return_value={})
+    reply = MagicMock(status_code=200)
+    reply.json.return_value = {"code": "00000", "data": {"sn": "TEST", alias: raw}}
+    with patch("requests.post", return_value=reply):
+        data = api.get_data_gen2("TEST")
+    assert data["chargeMode"] is expected
+    assert data["_reported_charge_mode"] is expected
+    api.close()
+
+
+@pytest.mark.parametrize("reported", ["OTHER", "", None, True, 123, [], {}])
+def test_detail_rejects_explicit_mismatched_or_malformed_identity(reported):
+    api = _make_api()
+    api._ensure_plant_id = MagicMock(return_value="PLANT")
+    api._ensure_web_token = MagicMock(return_value=True)
+    api._build_web_headers = MagicMock(return_value={})
+    reply = MagicMock(status_code=200)
+    reply.json.return_value = {"code": "00000", "data": {"sn": reported, "chargeMode": 0}}
+    with patch("requests.post", return_value=reply):
+        assert api.get_data_gen2("TEST") is None
+    api.close()
+
+
+def test_detail_retains_legacy_request_scope_when_serial_field_is_absent():
+    api = _make_api()
+    api._ensure_plant_id = MagicMock(return_value="PLANT")
+    api._ensure_web_token = MagicMock(return_value=True)
+    api._build_web_headers = MagicMock(return_value={})
+    reply = MagicMock(status_code=200)
+    reply.json.return_value = {"code": "00000", "data": {"chargeMode": 0}}
+    with patch("requests.post", return_value=reply):
+        assert api.get_data_gen2("TEST")["sn"] == "TEST"
+    api.close()

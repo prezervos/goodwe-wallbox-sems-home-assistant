@@ -8,6 +8,7 @@ import time
 from dataclasses import dataclass, replace
 from functools import wraps
 
+from .cloud_command import CloudCommandError
 from .cloud_rate_limit import CloudRateLimitedError
 from .operation_budget import BudgetCancelled, CURRENT_BUDGET, OperationBudget
 
@@ -450,7 +451,7 @@ def mode_setting_write(function=None, *, desired_mode=None, remember_power=False
                 if (remember_power or getattr(entity, "_remember_charge_power", False))
                 else None,
             )
-        except (ModeVerificationError, CloudRateLimitedError) as err:
+        except (ModeVerificationError, CloudRateLimitedError, CloudCommandError) as err:
             raise operation_error(err) from err
 
     return wrapped
@@ -468,12 +469,15 @@ def prepare_fast_power(function):
         policy = getattr(entity.coordinator, "charge_mode_policy", None)
         data = entity.coordinator.data.get(entity.sn, {}) or {}
         mode = data.get("chargeMode")
-        if mode not in (1, 2):
-            return await function(entity, value)
         from .ui_errors import operation_error
 
         try:
-            if policy is None or not entity.coordinator.last_update_success:
+            if (type(mode) is not int or mode not in (0, 1, 2)
+                    or not entity.coordinator.last_update_success):
+                raise ModeVerificationError("Device did not report a valid charging mode")
+            if mode == 0:
+                return await function(entity, value)
+            if policy is None:
                 raise ModeVerificationError("Device did not report a valid charging mode")
             power = policy._valid_power(value)
             if not entity.native_min_value <= power <= entity.native_max_value:
@@ -483,7 +487,7 @@ def prepare_fast_power(function):
                 entity.async_write_ha_state()
 
             await policy.async_setting_write(staged, desired_power=power)
-        except (ModeVerificationError, CloudRateLimitedError) as error:
+        except (ModeVerificationError, CloudRateLimitedError, CloudCommandError) as error:
             raise operation_error(error) from error
 
     return wrapped

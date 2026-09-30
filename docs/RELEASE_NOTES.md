@@ -1,3 +1,38 @@
+# 3.0.4 — Reliable controls and audited state handling
+
+This maintenance release brings the 3.0.4 beta fixes to stable and includes a complete independent audit of the integration, tests, configuration UI and translations.
+
+## Control feedback and cloud recovery
+
+- Read back accepted cloud and Modbus changes sooner instead of waiting for the next normal polling interval. Cloud checks use target offsets of 5/10/20/35/60 seconds; Modbus checks run every five seconds for up to one minute. Existing throttling, response latency and HA scheduling still apply. Normal polling settings are unchanged.
+- Keep accepted Start/Stop intent visible while telemetry catches up, including preferred-mode restoration. An older failed Start cannot clear or replace a newer Stop.
+- Treat missing acknowledgements and GoodWe C0001/R0305 control errors as uncertain outcomes. Show a translated service message and reconcile through bounded reads without replaying Start/Stop or issuing a second TCP command. This does not turn an error into a fabricated success.
+- Recognize the HCA-20 vehicle connection code confirmed in issue #21. A connected vehicle or a Charging session at zero watts does not prove actual energy flow or completed charging.
+- Retry an explicitly read-only cloud request once after peer-close/reset, within the shared request limits and remaining timeout. No new login or control replay is introduced.
+
+## Audit fixes
+
+- Prevent consecutive cloud mode, power and partial-setting writes from restoring stale companion settings. A prior compound write must be independently reported before another mode-setting edit can proceed. Definite rejection clears the guard; uncertain delivery retains it. Desired values never replace telemetry. Direct Start/Stop remain available; a Start requiring a preferred-mode write may need that confirmation first.
+- Check first-generation minimum-power changes using fresh, identity-checked measured telemetry under the shared API lock. Configured power or last-session history cannot establish that charging is idle. Generation2 independent settings retain their separate behavior.
+- Preserve unknown cloud modes and reject explicitly mismatched device identities. Missing mode data no longer silently selects Fast.
+- Decode unavailable Modbus register values as unknown instead of large energy counters or invented status values. Preserve valid zero and legitimate counter values; correctly confirm EMS switch readback.
+- Retain native endpoint ownership until its worker finishes, even through repeated cancellation, preventing overlapping endpoint restoration.
+- Reject invalid, nonfinite and negative numeric observations. Unknown session states no longer fabricate zero power.
+
+## UI and compatibility
+
+- Clarify session-energy labels, complete German/Spanish native setup translations, and show transport-specific Modbus connection errors. English/Czech/German/Spanish translation keys and placeholders are aligned.
+- Preserve entity IDs, saved preferences, custom names and normal polling options. A default session-energy name may become clearer when no custom name is set.
+- Minimum Home Assistant version remains **2026.9.2**. Install through HACS and restart Home Assistant. Native TCP remains opt-in; no new setup migration is required.
+
+## Validation and known limits
+
+**1,716 unit tests and all 16 development-HA scenarios passed**, together with focused independent retests, Ruff F checks and whitespace checks. The independent reviewer closed all 13 audit findings and the additional edge cases discovered during repair. These final runs use simulated API/device I/O on Home Assistant 2026.9.2; they are not new physical validation of every model or firmware.
+
+GoodWe response delays, firmware-specific Modbus charging interruptions, and cloud Auto start on the original HCA remain outside the guarantees of this release. Missing data stays unknown. The cloud compound-write guard is runtime-only: reload does not replay pending settings, and subsequent edits read configuration again. Existing corrupted historical statistics are not automatically repaired.
+
+Thanks to @GregoryDC for detailed logs and hardware testing, and to the contributors credited in the README.
+
 # 3.0.4b4 — Cloud connection state and recovery
 
 ## Fixed

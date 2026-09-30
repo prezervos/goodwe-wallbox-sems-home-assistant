@@ -219,6 +219,7 @@ def test_observation_endpoints_recover_peer_close_without_login(reader):
     if reader == "detail":
         method, call = "requests.post", lambda: api.get_data_gen2("TEST")
     elif reader == "session":
+        reply._content = b'{"code":"00000","data":{"chargeLog":{"workStu":6,"pevChar":2.4}}}'
         method, call = "requests.get", lambda: api.fetch_last_charge("TEST")
     else:
         call = lambda: api._observation_reader.read("TEST")
@@ -226,7 +227,13 @@ def test_observation_endpoints_recover_peer_close_without_login(reader):
     context = patch(method, side_effect=[peer_closed(), reply]) if method else patch.object(
         api._observation_reader._session, "post", side_effect=[peer_closed(), reply])
     with context as send:
-        assert isinstance(call(), dict)
+        result = call()
+        assert isinstance(result, dict)
+        if reader == "session":
+            assert result["last_charge_work_status"] == 6
+            assert result["last_charge_power"] == 2.4
+        else:
+            assert result["sn"] == "TEST"
         assert send.call_count == 2
     assert api.login_attempts == 0
     api.close()

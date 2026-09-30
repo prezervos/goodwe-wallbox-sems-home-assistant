@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from enum import Enum
 import re
 
 
@@ -22,3 +23,18 @@ class CloudCommandError(RuntimeError):
             r"[a-z_]{1,80}", category) else None
         self.cloud_command_uncertain = uncertain
         super().__init__(f"Cloud {action} acknowledgement failed ({self.code})")
+
+
+class CloudSettingError(CloudCommandError):
+    """An uncertain settings write that must be reconciled before another edit."""
+
+    def __init__(self, code):
+        super().__init__("setting", code, uncertain=True)
+
+
+class SettingOutcome(Enum):
+    """Conclusive outcomes; uncertain delivery raises CloudSettingError."""
+
+    ACKNOWLEDGED = "acknowledged"
+    REJECTED = "rejected"
+    NOT_SENT = "not_sent"

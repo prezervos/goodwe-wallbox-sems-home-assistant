@@ -214,7 +214,7 @@ class SemsNumber(CoordinatorEntity, NumberEntity):
         if not self.coordinator.last_update_success:
             return False
         data = self.coordinator.data.get(self.sn, {}) or {}
-        return data.get("chargeMode") in (0, 1, 2)
+        return type(data.get("chargeMode")) is int and data["chargeMode"] in (0, 1, 2)
 
     @callback
     def _handle_coordinator_update(self) -> None:
@@ -558,7 +558,7 @@ class _SemsModeParamNumber(CoordinatorEntity, NumberEntity):
         if not self.coordinator.last_update_success:
             return False
         data = self.coordinator.data.get(self.sn, {}) or {}
-        return data.get("chargeMode") in self._available_modes
+        return type(data.get("chargeMode")) is int and data["chargeMode"] in self._available_modes
 
     @property
     def native_value(self) -> float | None:
@@ -587,29 +587,15 @@ class _SemsModeParamNumber(CoordinatorEntity, NumberEntity):
     @optimistic_write
     async def async_set_native_value(self, value: float) -> None:
         data = self.coordinator.data.get(self.sn, {}) or {}
-        mode = data.get("chargeMode", 0)
-        # Build full current-param kwargs so the API call preserves other settings.
-        # chargeMaxPower is only relevant for mode 0.
-        charge_power = data.get("set_charge_power") if mode == 0 else None
-        from .mode_parameters import preserved_mode_parameters
+        mode = data.get("chargeMode")
         from .ui_errors import operation_error
-
-        try:
-            kwargs = preserved_mode_parameters(data, mode)
-            if mode == 0 and charge_power is None:
-                raise ValueError("Cannot preserve unreported charging power")
-        except (ValueError, RuntimeError) as error:
-            raise operation_error(error) from error
-        kwargs[self._override_kwarg] = int(value)
 
         self._pending_value = value
         self._pending_until = time.monotonic() + self._PENDING_TIMEOUT
         self.async_write_ha_state()
-
-        ok = await async_execute(self.hass,
-            lambda: self.api.set_charge_mode_gen2(
-                self.sn, mode, charge_power, None, **kwargs
-            )
+        ok = await async_execute(
+            self.hass, self.api.edit_mode_parameter,
+            self.sn, mode, self._override_kwarg, value,
         )
         if not ok:
             _LOGGER.warning("%s: set_charge_mode failed, reverting pending value", self.unique_id)

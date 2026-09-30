@@ -330,6 +330,9 @@ def _make_mode_entity(entity_cls, chargeMode=0, max_energy=0, min_energy=0, soc=
     coordinator.schedule_delayed_refresh = MagicMock()
     api = MagicMock()
     api.set_charge_mode_gen2 = MagicMock(return_value=True)
+    from tests.cloud_settings_harness import bind_settings_api
+    api.get_data_gen2.side_effect = lambda serial: {"sn": serial, **coordinator.data[serial]}
+    bind_settings_api(api, _pkg_name)
     entity = entity_cls(coordinator, SAMPLE_SN, api)
     entity.hass = _make_hass()
     entity.async_write_ha_state = MagicMock()
@@ -579,3 +582,13 @@ async def test_mode_target_does_not_overwrite_unreported_siblings(field):
     with pytest.raises(HomeAssistantError):
         await entity.async_set_native_value(20)
     entity.api.set_charge_mode_gen2.assert_not_called()
+
+
+@pytest.mark.parametrize("mode", [None, True, "0", 99])
+async def test_unverified_mode_never_dispatches_or_saves_power(mode):
+    entity = _make_entity(chargeMode=mode)
+    api = entity.api
+    assert not entity.available
+    with pytest.raises(HomeAssistantError):
+        await entity.async_set_native_value(4.2)
+    api.set_charge_mode_gen2.assert_not_called()

@@ -247,3 +247,19 @@ async def test_expired_intent_cannot_trigger_late_handover():
     await finish(owner)
     owner._set_local.assert_not_awaited()
     command.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("requested", [True, False])
+async def test_uncertain_dispatched_cloud_command_never_replays_over_tcp(requested):
+    """A healthy preflight cannot turn a lost command ACK into a second write."""
+    command_module = importlib.import_module(PACKAGE + ".cloud_command")
+    owner = subject({"sn": "test"})
+    operation = AsyncMock(side_effect=command_module.CloudCommandError(
+        "start" if requested else "stop", "R0305", uncertain=True))
+    assert owner.control_fallback.submit(requested, operation)
+    await finish(owner)
+    operation.assert_awaited_once()
+    owner._set_local.assert_not_awaited()
+    assert owner.local is False
+    assert not owner.pending_intent.pending

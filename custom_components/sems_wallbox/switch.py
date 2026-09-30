@@ -26,7 +26,6 @@ from .const import (
 )
 from .charge_mode_policy import async_apply_policy, mode_setting_write
 from .coordinator import SemsUpdateCoordinator
-from .minimum_power import write_minimum_power
 from .ui_errors import operation_error
 
 _LOGGER = logging.getLogger(__name__)
@@ -285,6 +284,8 @@ class SemsSwitch(CoordinatorEntity, SwitchEntity):
         from .ui_errors import operation_error
 
         action = "start" if enabled else "stop"
+        command = object()
+        self._direct_command_token = command
         self._set_pending_command(enabled)
         self.async_write_ha_state()
         try:
@@ -297,12 +298,13 @@ class SemsSwitch(CoordinatorEntity, SwitchEntity):
                     else "Stop was not acknowledged; check actual device state"
                 )
         except (OSError, ValueError, RuntimeError) as error:
-            self._last_command_target = None
-            self._last_command_ts = None
-            self._attr_is_on = self._compute_is_on_from_data(
-                self.coordinator.data.get(self.sn, {}) or {}
-            )
-            self.async_write_ha_state()
+            if self._direct_command_token is command:
+                self._last_command_target = None
+                self._last_command_ts = None
+                self._attr_is_on = self._compute_is_on_from_data(
+                    self.coordinator.data.get(self.sn, {}) or {}
+                )
+                self.async_write_ha_state()
             raise operation_error(error) from error
         finally:
             self.coordinator.schedule_delayed_refresh(5)
@@ -516,12 +518,10 @@ class SemsMinimumPowerSwitch(_SemsConfigSwitch):
         try:
             if not self.coordinator.last_update_success:
                 raise ValueError("Cloud configuration is unavailable")
-            reported = await async_execute(self.hass,
-                lambda: self.api.get_data_gen2(self.sn))
-            accepted = await async_execute(self.hass,
-                lambda: write_minimum_power(
-                    self.api, self.sn, self.generation, reported, state,
-                    observation=dict(self.coordinator.data.get(self.sn) or {})))
+            accepted = await async_execute(
+                self.hass, self.api.set_minimum_power_checked,
+                self.sn, self.generation, state, self.hass.config.time_zone,
+            )
             if not accepted:
                 raise ValueError("Minimum-power setting was not acknowledged")
         except (ConnectionError, TimeoutError, ValueError) as error:
@@ -597,7 +597,11 @@ class _ModbusSwitch(CoordinatorEntity, SwitchEntity):
     def _handle_coordinator_update(self) -> None:
         self.async_write_ha_state()
 
-    @confirm_write(lambda entity: getattr(entity, "_confirmation_field", None))
+    @confirm_write(
+        lambda entity: getattr(entity, "_confirmation_field", None),
+        value=lambda entity, state: int(state)
+        if getattr(entity, "_confirmation_field", None) == "modbus_ems_dispatch" else state,
+    )
     @mode_setting_write
     @optimistic_write
     async def _async_set(self, state: bool) -> None:

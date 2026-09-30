@@ -113,8 +113,18 @@ class EndpointManager:
         try:
             return await asyncio.shield(task)
         except asyncio.CancelledError:
-            # Wait for a bounded in-flight mutation before any recovery can start.
-            await task
+            # A second cancellation must not release ownership while the bounded
+            # management thread can still change Socket A or close its session.
+            while not task.done():
+                try:
+                    await asyncio.shield(task)
+                except asyncio.CancelledError:
+                    continue
+                except Exception:
+                    # Cancellation wins; retrieve the worker failure below.
+                    break
+            if not task.cancelled():
+                task.exception()
             raise
 
     def _inspect(self):

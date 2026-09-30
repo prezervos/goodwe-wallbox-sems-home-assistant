@@ -6,12 +6,14 @@ import logging
 
 from homeassistant.exceptions import HomeAssistantError
 
-from .cloud_command import CloudCommandError
+from .cloud_command import CloudCommandError, CloudSettingError
 from .cloud_rate_limit import CloudRateLimitedError
 
 _LOGGER = logging.getLogger(__name__)
 
 _MESSAGES = {
+    "Cannot verify fresh idle state for minimum-power write": "minimum_power_idle_unverified",
+    "Previous cloud setting is not yet confirmed": "cloud_setting_pending",
     "Cloud current-limit metadata is invalid or contradicts the reported value": "current_limit_range_unverified",
     "Cloud current limit is outside the supported range or precision": "current_limit_invalid",
     "Disable the wallbox schedule before changing Auto start": "auto_start_schedule",
@@ -47,6 +49,12 @@ def operation_error(error: Exception) -> HomeAssistantError:
     key = _MESSAGES.get(str(error))
     cause = error
     while key is None:
+        if isinstance(cause, CloudSettingError):
+            return HomeAssistantError(
+                str(error), translation_domain="sems_wallbox",
+                translation_key="cloud_setting_outcome_unknown",
+                translation_placeholders={"code": cause.code},
+            )
         if isinstance(cause, CloudCommandError):
             return HomeAssistantError(
                 str(error), translation_domain="sems_wallbox",
