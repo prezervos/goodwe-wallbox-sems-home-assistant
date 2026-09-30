@@ -46,6 +46,7 @@ jobs:
           python scripts/ha_cloud_lifecycle_smoke.py custom_components --native
           python scripts/ha_runtime_smoke.py custom_components
           python scripts/ha_reauth_smoke.py custom_components
+          python scripts/ha_cloud_capabilities_smoke.py
       - name: Real HA native services and cloud handover against loopback only
         run: python scripts/ha_native_runtime_smoke.py custom_components
 

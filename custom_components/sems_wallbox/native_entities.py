@@ -654,6 +654,13 @@ def setup_platform(platform, coordinator, add_entities):
         from .native_cloud_settings import (
             setup_cloud_settings, watch_reported_cloud_settings,
         )
+        from .cloud_capabilities import remove_unsupported, unsupported_ids
+
+        if coordinator.cloud is not None:
+            remove_unsupported(
+                coordinator.hass, coordinator.entry, platform,
+                unsupported_ids(coordinator.entry.data, platform, sn),
+            )
         cloud_entities = setup_cloud_settings(platform, coordinator)
         entities.extend(cloud_entities)
         watch_reported_cloud_settings(platform, coordinator, add_entities, cloud_entities)

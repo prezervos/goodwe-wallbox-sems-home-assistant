@@ -231,20 +231,21 @@ async def test_explicit_entity_update_reads_configuration_without_writing():
     assert instance.data == {"TEST": {"power": 0.0, "lastUpdate": "original"}}
 
 
-@pytest.mark.parametrize("capabilities,expected", [
-    ([], True),
-    (["Phase_Switch"], False),
-    (["Dynamic_Load_Control"], True),
+@pytest.mark.parametrize("capabilities,load,output,current", [
+    ([], True, True, True),
+    (["Phase_Switch"], False, False, False),
+    (["Dynamic_Load_Control"], True, False, True),
+    (["Output_Power_Setting"], False, True, False),
 ])
-def test_load_controls_respect_explicit_capabilities(capabilities, expected):
-    """Retain legacy registrations without contradicting known capabilities."""
+def test_load_controls_respect_explicit_capabilities(capabilities, load, output, current):
+    """Distinguish output-power capabilities from dynamic-load capabilities."""
     instance = owner()
     instance.entry.data["more_device_controls"] = capabilities
     fields = {entity.setting.field for platform in ("number", "switch")
               for entity in settings.setup_cloud_settings(platform, instance)}
-    assert ("dynamicLoad" in fields) is expected
-    assert ("rated_max_charge_power" in fields) is expected
-    assert "currentLimit" in fields
+    assert ("dynamicLoad" in fields) is load
+    assert ("rated_max_charge_power" in fields) is output
+    assert ("currentLimit" in fields) is current
 
 
 @pytest.mark.asyncio

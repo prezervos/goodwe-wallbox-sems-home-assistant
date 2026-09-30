@@ -6,6 +6,27 @@ that a change had not yet been released at the time of its experiment. They are
 not claims that every historical investigation remains open. Remaining hardware
 limits are listed under Remaining investigation and in the current release notes.
 
+## Unreleased: first-generation cloud entities
+
+- Create cloud entities from the SEMS+ capability list for the wallbox
+  generation. Generation1 (HCA) gets the Fast charge power limit, which SEMS+
+  sets through `chargePowerSetted` in the mode form, with bounds from the rated
+  power (7 kW: 1.4-7, 11/22 kW: 4.2-11/22). Generation1 no longer gets
+  minimum/maximum session-energy targets, target SOC or completion-time controls.
+  Session-energy and elapsed-duration sensors are unchanged.
+- Offer the output power limit (`ratedMaxiChargePower`) only with
+  `Output_Power_Setting`, and the import-current limit only with
+  `Dynamic_Load_Control`, as SEMS+ does. Share classification between cloud-only
+  and combined cloud/native TCP configurations. Each branch keeps its legacy
+  fallback for missing, empty or malformed capability lists; unknown metadata
+  never triggers registry deletion. Remove only proven unsupported entities
+  owned by the current configuration. Known generation1 still establishes the
+  absence of mode-target controls even when its extra capability list is unknown.
+- Keep primary native power/mode controls and verified local Auto start/minimum
+  power support unchanged. Local Modbus entities retain their existing behavior.
+- Cover generation/capability combinations and actual HA registry cleanup,
+  unknown-metadata reload, foreign-entry ownership and custom-name restoration.
+
 ## 3.0.4: independent audit repairs (2026-09-30)
 
 - Decode Modbus U16/U32 unavailable sentinels as unknown, including energy

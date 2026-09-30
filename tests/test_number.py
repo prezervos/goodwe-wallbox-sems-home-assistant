@@ -592,3 +592,70 @@ async def test_unverified_mode_never_dispatches_or_saves_power(mode):
     with pytest.raises(HomeAssistantError):
         await entity.async_set_native_value(4.2)
     api.set_charge_mode_gen2.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Tests: cloud entities follow SEMS+ generation capabilities
+# ---------------------------------------------------------------------------
+GEN1_CAPS = {"pile_generation": "1", "rated_power": 11.0,
+             "more_device_controls": ["Dynamic_Load_Control"]}
+GEN2_CAPS = {"pile_generation": "2", "rated_power": 11.0,
+             "more_device_controls": ["Output_Power_Setting", "Dynamic_Load_Control"]}
+
+
+async def _setup_cloud_numbers(monkeypatch, caps):
+    coordinator = _FakeCoordinator({SAMPLE_SN: {**SAMPLE_DATA}})
+    api = MagicMock()
+    api.fetch_device_info.return_value = {"controlItemRanges": {}}
+    hass = MagicMock()
+    hass.data = {"sems_wallbox": {"test": {
+        "coordinator": coordinator, "api": api, "capabilities": caps}}}
+    removed = []
+    monkeypatch.setattr(_number_mod, "remove_unsupported",
+                        lambda _hass, _entry, platform, ids: removed.extend((platform, i) for i in ids))
+
+    async def run(_hass, func, *args):
+        return func(*args)
+
+    monkeypatch.setattr(_number_mod, "async_execute", run)
+    added = []
+    await _number_mod.async_setup_entry(hass, types.SimpleNamespace(entry_id="test"), added.extend)
+    return {type(entity).__name__ for entity in added}, removed
+
+
+@pytest.mark.asyncio
+async def test_first_generation_numbers_match_sems_plus_controls(monkeypatch):
+    names, removed = await _setup_cloud_numbers(monkeypatch, GEN1_CAPS)
+    assert names == {"SemsNumber", "SemsCurrentLimitNumber"}
+    assert {i for _, i in removed} == {
+        f"{SAMPLE_SN}-number-max-energy", f"{SAMPLE_SN}-number-target-soc",
+        f"{SAMPLE_SN}-number-min-energy", f"{SAMPLE_SN}-number-output-power-limit"}
+    assert {p for p, _ in removed} == {"number"}
+
+
+@pytest.mark.asyncio
+async def test_second_generation_numbers_are_unchanged(monkeypatch):
+    names, removed = await _setup_cloud_numbers(monkeypatch, GEN2_CAPS)
+    assert names == {"SemsNumber", "SemsMaxEnergyNumber", "SemsTargetSocNumber",
+                     "SemsMinEnergyNumber", "SemsOutputPowerLimitNumber",
+                     "SemsCurrentLimitNumber"}
+    assert removed == []
+
+
+@pytest.mark.asyncio
+async def test_current_limit_requires_dynamic_load_control_when_listed(monkeypatch):
+    caps = {**GEN2_CAPS, "more_device_controls": ["Output_Power_Setting"]}
+    names, removed = await _setup_cloud_numbers(monkeypatch, caps)
+    assert "SemsCurrentLimitNumber" not in names
+    assert ("number", f"{SAMPLE_SN}-number-current-limit") in removed
+
+
+@pytest.mark.parametrize("rated,expected", [
+    (7.0, (1.4, 7.0)), (11.0, (4.2, 11.0)), (22.0, (4.2, 22.0)), (None, (1.4, 7.0)),
+])
+def test_rated_power_sets_fast_power_bounds(rated, expected):
+    coordinator = _FakeCoordinator({SAMPLE_SN: {**SAMPLE_DATA, "model": "",
+                                                "min_charge_power": None,
+                                                "max_charge_power": None}})
+    entity = SemsNumber(coordinator, SAMPLE_SN, MagicMock(), 11.0, rated_power=rated)
+    assert (entity.native_min_value, entity.native_max_value) == expected

@@ -28,6 +28,8 @@ sys.modules[_pkg_name] = _pkg
 _const = types.ModuleType(f"{_pkg_name}.const")
 _const.DOMAIN = "sems_wallbox"
 _const.CONN_TYPE_MODBUS = "modbus"
+_const.CAP_OUTPUT_POWER_SETTING = "Output_Power_Setting"
+_const.CAP_DYNAMIC_LOAD_CONTROL = "Dynamic_Load_Control"
 sys.modules[f"{_pkg_name}.const"] = _const
 setattr(_pkg, "const", _const)
 
@@ -589,3 +591,25 @@ def test_unknown_mode_clears_old_fast_after_pending_window(report):
 def test_missing_mode_constructs_unknown_option_not_literal_none():
     entity = _make_entity(chargeMode=None)
     assert entity._attr_current_option is None
+
+
+# ---------------------------------------------------------------------------
+# Tests: charge duration follows SEMS+ generation capabilities
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+@pytest.mark.parametrize("generation,has_duration", [("1", False), ("2", True), ("", True)])
+async def test_charge_duration_select_only_for_generations_with_finish_time(
+        monkeypatch, generation, has_duration):
+    coordinator = _FakeCoordinator({"SN1": {"sn": "SN1", "chargeMode": 0}})
+    hass = MagicMock()
+    hass.data = {"sems_wallbox": {"test": {
+        "coordinator": coordinator, "api": MagicMock(),
+        "capabilities": {"pile_generation": generation}}}}
+    removed = []
+    monkeypatch.setattr(_select_mod, "remove_unsupported",
+                        lambda _hass, _entry, platform, ids: removed.extend((platform, i) for i in ids))
+    added = []
+    await _select_mod.async_setup_entry(hass, types.SimpleNamespace(entry_id="test"), added.extend)
+    assert any(isinstance(e, SemsChargeDurationSelect) for e in added) is has_duration
+    assert any(isinstance(e, InverterOperationModeEntity) for e in added)
+    assert removed == ([] if has_duration else [("select", "SN1-select-charge-duration")])

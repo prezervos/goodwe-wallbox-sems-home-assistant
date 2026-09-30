@@ -20,8 +20,9 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .operation_budget import async_execute
-from .const import DOMAIN, CONN_TYPE_MODBUS, CAP_OUTPUT_POWER_SETTING, CAP_DYNAMIC_LOAD_CONTROL
+from .const import DOMAIN, CONN_TYPE_MODBUS
 from .charge_mode_policy import mode_setting_write, prepare_fast_power
+from .cloud_capabilities import control_support, remove_unsupported, unsupported_ids
 from .coordinator import SemsUpdateCoordinator
 from .wallbox_modbus import BREAKER_CURRENT_MIN, BREAKER_CURRENT_MAX
 from .cloud_current_limit import (
@@ -61,7 +62,6 @@ async def async_setup_entry(
 
     api = runtime["api"]
     caps = runtime.get("capabilities", {})
-    more_controls = caps.get("more_device_controls", [])
 
     _LOGGER.debug(
         "Setting up SemsNumber entities for entry %s",
@@ -70,19 +70,25 @@ async def async_setup_entry(
     )
 
     entities: list[SemsNumber] = []
+    unsupported: list[str] = []
     for sn, data in coordinator.data.items():
         set_charge_power = data.get("set_charge_power")
-        # Charge power slider: show when Output_Power_Setting is listed OR cap list is empty
-        if not more_controls or CAP_OUTPUT_POWER_SETTING in more_controls:
-            entities.append(SemsNumber(coordinator, sn, api, set_charge_power))
-        # Mode-param numbers: available when in the relevant mode (mode 0/2)
-        entities.append(SemsMaxEnergyNumber(coordinator, sn, api))
-        entities.append(SemsTargetSocNumber(coordinator, sn, api))
-        entities.append(SemsMinEnergyNumber(coordinator, sn, api))
-        # Output power limit: part of Dynamic Load Management
-        if CAP_DYNAMIC_LOAD_CONTROL in more_controls:
+        # Unknown metadata retains the legacy power control; gen1 uses the mode form.
+        if control_support(caps, "set_charge_power") is not False:
+            entities.append(SemsNumber(
+                coordinator, sn, api, set_charge_power, rated_power=caps.get("rated_power")))
+        for field, number in (
+            ("max_energy", SemsMaxEnergyNumber),
+            ("charge_target_soc", SemsTargetSocNumber),
+            ("min_energy", SemsMinEnergyNumber),
+        ):
+            if control_support(caps, field) is not False:
+                entities.append(number(coordinator, sn, api))
+        if control_support(caps, "rated_max_charge_power") is True:
             entities.append(SemsOutputPowerLimitNumber(coordinator, sn, api))
-        # Current limit: always add (virtually all wallboxes support it)
+        unsupported.extend(unsupported_ids(caps, "number", sn))
+        if control_support(caps, "currentLimit") is False:
+            continue
         try:
             info = await async_execute(hass, api.fetch_device_info, sn)
         except (OSError, ValueError, RuntimeError) as error:
@@ -93,6 +99,7 @@ async def async_setup_entry(
         )
         entities.append(SemsCurrentLimitNumber(coordinator, sn, api))
 
+    remove_unsupported(hass, config_entry, "number", unsupported)
     async_add_entities(entities)
 
 
@@ -103,12 +110,14 @@ class SemsNumber(CoordinatorEntity, NumberEntity):
     _attr_has_entity_name = True
     _attr_translation_key = "charge_power"
 
-    def __init__(self, coordinator: SemsUpdateCoordinator, sn: str, api, value: float):
+    def __init__(self, coordinator: SemsUpdateCoordinator, sn: str, api, value: float,
+                 *, rated_power: float | None = None):
         """Initialize the number entity."""
         super().__init__(coordinator)
         self.coordinator = coordinator
         self.api = api
         self.sn = sn
+        self._rated_power = rated_power
         self._attr_native_value = float(value) if value is not None else None
         # Grace period tracking: ignore stale coordinator updates after a set
         self._pending_value: float | None = None
@@ -149,14 +158,20 @@ class SemsNumber(CoordinatorEntity, NumberEntity):
         return 0.1
 
     def _model_limits(self) -> tuple[float, float]:
-        """Return (min_kW, max_kW) as fallback based on product model string.
+        """Return (min_kW, max_kW) as fallback based on rated power or product model.
 
-        Per-model defaults when API doesn't return min/max:
+        Per-model defaults when API doesn't return min/max (same as SEMS+):
           GW7  → 1.4 -  7.0 kW
           GW11 → 4.2 - 11.0 kW
           GW22 → 4.2 - 22.0 kW
         Defaults to GW7 range when model is unknown (smallest / safest).
         """
+        try:
+            rated = float(self._rated_power)
+        except (TypeError, ValueError):
+            rated = None
+        if rated in (7.0, 11.0, 22.0):
+            return (1.4 if rated == 7.0 else 4.2), rated
         model = ((self.coordinator.data.get(self.sn, {}) or {}).get("model") or "").upper()
         if "GW22" in model:
             return 4.2, 22.0
@@ -320,7 +335,7 @@ class SemsNumber(CoordinatorEntity, NumberEntity):
 class SemsOutputPowerLimitNumber(CoordinatorEntity, NumberEntity):
     """Cloud entity for the global output power limit (kW) via set-config.
 
-    Part of the Dynamic Load Management feature. The API field is
+    Advertised by Output_Power_Setting. The API field is
     ``ratedMaxiChargePower`` in both the detail response and the set-config call.
     """
 
