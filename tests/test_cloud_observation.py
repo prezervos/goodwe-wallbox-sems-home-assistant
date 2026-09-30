@@ -153,7 +153,7 @@ async def test_v3_start_button_is_not_a_charging_measurement(
 
 
 @pytest.mark.parametrize("advances", [True, False])
-async def test_configured_ceiling_and_fresh_telemetry_are_both_required(advances):
+async def test_configured_ceiling_and_fresh_telemetry_are_both_required(advances, monkeypatch):
     from types import SimpleNamespace
     from unittest.mock import AsyncMock
 
@@ -179,7 +179,10 @@ async def test_configured_ceiling_and_fresh_telemetry_are_both_required(advances
         async_add_executor_job=AsyncMock(side_effect=lambda fn, *args: fn(*args))
     )
     adapter = adapter_module.ModeTransportAdapter(hass, "TEST", client)
-    policy = policy_module.ChargeModePolicy(adapter, AsyncMock(), timeout=0.02, interval=0)
+    # Advance verification time with replies, not a 20 ms wall-clock race on
+    # loaded hosts. Keep the real async safety budget independently bounded.
+    monkeypatch.setattr(policy_module, "time", SimpleNamespace(monotonic=lambda: len(reports)))
+    policy = policy_module.ChargeModePolicy(adapter, AsyncMock(), timeout=5, interval=0)
     policy.desired_power = 5.0
     if advances:
         await policy.async_start()
@@ -188,6 +191,7 @@ async def test_configured_ceiling_and_fresh_telemetry_are_both_required(advances
         with pytest.raises(policy_module.ModeVerificationError):
             await policy.async_start()
         client.change_status_gen2.assert_not_called()
+    assert len(reports) == (2 if advances else 5)
     client.set_charge_mode_gen2.assert_not_called()
 
 
