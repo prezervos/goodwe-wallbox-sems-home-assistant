@@ -196,3 +196,23 @@ async def test_rate_limited_setting_preserves_translated_error_without_replay(en
     entity._handle_coordinator_update.assert_called_once()
     entity.coordinator.schedule_delayed_refresh.assert_called_once_with(3.0)
     assert budget_module.CURRENT_BUDGET.get() is None
+
+
+@pytest.mark.parametrize("uncertain", [True, False])
+@pytest.mark.parametrize("wrapped", [True, False])
+def test_cloud_command_error_text_and_log_preserve_outcome(caplog, uncertain, wrapped):
+    errors = importlib.import_module(PACKAGE + ".ui_errors")
+    commands = importlib.import_module(PACKAGE + ".cloud_command")
+    cause = commands.CloudCommandError("stop", "C0001" if uncertain else "invalid", uncertain=uncertain)
+    error = cause
+    if wrapped:
+        error = RuntimeError("Operation failed")
+        error.__cause__ = cause
+    result = errors.operation_error(error)
+    assert result.translation_key == (
+        "cloud_command_outcome_unknown" if uncertain else "cloud_command_rejected")
+    expected = "outcome unknown" if uncertain else "rejected"
+    assert expected in str(result)
+    assert expected in caplog.text
+    assert "Wallbox operation failed" not in caplog.text
+    assert "acknowledgement failed" not in str(result)

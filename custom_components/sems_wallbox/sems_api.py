@@ -1148,16 +1148,14 @@ class SemsApi:
             if ok:
                 _LOGGER.info("SEMS gen2 %sCharge succeeded (sn=%s)", action, wallbox_sn)
             else:
-                _LOGGER.warning(
-                    "SEMS gen2 %sCharge non-success code=%s body=%s",
-                    action, code, resp.text[:300],
-                )
                 # Reporter #21 captured R0305 followed by an active session and
                 # positive power after a single Start. A failed cloud ACK is not
                 # proof of device rejection; reconcile by reading, never replay.
-                raise CloudCommandError(
+                error = CloudCommandError(
                     action, code, rj.get("translationCode"),
                     uncertain=code in {"C0001", "R0305"})
+                _LOGGER.warning("SEMS gen2 %sCharge: %s", action, error)
+                raise error
             return ok
         except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as exc:
             _LOGGER.warning("SEMS gen2 %sCharge acknowledgement unavailable (sn=%s)", action, wallbox_sn)

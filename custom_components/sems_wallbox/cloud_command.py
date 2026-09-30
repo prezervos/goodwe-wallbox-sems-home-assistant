@@ -22,7 +22,8 @@ class CloudCommandError(RuntimeError):
         self.category = category if isinstance(category, str) and re.fullmatch(
             r"[a-z_]{1,80}", category) else None
         self.cloud_command_uncertain = uncertain
-        super().__init__(f"Cloud {action} acknowledgement failed ({self.code})")
+        outcome = "outcome unknown; command may have applied" if uncertain else "rejected"
+        super().__init__(f"Cloud {action} {outcome} ({self.code})")
 
 
 class CloudSettingError(CloudCommandError):

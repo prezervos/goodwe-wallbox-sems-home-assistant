@@ -45,24 +45,29 @@ def operation_error(error: Exception) -> HomeAssistantError:
     Returns:
         Home Assistant exception with a translatable UI message.
     """
-    _LOGGER.warning("Wallbox operation failed: %s", error)
     key = _MESSAGES.get(str(error))
     cause = error
     while key is None:
         if isinstance(cause, CloudSettingError):
+            _LOGGER.warning("Wallbox setting outcome unknown: %s", cause)
             return HomeAssistantError(
-                str(error), translation_domain="sems_wallbox",
+                str(cause), translation_domain="sems_wallbox",
                 translation_key="cloud_setting_outcome_unknown",
                 translation_placeholders={"code": cause.code},
             )
         if isinstance(cause, CloudCommandError):
+            _LOGGER.warning(
+                "Wallbox command %s: %s",
+                "outcome unknown" if cause.cloud_command_uncertain else "rejected", cause,
+            )
             return HomeAssistantError(
-                str(error), translation_domain="sems_wallbox",
+                str(cause), translation_domain="sems_wallbox",
                 translation_key=("cloud_command_outcome_unknown"
                                  if cause.cloud_command_uncertain else "cloud_command_rejected"),
                 translation_placeholders={"code": cause.code},
             )
         if isinstance(cause, CloudRateLimitedError):
+            _LOGGER.warning("Wallbox operation rate limited: %s", cause)
             return HomeAssistantError(
                 str(error), translation_domain="sems_wallbox",
                 translation_key="cloud_rate_limited",
@@ -77,6 +82,7 @@ def operation_error(error: Exception) -> HomeAssistantError:
         if cause.__cause__ is None:
             break
         cause = cause.__cause__
+    _LOGGER.warning("Wallbox operation failed: %s", error)
     return HomeAssistantError(
         str(error),
         translation_domain="sems_wallbox",

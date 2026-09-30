@@ -101,8 +101,9 @@ class WriteConfirmation:
         """Supersede an older choice before awaiting a potentially slow write."""
         token = object()
         self.tokens[field] = token
+        if field in self.pending:
+            self._finish(field, "superseded")
         self.results[field] = "writing"
-        self.pending.pop(field, None)
         self._schedule()
         return token, getattr(self.owner, "routing_epoch", 0)
 
@@ -131,6 +132,12 @@ class WriteConfirmation:
             self.owner._pending_refresh_cancel = None
         self.pending[field] = PendingRead(value, epoch, now, source, now, uncertain, uncertainty)
         self.results[field] = f"pending_after_{uncertainty}" if uncertain else "pending"
+        if uncertain:
+            _LOGGER.info(
+                "Wallbox readback started: field=%s requested=%s; outcome unknown, "
+                "checking reported state for up to 60 seconds without replaying the command",
+                field, value,
+            )
         self._schedule()
         return True
 
@@ -154,27 +161,25 @@ class WriteConfirmation:
                 and target.value is True
                 and data.get("modbus_status_raw") in (5, 8)
             ):
-                self.pending.pop(field)
-                self.results[field] = "device_rejected"
+                self._finish(field, "device_rejected")
             elif matches(field, target.value, data, cloud_session=self.cloud_session):
-                self.pending.pop(field)
-                self.results[field] = (
-                    f"confirmed_after_{target.uncertainty}" if target.uncertain else "confirmed"
+                self._finish(
+                    field, f"confirmed_after_{target.uncertainty}" if target.uncertain else "confirmed"
                 )
         self._schedule()
 
     def failed(self):
         """Yield to normal authentication, rate-limit and communication recovery."""
-        for field in self.pending:
-            self.results[field] = "read_failed"
-        self.pending.clear()
+        for field in list(self.pending):
+            self._finish(field, "read_failed")
         self._schedule()
 
     def cancel(self):
         """Invalidate waiting commands and reads on a transport change or unload."""
-        for field in self.pending.keys() | self.tokens.keys():
+        for field in list(self.pending):
+            self._finish(field, "cancelled")
+        for field in self.tokens:
             self.results[field] = "cancelled"
-        self.pending.clear()
         self.tokens.clear()
         if self._cancel is not None:
             self._cancel()
@@ -184,6 +189,22 @@ class WriteConfirmation:
         """Cancel owned timers without cancelling an in-flight coordinator read."""
         self._closed = True
         self.cancel()
+
+    def _finish(self, field, result):
+        """Record one readback outcome, logging only uncertain writes."""
+        target = self.pending.pop(field)
+        self.results[field] = result
+        if not target.uncertain:
+            return
+        confirmed = result.startswith("confirmed_after_")
+        unresolved = result.startswith("unconfirmed_after_") or result == "read_failed"
+        _LOGGER.log(
+            logging.WARNING if unresolved else logging.INFO,
+            "Wallbox readback %s: field=%s requested=%s elapsed=%.1fs; %s",
+            result, field, target.value, time.monotonic() - target.started,
+            "requested state observed; this does not establish which command caused it"
+            if confirmed else "command outcome remains unknown; no command replayed",
+        )
 
     def _schedule(self):
         if self._cancel is not None:
@@ -196,14 +217,12 @@ class WriteConfirmation:
             if getattr(self.owner, "local", False) or target.epoch != getattr(
                 self.owner, "routing_epoch", 0
             ):
-                self.pending.pop(field)
-                self.results[field] = "cancelled"
+                self._finish(field, "cancelled")
                 continue
             deadline = target.started + 60
             if now > deadline:
-                self.pending.pop(field)
-                self.results[field] = (
-                    f"unconfirmed_after_{target.uncertainty}" if target.uncertain else "unconfirmed"
+                self._finish(
+                    field, f"unconfirmed_after_{target.uncertainty}" if target.uncertain else "unconfirmed"
                 )
                 continue
             candidates = [
@@ -212,9 +231,8 @@ class WriteConfirmation:
                 if target.started + slot > target.last_read
             ]
             if not candidates:
-                self.pending.pop(field)
-                self.results[field] = (
-                    f"unconfirmed_after_{target.uncertainty}" if target.uncertain else "unconfirmed"
+                self._finish(
+                    field, f"unconfirmed_after_{target.uncertainty}" if target.uncertain else "unconfirmed"
                 )
                 continue
             due.append(min(deadline, max(candidates[0], target.last_read + 5)))

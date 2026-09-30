@@ -1,3 +1,32 @@
+# 3.0.5 — Device capabilities and clearer cloud diagnostics
+
+## Cloud controls matched to device capabilities
+
+- Restore the Fast charge power control for first-generation HCA wallboxes even when `Output_Power_Setting` is absent. Explicit API ranges take precedence; rated-power defaults are 1.4–7 kW for 7 kW models and 4.2–11/22 kW for 11/22 kW models.
+- Apply the correct capability gates: output-power limit requires `Output_Power_Setting`, while import-current limit requires `Dynamic_Load_Control` when usable capabilities are available.
+- Share capability rules between cloud-only and combined cloud/native TCP setups. First-generation mode settings no longer expose unsupported minimum/maximum session-energy targets, target SOC or completion time. Actual energy and elapsed-duration sensors remain available.
+- Remove stale unsupported setting entities only when non-support is established and only within the matching config entry. Missing, empty or malformed capability lists do not trigger deletion. Primary controls and verified local TCP features remain intact.
+
+## Clearer uncertain-command diagnostics
+
+- Distinguish rejected cloud commands from uncertain acknowledgements such as `C0001` and `R0305` in logs and service-error fallback text. A command that may have applied is no longer described as definitively failed.
+- Log the beginning and end of bounded readback for uncertain writes: requested state observed, verification expired, read failed, request superseded or verification cancelled. Observing a state does not prove which command caused it.
+- Preserve translated UI messages, service-error propagation, command ordering and protection of newer Start/Stop requests. No additional polling, command replay or persistent notifications are introduced.
+
+## Updating and compatibility
+
+Install **3.0.5** through HACS and restart Home Assistant. Minimum Home Assistant version remains **2026.9.2**. No new configuration is required; Modbus protocol behavior and normal polling options are unchanged.
+
+Unsupported setting entities can disappear on reload when device metadata proves they are not available. Unknown metadata alone never removes them. Retained entities keep their identities; registry tests also verify ID/custom-name restoration when a supported entity is recreated. Automation references to a removed unsupported control should be reviewed.
+
+## Validation and limits
+
+Regression coverage includes capability matrices across both cloud setup paths, actual Home Assistant entity registries, delayed `C0001`/`R0305` Start/Stop outcomes, readback expiry, cancellation and supersession. Release CI runs the full unit suite on Python 3.12/3.13 and 17 development-HA scenarios, plus HACS and hassfest validation.
+
+GoodWe cloud response delays and uncertain acknowledgements can still occur. This release improves handling and diagnostics; it does not guarantee faster cloud execution or claim new physical compatibility with every model. Final automated tests use simulated device/API I/O and do not start charging or change production HA.
+
+Thanks to @pedrodivisez for the generation-specific fixes and device validation in #25, and @GregoryDC for the logs and hardware testing in #21. See the README for the wider contributor credits.
+
 # 3.0.4 — Reliable controls and audited state handling
 
 This maintenance release brings the 3.0.4 beta fixes to stable and includes a complete independent audit of the integration, tests, configuration UI and translations.
