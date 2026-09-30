@@ -1,6 +1,6 @@
 # Cloud currentLimit contract investigation
 
-Status: implemented in the unreleased development tree with simulated tests.
+Status: available since 3.0.3, covered by simulated tests.
 The earlier 0-32 A compatibility lock has been removed. Research evidence below
 was collected without device writes; model-specific physical validation remains open.
 

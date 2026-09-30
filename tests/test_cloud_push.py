@@ -122,15 +122,23 @@ async def test_pending_refresh_cancelled_on_routing_change(change):
 @pytest.mark.asyncio
 async def test_connection_failure_retries_without_poisoning_polling():
     push = subject()
-    push._listen = AsyncMock(side_effect=ConnectionError("offline"))
+    retried = asyncio.Event()
+    attempts = []
+
+    async def offline(epoch):
+        attempts.append(epoch)
+        if len(attempts) >= 2:
+            retried.set()
+        raise ConnectionError("offline")
+
+    push._listen = AsyncMock(side_effect=offline)
     push.start()
-    for _ in range(100):
-        if push._listen.await_count >= 2:
-            break
-        await asyncio.sleep(0.001)
-    assert push._listen.await_count >= 2
-    assert push.owner.last_update_success and push.owner.update_interval == 30
-    await push.close()
+    try:
+        await asyncio.wait_for(retried.wait(), timeout=1)
+        assert push._listen.await_count >= 2
+        assert push.owner.last_update_success and push.owner.update_interval == 30
+    finally:
+        await push.close()
 
 
 @pytest.mark.asyncio

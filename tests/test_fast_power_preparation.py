@@ -14,23 +14,23 @@ policy_module = importlib.import_module(_number_mod.__package__ + ".charge_mode_
 adapter_module = importlib.import_module(_number_mod.__package__ + ".charge_mode_adapter")
 
 
-@pytest.fixture(params=["cloud", "modbus"])
+@pytest.fixture(params=["cloud", "legacy_cloud", "modbus"])
 def rig(request):
     cloud = _make_entity(chargeMode=1, set_charge_power=0)
     coordinator = cloud.coordinator
     state = coordinator.data[SAMPLE_SN]
     state.update(modbus_power_spec=1, modbus_max_charging_power=0,
                  status="standby", lastUpdate="2026-09-24T10:00:00Z",
-                 modbus_status_raw=1, modbus_car_connected=1, modbus_power=0)
+                 modbus_status_raw=1, modbus_car_connected=1, modbus_power=0, power=0)
     client = MagicMock()
-    client.supports_timestamped_observation = False
+    client.supports_timestamped_observation = request.param == "cloud"
     client.fetch_last_charge.return_value = {}
     calls = []
     counter = count(1)
 
     def read(*args):
         stamp = datetime(2026, 9, 24, tzinfo=timezone.utc) + timedelta(seconds=next(counter))
-        return dict(state, lastUpdate=stamp.isoformat())
+        return dict(state, _reported_charge_mode=state["chargeMode"], lastUpdate=stamp.isoformat())
 
     def mode(value):
         calls.append(("mode", value))
@@ -48,6 +48,7 @@ def rig(request):
         power(limit)
         return True
 
+    client.fetch_status_observation.side_effect = lambda sn: dict(read(), set_charge_power=4.2)
     client.read_all.side_effect = read
     client.get_data_gen2.side_effect = read
     client.write_charge_mode.side_effect = mode
@@ -76,6 +77,7 @@ async def test_pv_zero_limit_can_stage_reload_select_fast_and_start(rig, enabled
     assert entity.available
     await entity.async_set_native_value(4.2)
     assert calls == []
+    client.fetch_status_observation.assert_not_called()
     client.read_all.assert_not_called()
     client.get_data_gen2.assert_not_called()
     assert state["chargeMode"] == mode

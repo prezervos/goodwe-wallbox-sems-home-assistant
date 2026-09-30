@@ -176,3 +176,15 @@ async def test_modbus_diagnostics_exports_cached_trace_without_requests():
                                 "write_requests": 0, "recent_events": []}
     assert "private-" not in json.dumps(result)
     client._make_client.assert_not_called()
+
+
+@pytest.mark.parametrize("power,session", [(1.8, 6), (2.4, 6), (0, 6), (None, 10)])
+def test_hca20_reported_connection_two_is_connected_not_completion(power, session):
+    values = {"status": "available", "workstate": "available_gun_no_insered",
+              "vehConnStu": 2, "last_charge_work_status": session, "last_charge_power": power}
+    assert state.vehicle_state(values, local=False) == "connected"
+
+
+@pytest.mark.parametrize("code", [True, False, "2", 3, -1, None])
+def test_unverified_connection_codes_remain_unknown(code):
+    assert state.vehicle_state({"status": "available", "vehConnStu": code}, local=False) is None

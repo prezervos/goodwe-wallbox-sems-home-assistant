@@ -331,6 +331,7 @@ async def modbus_fields_and_services():
             "write_max_charge_power",
             "set_config_gen2",
             "set_charge_mode_gen2",
+            "edit_mode_parameter",
         ):
             getattr(client, method).return_value = False
         cases = [
@@ -510,6 +511,198 @@ async def cancelled_cleanup():
         print("PASS: repeated cleanup cancellation leaves no peer or reader task")
 
 
+async def control_readback_timers():
+    """Exercise real HA timers and entity writes with isolated fake gateways."""
+    from custom_components.sems_wallbox.coordinator import SemsUpdateCoordinator
+    from custom_components.sems_wallbox.modbus_coordinator import ModbusUpdateCoordinator
+    from custom_components.sems_wallbox.switch import SemsSwitch, ModbusStartStopSwitch
+
+    for modbus in (False, True):
+        with tempfile.TemporaryDirectory(prefix="goodwe-readback-") as folder:
+            hass = HomeAssistant(folder)
+            entry = ConfigEntry(
+                version=1, minor_version=1, domain="sems_wallbox", title="Readback",
+                unique_id=SERIAL, source="user", discovery_keys={}, subentries_data=[],
+                options={"scan_interval": 60, "scan_interval_charging": 30},
+                data={"wallbox_serial_No": SERIAL},
+            )
+            data = {"sn": SERIAL, "status": "standby", "chargeMode": 0,
+                    "set_charge_power": 4.2, "power": 0}
+            if modbus:
+                data.update(modbus_status_raw=2, modbus_car_connected=1)
+            client = Mock()
+            client.read_all.side_effect = lambda: dict(data)
+            client.get_data_gen2.side_effect = lambda serial: dict(data)
+            client.fetch_last_charge.side_effect = lambda serial: {
+                "last_charge_work_status": 6 if data["status"] == "charging" else 8
+            }
+            client.write_start_stop.return_value = True
+            client.change_status_gen2.return_value = True
+            coordinator = (ModbusUpdateCoordinator if modbus else SemsUpdateCoordinator)(
+                hass, entry, client)
+            coordinator.data = {SERIAL: dict(data)}
+            coordinator.last_update_success = True
+            coordinator.charge_mode_policy = None
+            entity = (ModbusStartStopSwitch(coordinator, SERIAL, client) if modbus
+                      else SemsSwitch(coordinator, SERIAL, client, False))
+            entity.hass = hass
+            entity.async_write_ha_state = Mock()
+            monitor = coordinator.write_confirmation
+            read = client.read_all if modbus else client.get_data_gen2
+            write = client.write_start_stop if modbus else client.change_status_gen2
+            try:
+                await entity.async_turn_on()
+                assert write.call_count == 1
+                assert monitor.pending["charging"].value is True
+                assert coordinator._pending_refresh_cancel is None
+                # The actual HA timer must request a read without normal polling.
+                await asyncio.sleep(5.3)
+                await hass.async_block_till_done()
+                assert read.call_count == 1, (modbus, read.call_count)
+                assert monitor.results["charging"] == "pending"
+                assert coordinator.update_interval.total_seconds() == 60
+                # Exercise a second unresolved timer through HA's real debouncer.
+                # The old default cooldown deferred it until roughly 15 seconds.
+                await asyncio.sleep(5.3)
+                await hass.async_block_till_done()
+                assert read.call_count == 2, (modbus, read.call_count)
+                assert monitor.results["charging"] == "pending"
+                # A normal/MQTT-triggered authoritative read satisfies the same plan.
+                data.update(status="charging")
+                if modbus:
+                    data.update(modbus_status_raw=3, modbus_car_connected=2)
+                await coordinator.async_refresh()
+                assert monitor.results["charging"] == "confirmed"
+                assert not monitor.pending and monitor._cancel is None
+                assert coordinator.update_interval.total_seconds() == 30
+                assert write.call_count == 1
+                # Superseding controls preserve only Stop and never replay Start.
+                await entity.async_turn_on()
+                await entity.async_turn_off()
+                assert monitor.pending["charging"].value is False
+                data.update(status="standby")
+                if modbus:
+                    data.update(modbus_status_raw=1, modbus_car_connected=1)
+                await coordinator.async_refresh()
+                assert monitor.results["charging"] == "confirmed"
+                assert write.call_count == 3
+                if not modbus:
+                    from custom_components.sems_wallbox.number import SemsNumber
+                    from homeassistant.exceptions import HomeAssistantError
+                    number = SemsNumber(coordinator, SERIAL, client, 4.2)
+                    number.hass = hass
+                    number.async_write_ha_state = Mock()
+                    client.set_charge_mode_gen2.side_effect = TimeoutError("lost reply")
+                    before_reads = read.call_count
+                    try:
+                        await number.async_set_native_value(5)
+                    except HomeAssistantError as error:
+                        assert error.translation_key == "setting_outcome_unknown"
+                    else:
+                        raise AssertionError("Uncertain write must not report success")
+                    assert monitor.results["set_charge_power"] == "pending_after_timeout"
+                    data["set_charge_power"] = 5
+                    await asyncio.sleep(5.3)
+                    await hass.async_block_till_done()
+                    assert read.call_count == before_reads + 1
+                    assert monitor.results["set_charge_power"] == "confirmed_after_timeout"
+                    assert client.set_charge_mode_gen2.call_count == 1
+                if not modbus:
+                    from custom_components.sems_wallbox.cloud_command import CloudCommandError
+                    from custom_components.sems_wallbox.sensor import SemsWorkStateSensor
+                    from homeassistant.exceptions import HomeAssistantError
+                    sensor = SemsWorkStateSensor(coordinator, SERIAL)
+                    coordinator.data[SERIAL].update(
+                        status="available", vehConnStu=2,
+                        workstate="available_gun_no_insered")
+                    assert sensor.native_value == "connected"
+                    client.change_status_gen2.side_effect = CloudCommandError(
+                        "stop", "C0001", "error_calling_third_party_service", uncertain=True)
+                    before_writes = write.call_count
+                    try:
+                        await entity.async_turn_off()
+                    except HomeAssistantError as error:
+                        assert error.translation_key == "cloud_command_outcome_unknown"
+                        assert error.translation_placeholders == {"code": "C0001"}
+                    else:
+                        raise AssertionError("Uncertain Stop must remain a service error")
+                    assert monitor.results["charging"] == "pending_after_error"
+                    await coordinator.async_refresh()
+                    assert monitor.results["charging"] == "confirmed_after_error"
+                    assert write.call_count == before_writes + 1
+                    client.change_status_gen2.side_effect = None
+                # Policy dispatch must present the same accepted intent as the
+                # direct platform write, without editing measured telemetry.
+                from types import SimpleNamespace
+                from unittest.mock import AsyncMock
+                coordinator.charge_mode_policy = SimpleNamespace(
+                    enabled=True, async_start=AsyncMock(), async_stop=AsyncMock())
+                snapshot = dict(coordinator.data[SERIAL])
+                await entity.async_turn_on()
+                assert entity.is_on is True
+                assert coordinator.data[SERIAL] == snapshot
+                await entity.async_turn_off()
+                assert entity.is_on is False
+                coordinator.charge_mode_policy.async_start.assert_awaited_once()
+                coordinator.charge_mode_policy.async_stop.assert_awaited_once()
+                coordinator._cancel_delayed_refresh()
+                assert not monitor.pending and monitor._cancel is None
+            finally:
+                coordinator._cancel_delayed_refresh()
+                await coordinator.async_shutdown()
+                await hass.async_stop(force=True)
+    print("PASS: real HA cloud/Modbus control timers, stale read, confirmation, latest Stop and unload")
+
+
+async def numeric_observation_serialization():
+    """Validate actual HA sensor/state formatting, including unavailable counters."""
+    import logging
+    from datetime import timedelta
+    from homeassistant.helpers.entity_platform import EntityPlatform
+    from homeassistant import bootstrap, loader
+    from custom_components.sems_wallbox.sensor import (
+        SemsStatisticsSensor, SemsChargeDurationSensor, SemsChargePowerLimitSensor,
+        SemsModbusEnergyTotalSensor,
+    )
+    with tempfile.TemporaryDirectory(prefix="goodwe-numeric-ha-") as folder:
+        hass = HomeAssistant(folder)
+        loader.async_setup(hass)
+        hass.config.skip_pip = True
+        await bootstrap.async_from_config_dict({}, hass)
+        owner = SimpleNamespace(data={SERIAL: {}}, last_update_success=True)
+        platform = EntityPlatform(hass=hass, logger=logging.getLogger(__name__),
+            domain="sensor", platform_name="sems_wallbox", platform=None,
+            scan_interval=timedelta(seconds=60), entity_namespace=None)
+        try:
+            cases = [(SemsStatisticsSensor, "last_charge_energy"),
+                     (SemsChargeDurationSensor, "last_charge_duration_minutes"),
+                     (SemsChargePowerLimitSensor, "set_charge_power"),
+                     (SemsModbusEnergyTotalSensor, "modbus_energy_total")]
+            for index, (cls, field) in enumerate(cases):
+                entity = cls(owner, SERIAL)
+                entity.hass = hass
+                entity.entity_id = f"sensor.audit_numeric_{index}"
+                entity.add_to_platform_start(hass, platform, None)
+                samples = [(0, 0), (1.5, 1 if field.endswith("minutes") else 1.5), (None, None)]
+                # Modbus typed decoding already bounds numeric values and maps
+                # unavailable registers to None; cloud strings need validation.
+                if field != "modbus_energy_total":
+                    samples += [("NaN", None), ("1e10000", None)]
+                for raw, expected in samples:
+                    owner.data[SERIAL] = {field: raw}
+                    assert entity.native_value == expected, (field, raw, entity.native_value)
+                    state = entity.state
+                    hass.states.async_set(entity.entity_id, "unknown" if state is None else state)
+                    recorded = hass.states.get(entity.entity_id).state
+                    if expected is None:
+                        assert recorded == "unknown", (field, raw, recorded)
+                    else:
+                        assert float(recorded) == expected
+        finally:
+            await hass.async_stop(force=True)
+    print("PASS: real HA numeric serialization preserves zero and unknown without nonfinite values")
+
+
 async def main():
     with patch(
         "requests.sessions.Session.request",
@@ -523,6 +716,8 @@ async def main():
         await modbus_wire_checks()
         await modbus_fields_and_services()
         await modbus_polling_is_read_only()
+        await control_readback_timers()
+        await numeric_observation_serialization()
 
 
 if __name__ == "__main__":

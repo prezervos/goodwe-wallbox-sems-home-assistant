@@ -146,3 +146,114 @@ async def test_cancelled_budget_does_not_dispatch():
     finally:
         budget_module.CURRENT_BUDGET.reset(token)
     send.assert_not_called()
+
+
+def peer_closed():
+    from http.client import RemoteDisconnected
+    from urllib3.exceptions import ProtocolError
+    return requests.ConnectionError(ProtocolError("aborted", RemoteDisconnected("closed")))
+
+
+@pytest.mark.parametrize("retry_read", [False, True])
+def test_only_allowlisted_reads_retry_peer_close_once(retry_read):
+    gate = module.CloudRequestGate()
+    send = Mock(side_effect=[peer_closed(), response()])
+    if retry_read:
+        assert gate.request(send, timeout=15, retry_read=True).status_code == 200
+        assert send.call_count == 2
+        assert 0 < send.call_args.kwargs["timeout"] <= 15
+    else:
+        with pytest.raises(requests.ConnectionError):
+            gate.request(send, timeout=15)
+        send.assert_called_once()
+
+
+@pytest.mark.parametrize("error", [requests.Timeout(), requests.ConnectionError("DNS"), requests.exceptions.SSLError("TLS")])
+def test_unrelated_transport_errors_do_not_retry(error):
+    send = Mock(side_effect=error)
+    with pytest.raises(type(error)):
+        module.CloudRequestGate().request(send, timeout=15, retry_read=True)
+    send.assert_called_once()
+
+
+def test_read_retry_is_bounded_and_honors_cooldown_response():
+    gate = module.CloudRequestGate()
+    send = Mock(side_effect=[peer_closed(), response(429, "60")])
+    with pytest.raises(module.CloudRateLimitedError):
+        gate.request(send, timeout=15, retry_read=True)
+    with pytest.raises(module.CloudRateLimitedError):
+        gate.request(send, timeout=15, retry_read=True)
+    assert send.call_count == 2
+    send = Mock(side_effect=peer_closed())
+    with pytest.raises(requests.ConnectionError):
+        module.CloudRequestGate().request(send, timeout=15, retry_read=True)
+    assert send.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_cancellation_before_read_retry_prevents_second_dispatch():
+    budget_module = importlib.import_module(module.__package__ + ".operation_budget")
+    budget = budget_module.OperationBudget(15)
+    token = budget_module.CURRENT_BUDGET.set(budget)
+    def close(**kwargs):
+        budget.cancelled.set()
+        raise peer_closed()
+    send = Mock(side_effect=close)
+    try:
+        with pytest.raises(budget_module.BudgetCancelled):
+            module.CloudRequestGate().request(send, timeout=15, retry_read=True)
+        send.assert_called_once()
+    finally:
+        budget_module.CURRENT_BUDGET.reset(token)
+
+
+@pytest.mark.parametrize("reader", ["detail", "session", "telemetry"])
+def test_observation_endpoints_recover_peer_close_without_login(reader):
+    api = _make_api()
+    api._plant_id = "plant"
+    api._web_token = {"uid": "fixture", "token": "fixture", "timestamp": 1}
+    reply = response()
+    reply._content = b'{"code":"0","data":{"sn":"TEST","lastUpdate":"2026-09-29T00:00:00Z","workStu":6,"pevChar":2.4}}'
+    if reader != "telemetry":
+        reply._content = reply._content.replace(b'"code":"0"', b'"code":"00000"')
+    if reader == "detail":
+        method, call = "requests.post", lambda: api.get_data_gen2("TEST")
+    elif reader == "session":
+        reply._content = b'{"code":"00000","data":{"chargeLog":{"workStu":6,"pevChar":2.4}}}'
+        method, call = "requests.get", lambda: api.fetch_last_charge("TEST")
+    else:
+        call = lambda: api._observation_reader.read("TEST")
+        method = None
+    context = patch(method, side_effect=[peer_closed(), reply]) if method else patch.object(
+        api._observation_reader._session, "post", side_effect=[peer_closed(), reply])
+    with context as send:
+        result = call()
+        assert isinstance(result, dict)
+        if reader == "session":
+            assert result["last_charge_work_status"] == 6
+            assert result["last_charge_power"] == 2.4
+        else:
+            assert result["sn"] == "TEST"
+        assert send.call_count == 2
+    assert api.login_attempts == 0
+    api.close()
+
+
+def test_read_retry_does_not_extend_exhausted_request_timeout():
+    from types import SimpleNamespace
+    clock = SimpleNamespace(now=100.0)
+    def slow_close(**kwargs):
+        clock.now += 15
+        raise peer_closed()
+    send = Mock(side_effect=slow_close)
+    with patch.object(module, "time", SimpleNamespace(monotonic=lambda: clock.now)):
+        with pytest.raises(requests.ConnectionError):
+            module.CloudRequestGate().request(send, timeout=15, retry_read=True)
+    send.assert_called_once()
+
+
+def test_tls_error_with_nested_peer_reset_is_not_retried():
+    send = Mock(side_effect=requests.exceptions.SSLError(peer_closed()))
+    with pytest.raises(requests.exceptions.SSLError):
+        module.CloudRequestGate().request(send, timeout=15, retry_read=True)
+    send.assert_called_once()

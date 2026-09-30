@@ -1,10 +1,150 @@
 # Development backlog
 
-Release 3.0.3 packages the fixes summarized in [RELEASE_NOTES.md](RELEASE_NOTES.md).
+Release 3.0.4 packages the fixes summarized in [RELEASE_NOTES.md](RELEASE_NOTES.md).
 The sections below retain the development/validation history, including statements
 that a change had not yet been released at the time of its experiment. They are
 not claims that every historical investigation remains open. Remaining hardware
 limits are listed under Remaining investigation and in the current release notes.
+
+## 3.0.4: independent audit repairs (2026-09-30)
+
+- Decode Modbus U16/U32 unavailable sentinels as unknown, including energy
+  counters, duration, status and fault aggregation. Preserve legitimate zero
+  and valid partial-FFFF counter words; never publish a sentinel as energy.
+- Drain endpoint-management workers through repeated cancellation before
+  releasing ownership. Normalize EMS switch readback expectations to integers
+  without weakening boolean matching for other controls.
+- Serialize partial cloud mode-parameter edits with an independent fresh
+  configuration read. A previous compound write must be reported before another
+  edit, mode or power command can overwrite its companions. Pending values are
+  guards, not telemetry. Definite rejections clear the candidate; uncertain
+  delivery retains the guard. Start/Stop remain available. This runtime guard
+  is not persisted/replayed across reload; the next edit reads configuration.
+- Retain the newest direct Start/Stop intent when an older request fails.
+  Preserve Stop supersession and the existing operation-budget contract.
+- Verify first-generation minimum-power changes against independently measured,
+  identity-checked telemetry no older than 60 seconds, inside the shared API
+  lock. Configured power and last-session history cannot establish idle.
+  Distinguish an active session from an unverifiable idle state in UI errors.
+- Preserve unknown cloud modes; power-only writes cannot implicitly choose
+  Fast when the mode is missing. Validate session status before reporting zero
+  power and reject invalid/nonfinite/negative numeric observations.
+- Clarify session-energy default labels, complete DE/ES native setup wording,
+  distinguish Modbus setup errors from cloud failures, and correct obsolete
+  release/power-staging documentation. Entity IDs and custom names are unchanged.
+
+Validation and independent review evidence are recorded outside the repository
+in the HP840 `prerelease_full_reaudit_20260930` audit directory. These are software
+regressions with simulated I/O, not new physical compatibility claims. No release
+or production deployment is performed as part of this repair pass.
+
+## 3.0.4: ambiguous cloud Start/Stop R0305 (#21)
+
+- Treat R0305 (remote_control_fail) as an uncertain acknowledgement, not proof
+  that the wallbox rejected the command. Reuse localized uncertain-outcome
+  messages and bounded read-only reconciliation; never replay or route a second
+  write. Preserve genuine rejection, authentication and rate-limit handling.
+- Reporter evidence: one Start at 10:30:21, R0305 at 10:30:52, active session at
+  10:31:00 and positive power at 10:31:43. Stop succeeded normally. Modbus and
+  vehicle-state fixes were confirmed in the supplied b4 logs.
+- Extend existing tests for both command directions, delayed confirmation and
+  expiry without confirmation, single dispatch and localized errors with and
+  without preferred-mode policy. No optimistic success or fabricated telemetry.
+
+Validation: the new R0305 API cases failed before the fix and passed after it.
+All 316 targeted API, switch, readback and fallback tests passed, as did the
+real-HA audit regression script, Ruff F checks and git diff --check on HP840.
+Tests use simulated APIs/devices; no physical charging, production deployment,
+publication or issue comment was performed for this change.
+
+## 3.0.4b4: connection state and cloud failure reconciliation (#21)
+
+- Accept the HCA-20 cloud vehConnStu=2 as Connected. Reporter data confirms cable
+  connection during both positive load and zero-load suspension; do not infer
+  completion, actual energy flow or an idle-safe setting state from this code.
+- Allow one peer-close/reset retry for explicitly read-only SEMS+ detail/session
+  and v3 telemetry requests. Reuse the shared HTTP lock/rate gate and remaining
+  timeout/operation budget. DNS/TLS/timeouts, login and all writes keep their
+  existing no-replay behavior.
+- Preserve Start/Stop business codes and categories through CloudCommandError.
+  C0001 and lost transport acknowledgements remain uncertain service failures,
+  with EN/CS/DE/ES UI messages. Bounded read-only reconciliation reports
+  pending_after_error, confirmed_after_error or unconfirmed_after_error without
+  replaying commands, fabricating telemetry or initiating a second TCP write.
+- Control preparation budget expiry without an uncertain dispatched command is
+  not treated as proof that the command was sent. Existing auth/rate handling is
+  retained. No new production automation or entity identities.
+
+Reporter confirms beta3 removed the switch bounce on cloud and Modbus. Session
+Charging at zero load may mean suspension by the car; Vehicle state describes
+connection and Charging activity describes independently measured energy flow.
+Do not infer target SOC or completion from zero watts. Modbus raw status can
+also remain Charging after CP returns to idle.
+
+Validation: all 1,566 unit tests passed, along with real-HA audit regressions,
+Ruff F checks and whitespace checks. Evidence is retained on HP840 under
+protocol_research/issue21_5834630364.
+Real-HA audit regressions include the actual cloud vehicle sensor and uncertain
+Stop error/readback without another write. No physical charging, production
+changes, external issue messages or publication accompany this development step.
+
+## 3.0.4b3: accepted Start/Stop presentation (#21)
+
+The mode-restoration path bypassed the cloud/Modbus switch pending-command
+presentation. Retain accepted control intent through delayed readback, using the
+existing bounded grace periods. Preserve latest-request ownership; an older
+policy completion cannot replace a newer Stop. A cached pre-Start idle Modbus
+snapshot cannot immediately cancel the newly accepted intent. Fresh terminal
+reports and the existing timeout release it. No telemetry or write retry changes.
+
+Validation: 208 focused tests and real-HA audit regressions passed on HP840 with
+simulated gateways. Covered stale cloud session, Modbus handshake/terminal state,
+expiry, rejected/uncertain commands, and overlapping Start/Stop. Physical Modbus
+validation remains with the reporter. The full suite returned 1,535 passes and
+one Windows timing-sensitive fallback test failure. That test now controls policy
+time while retaining real async cancellation; all 35 fallback tests pass on
+rerun. No production fallback changes. Packaged as 3.0.4b3; no production deployment.
+
+Reporter evidence: first cloud ACK took 13.795 s; the first positive power sample
+arrived 39.131 s after request (not proof of physical start time). Second Start
+returned an old completed session before the active session. Modbus reads arrived
+about six seconds apart. The separately reported service error followed by actual
+charging was not captured in these logs; its cause remains unconfirmed.
+
+## 3.0.4b2 candidate: reporter follow-up
+
+- Reporter attachments confirm b1 improves control response. Modbus log shows
+  Start confirmed 17 seconds after ACK, power readback in 1.3 seconds, Stop in six.
+- Correct the remaining default HA ten-second debounce with shared five-second
+  coalescing; verify the second unresolved read in real HA, including mutation.
+- Use newly fetched SEMS+ session state for cloud confirmation, preserving distinct
+  native/v3 semantics and fencing pre-command reads.
+- Reconcile uncertain cloud setting timeouts through reads only; keep a translated
+  service error and never replay writes. Log measured elapsed response time.
+- Cloud server latency and Modbus/cloud ownership remain hardware/service limits.
+
+## 3.0.4b1 candidate: bounded confirmation after controls
+
+- Cloud: progressively spaced readback (target offsets 5/10/20/35/60 seconds).
+- Modbus: five-second readback for at most one minute after accepted controls.
+- Native TCP keeps its existing immediate reporting and 2/5-second polling.
+- One latest target per setting; Start/Stop supersede each other. Never replay a
+  write, fabricate telemetry, or notify persistently on confirmation expiry.
+- Cloud configuration uses its own SEMS+ readback, including the reported power
+  limit; ordinary telemetry cannot substitute for configuration confirmation.
+- Failed reads yield to existing recovery; handover and unload invalidate timers.
+- Diagnostics expose pending/confirmed/unconfirmed/failure outcomes.
+
+Validation: 1,510 tests passed in the full offline suite on HP840. After the final
+read-source/cancellation refinements, 459 focused tests passed, including 30 new
+confirmation cases. Ruff F checks and whitespace checks passed. After restoring
+the existing Docker runtime, six real-HA smoke runs passed: audit regressions
+(including actual cloud/Modbus timers and latest-command confirmation), cloud
+controls, native controls/handover, cloud settings, and cloud/native lifecycle.
+These tests use simulated device/API responses and do not establish physical
+Modbus timing, which still needs reporter confirmation.
+No physical charging or production deployment performed. Prepared for the
+3.0.4b1 prerelease; stable 3.0.3 remains unchanged.
 
 ## 3.0.3 development history
 

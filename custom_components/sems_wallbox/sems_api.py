@@ -17,11 +17,13 @@ import re
 import threading
 import time
 from functools import wraps
+from types import SimpleNamespace
 from urllib.parse import urlsplit
 
 import requests
 from homeassistant import exceptions
 
+from .cloud_command import CloudCommandError, CloudSettingError, SettingOutcome
 from .cloud_http import SEMS_USER_AGENT
 from .cloud_rate_limit import CloudRateLimitedError, CloudRequestGate
 from .cloud_observation import CloudAuthenticationError
@@ -124,6 +126,7 @@ class SemsApi:
         self._web_request_lock = threading.RLock()
         self._closed = False
         self._control_item_ranges = {}
+        self._pending_mode_edits = {}
         self._web_login_retry_at = 0.0
         self._web_login_delay = 30.0
         self._web_retry_after = 0.0
@@ -479,8 +482,146 @@ class SemsApi:
             self._plant_id = self._try_fetch_plant_id()
         return self._plant_id
 
+    def _confirm_previous_mode_edit(self, serial, reported=None):
+        """Fence compound writers until every explicitly sent field is reported."""
+        from .charge_mode_policy import ModeVerificationError
+
+        pending = self._pending_mode_edits.get(serial)
+        if pending is None:
+            return
+        if reported is None:
+            reported = self.get_data_gen2(serial)
+
+        def matches_sent(field, expected):
+            actual = (reported.get("_reported_charge_mode", reported.get(field))
+                      if field == "chargeMode" else reported.get(field))
+            if field == "chargeMode":
+                return type(actual) is int and actual in (0, 1, 2) and actual == expected
+            if type(expected) is bool:
+                return type(actual) is bool and actual == expected
+            if actual is None or isinstance(actual, bool):
+                return False
+            try:
+                actual, expected = float(actual), float(expected)
+            except (ValueError, TypeError, OverflowError):
+                return False
+            if not math.isfinite(actual) or actual < 0:
+                return False
+            if field != "set_charge_power":
+                return actual.is_integer() and actual == expected
+            return abs(actual - expected) < 0.001
+
+        if (not isinstance(reported, dict) or reported.get("sn") != serial
+                or not all(matches_sent(key, value) for key, value in pending.items())):
+            raise ModeVerificationError("Previous cloud setting is not yet confirmed")
+        self._pending_mode_edits.pop(serial, None)
+
+    def _track_mode_setting(self, serial, candidate, send):
+        """Track one logical write, including internal token/response retries.
+
+        The caller holds the API lock. Track only explicitly sent fields, so
+        optional unsupported energy/SOC settings do not block a mode-only write.
+        """
+        self._pending_mode_edits[serial] = candidate
+        try:
+            outcome = send()
+        except CloudSettingError:
+            raise  # Preserve the fence for a dispatched but unconfirmed write.
+        except TimeoutError as error:
+            if not getattr(error, "cloud_setting_uncertain", True):
+                self._pending_mode_edits.pop(serial, None)
+            raise
+        except BudgetCancelled as error:
+            if not getattr(error, "cloud_setting_uncertain", False):
+                self._pending_mode_edits.pop(serial, None)
+            raise
+        except (CloudAuthenticationError, CloudRateLimitedError, OutOfRetries):
+            self._pending_mode_edits.pop(serial, None)
+            raise
+        if outcome in (SettingOutcome.REJECTED, SettingOutcome.NOT_SENT):
+            self._pending_mode_edits.pop(serial, None)
+            return False
+        if outcome is not SettingOutcome.ACKNOWLEDGED:
+            raise CloudSettingError("unclassified_outcome")
+        return True
+
+    @_serialized_web_request
+    def edit_mode_parameter(self, serial, expected_mode, parameter, value):
+        """Apply one user delta to independently read, confirmed companion fields.
+
+        The shared API lock serializes configuration reads and commands. Pending
+        intent is a write guard only; it never becomes observed sensor data and
+        is not replayed on reload or reconnect.
+        """
+        from .charge_mode_policy import ModeVerificationError
+        from .mode_parameters import preserved_mode_parameters
+
+        fields = {"max_energy": "max_energy", "min_energy": "min_energy",
+                  "soc_target": "charge_target_soc", "finish_time": "finish_time"}
+        if parameter not in fields:
+            raise ValueError("Unsupported mode parameter")
+        reported = self.get_data_gen2(serial)
+        if not isinstance(reported, dict) or reported.get("sn") != serial:
+            raise ModeVerificationError("Missing or mismatched cloud configuration")
+        self._confirm_previous_mode_edit(serial, reported)
+        mode = reported.get("_reported_charge_mode", reported.get("chargeMode"))
+        if type(expected_mode) is not int or type(mode) is not int or mode != expected_mode:
+            raise ModeVerificationError("Device did not report a valid charging mode")
+        params = preserved_mode_parameters(reported, mode)
+        if parameter not in params:
+            raise ModeVerificationError("The setting is unavailable in the reported charging mode")
+        # Reuse the strict companion parser to validate the delta as well.
+        params = preserved_mode_parameters({**reported, fields[parameter]: value}, mode)
+        power = reported.get("set_charge_power") if mode == 0 else None
+        if mode == 0:
+            import math
+            try:
+                power = float(power) if not isinstance(power, bool) else math.nan
+            except (TypeError, ValueError, OverflowError):
+                power = math.nan
+            if not math.isfinite(power) or power <= 0:
+                raise ModeVerificationError("Cannot preserve unreported charging power")
+        candidate = {"chargeMode": mode, **{fields[key]: val for key, val in params.items()}}
+        if power is not None:
+            candidate["set_charge_power"] = power
+        return self._track_mode_setting(
+            serial, candidate,
+            lambda: self._send_charge_mode_gen2(serial, mode, power, None, **params),
+        )
+
+    @_serialized_web_request
+    def set_minimum_power_checked(self, serial, generation, enabled, zone):
+        """Keep the idle precondition and setting write atomic against controls."""
+        from .minimum_power import write_checked_minimum_power
+
+        return write_checked_minimum_power(self, serial, generation, enabled, zone)
+
     @_serialized_web_request
     def set_charge_mode_gen2(
+        self, wallboxSn, mode, chargePower=None, ensure_minimum_charging_power=None,
+        renewToken=False, maxTokenRetries=1, max_energy=None, min_energy=None,
+        soc_target=None, finish_time=None,
+    ):
+        """Write an explicit mode command without bypassing pending partial edits."""
+        self._confirm_previous_mode_edit(wallboxSn)
+        candidate = {"chargeMode": mode}
+        for field, value in (
+            ("set_charge_power", chargePower),
+            ("ensure_minimum_charging_power", ensure_minimum_charging_power),
+            ("max_energy", max_energy), ("min_energy", min_energy),
+            ("charge_target_soc", soc_target), ("finish_time", finish_time),
+        ):
+            if value is not None:
+                candidate[field] = value
+        return self._track_mode_setting(
+            wallboxSn, candidate,
+            lambda: self._send_charge_mode_gen2(
+                wallboxSn, mode, chargePower, ensure_minimum_charging_power,
+                renewToken, maxTokenRetries, max_energy, min_energy, soc_target, finish_time,
+            ),
+        )
+
+    def _send_charge_mode_gen2(
         self,
         wallboxSn,
         mode,
@@ -515,6 +656,14 @@ class SemsApi:
             renewToken,
             maxTokenRetries,
         )
+        dispatch = SimpleNamespace(unconfirmed=False)
+        uncertain_delivery = False
+
+        def send_mode(*args, **kwargs):
+            # The gate may expire/throttle before transport. Only this boundary
+            # establishes that a command could have left the process.
+            dispatch.unconfirmed = True
+            return requests.post(*args, **kwargs)
         try:
             if maxTokenRetries < 0:
                 raise OutOfRetries
@@ -524,11 +673,11 @@ class SemsApi:
                 _LOGGER.error(
                     "SEMS gen2: no plant_id -- cannot set charge mode without EU gateway plant_id"
                 )
-                return False
+                return SettingOutcome.NOT_SENT
 
             if not self._ensure_web_token(renew=renewToken):
                 _LOGGER.error("SEMS gen2: cannot obtain web token")
-                return False
+                return SettingOutcome.NOT_SENT
 
             headers = self._build_web_headers()
             payload: dict = {
@@ -558,14 +707,16 @@ class SemsApi:
                 "SEMS gen2 set-mode (exclusive): POST %s payload=%s",
                 _eu_set_mode_url, payload,
             )
+            request_started = time.monotonic()
             try:
                 set_success = False
                 for attempt in range(1, _SetModeR0305Retries + 2):
-                    resp = self._request_gate.request(requests.post,
+                    timeout = request_timeout(_SetModeTimeout)
+                    resp = self._request_gate.request(send_mode,
                         _eu_set_mode_url,
                         headers=headers,
                         json=payload,
-                        timeout=request_timeout(_SetModeTimeout),
+                        timeout=timeout,
                     )
                     _LOGGER.debug(
                         "SEMS gen2 set-mode (attempt %d): HTTP %s body=%s",
@@ -580,18 +731,28 @@ class SemsApi:
                         )
                         set_success = True
                         break
+                    if code == "C0602":
+                        # This attempt was rejected before application. A retry
+                        # has its own dispatch state; older R0305 uncertainty
+                        # remains separate and must survive token recovery.
+                        dispatch.unconfirmed = False
                     if code == "C0602" and maxTokenRetries > 0:
                         _LOGGER.debug(
                             "SEMS gen2 set-mode C0602 (session expired), renewing web token and retrying"
                         )
                         self._invalidate_rejected_session()
-                        return self.set_charge_mode_gen2(
+                        outcome = self._send_charge_mode_gen2(
                             wallboxSn, mode, chargePower=chargePower,
                             ensure_minimum_charging_power=ensure_minimum_charging_power,
                             renewToken=True, maxTokenRetries=maxTokenRetries - 1,
                             max_energy=max_energy, min_energy=min_energy,
                             soc_target=soc_target, finish_time=finish_time,
                         )
+                        if uncertain_delivery and outcome is not SettingOutcome.ACKNOWLEDGED:
+                            raise CloudSettingError("delivery_unconfirmed")
+                        return outcome
+                    if code in ("R0305", "C0001"):
+                        uncertain_delivery = True
                     if code == "R0305":
                         # Transient "remote_control_fail" -- retry after short delay
                         if attempt <= _SetModeR0305Retries:
@@ -614,22 +775,48 @@ class SemsApi:
                     break
 
                 if not set_success:
-                    return False
+                    if uncertain_delivery or code not in ("A0201", "C0602"):
+                        raise CloudSettingError(code or "invalid_response")
+                    return SettingOutcome.REJECTED
 
-                return True
-            except requests.exceptions.Timeout:
+                return SettingOutcome.ACKNOWLEDGED
+            except requests.exceptions.ConnectionError as error:
+                raise CloudSettingError("transport_error") from error
+            except requests.exceptions.Timeout as error:
                 _LOGGER.warning(
-                    "SEMS gen2 set-mode timed out after %ss (sn=%s)",
-                    _SetModeTimeout, wallboxSn,
+                    "SEMS gen2 set-mode response timed out after %.1fs; "
+                    "device outcome is unknown (sn=%s)",
+                    time.monotonic() - request_started, wallboxSn,
                 )
-                return False
-        except OutOfRetries:
+                raise TimeoutError("Cloud setting response timed out; outcome unknown") from error
+        except OutOfRetries as error:
+            if uncertain_delivery:
+                raise CloudSettingError("delivery_unconfirmed") from error
             raise
-        except (CloudAuthenticationError, CloudRateLimitedError, BudgetCancelled, TimeoutError):
+        except CloudSettingError:
             raise
-        except Exception as exc:  # noqa: BLE001
+        except BudgetCancelled as error:
+            # Preserve policy Stop/supersession semantics while retaining the
+            # separate settings fence if a prior attempt may have reached it.
+            error.cloud_setting_uncertain = (
+                uncertain_delivery or dispatch.unconfirmed
+                or getattr(error, "cloud_setting_uncertain", False)
+            )
+            raise
+        except (CloudAuthenticationError, CloudRateLimitedError, TimeoutError) as error:
+            if uncertain_delivery:
+                raise CloudSettingError("delivery_unconfirmed") from error
+            if isinstance(error, TimeoutError):
+                error.cloud_setting_uncertain = (
+                    dispatch.unconfirmed or getattr(error, "cloud_setting_uncertain", False)
+                )
+            raise
+        except Exception as exc:
+            # Unexpected failure after transport entry cannot prove non-delivery.
             _LOGGER.error("Unable to execute gen2 SetChargeMode command. %s", exc)
-            return False
+            if uncertain_delivery or dispatch.unconfirmed:
+                raise CloudSettingError("invalid_response") from exc
+            return SettingOutcome.NOT_SENT
 
     @_serialized_web_request
     def fetch_mqtt_settings(self):
@@ -710,7 +897,10 @@ class SemsApi:
         """Fetch device status from EU gateway ev-charger/detail (Gen2 / HCA series).
 
         Returns None on any failure -- the coordinator will mark the update as
-        failed and retry on the next poll interval.
+        failed and retry on the next poll interval. An explicitly reported serial
+        must match the requested device. Older responses without an sn field
+        retain the request-scoped identity; absence is not independent identity
+        evidence.
         """
         if not self._ensure_web_token():
             _LOGGER.warning("SEMS gen2 getData: no web token")
@@ -730,7 +920,7 @@ class SemsApi:
                 "SEMS gen2 getData: POST %s payload=%s", _eu_detail_url, payload
             )
             resp = self._request_gate.request(requests.post,
-                _eu_detail_url, headers=headers, json=payload, timeout=request_timeout(_RequestTimeout)
+                _eu_detail_url, retry_read=True, headers=headers, json=payload, timeout=request_timeout(_RequestTimeout)
             )
             rj = _response_json(resp)
             if _LOGGER.isEnabledFor(logging.DEBUG):
@@ -750,7 +940,7 @@ class SemsApi:
                     return None
                 headers = self._build_web_headers()
                 resp = self._request_gate.request(requests.post,
-                    _eu_detail_url, headers=headers, json=payload, timeout=request_timeout(_RequestTimeout)
+                    _eu_detail_url, retry_read=True, headers=headers, json=payload, timeout=request_timeout(_RequestTimeout)
                 )
                 rj = _response_json(resp)
                 if _LOGGER.isEnabledFor(logging.DEBUG):
@@ -768,6 +958,12 @@ class SemsApi:
                 )
                 return None
 
+            if (not isinstance(raw, dict) or (
+                    "sn" in raw and (not isinstance(raw["sn"], str)
+                                     or raw["sn"] != wallbox_sn))):
+                _LOGGER.warning("SEMS gen2 getData: invalid or mismatched response identity")
+                return None
+
             # Map EU gateway fields -> internal dict format.
             # Field names are inferred; all raw keys are logged above so we can
             # expand this mapping as the response format becomes clear.
@@ -778,6 +974,8 @@ class SemsApi:
                         return v
                 return default
 
+            mode = _get("chargeMode", "mode", "workMode")
+            mode = mode if type(mode) is int and mode in (0, 1, 2) else None
             result: dict = {
                 "sn": wallbox_sn,
                 "name": _get("name", "deviceName", default="EV Charger"),
@@ -792,8 +990,8 @@ class SemsApi:
                 "current": _get("current", "chargeCurrent", default="0"),
                 "time": _get("time", "chargeTime", default="0"),
                 "startStatus": _get("startStatus", "isCharging", default=False),
-                "chargeMode": _get("chargeMode", "mode", "workMode", default=0),
-                "_reported_charge_mode": _get("chargeMode", "mode", "workMode", default=None),
+                "chargeMode": mode,
+                "_reported_charge_mode": mode,
                 "scheduleMode": _get("scheduleMode", default=0),
                 "schedule_hour": _get("schedule_hour", "scheduleHour", default=0),
                 "schedule_minute": _get("schedule_minute", "scheduleMinute", default=0),
@@ -900,10 +1098,21 @@ class SemsApi:
 
     @_serialized_web_request
     def change_status_gen2(self, wallbox_sn: str, action: str) -> bool:
-        """Start or stop charging via EU gateway (Gen2 / HCA series).
+        """Send one charging command through the account's SEMS+ gateway.
 
-        action: "start" -> startCharge endpoint; "stop" -> stopCharge endpoint.
-        Payload identical to set-mode: sn + plantId + productModel.
+        Args:
+            wallbox_sn: Enrolled wallbox serial number.
+            action: "start" or "stop".
+
+        Returns:
+            True for an acknowledged command; False if preparation failed or
+            the existing generic error handling could not confirm the result.
+
+        Raises:
+            CloudCommandError: Server rejected the acknowledgement or its
+                transport result is uncertain. Never automatically replay it.
+            CloudRateLimitedError: The shared server cooldown blocks the request.
+            CloudAuthenticationError: Authentication failed.
         """
         path = _PATH_START_CHARGE if action == "start" else _PATH_STOP_CHARGE
         plant_id = self._ensure_plant_id()
@@ -943,11 +1152,18 @@ class SemsApi:
                     "SEMS gen2 %sCharge non-success code=%s body=%s",
                     action, code, resp.text[:300],
                 )
+                # Reporter #21 captured R0305 followed by an active session and
+                # positive power after a single Start. A failed cloud ACK is not
+                # proof of device rejection; reconcile by reading, never replay.
+                raise CloudCommandError(
+                    action, code, rj.get("translationCode"),
+                    uncertain=code in {"C0001", "R0305"})
             return ok
-        except requests.exceptions.Timeout:
-            _LOGGER.warning("SEMS gen2 %sCharge timed out (sn=%s)", action, wallbox_sn)
-            return False
-        except (CloudAuthenticationError, CloudRateLimitedError, BudgetCancelled, TimeoutError):
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as exc:
+            _LOGGER.warning("SEMS gen2 %sCharge acknowledgement unavailable (sn=%s)", action, wallbox_sn)
+            raise CloudCommandError(
+                action, "transport_error", uncertain=True) from exc
+        except (CloudCommandError, CloudAuthenticationError, CloudRateLimitedError, BudgetCancelled, TimeoutError):
             raise
         except Exception as exc:  # noqa: BLE001
             _LOGGER.error("SEMS gen2 %sCharge failed: %s", action, exc)
@@ -958,7 +1174,7 @@ class SemsApi:
         """Fetch last charge session from EU gateway (GET getLastCharge).
 
         Returns a dict with:
-          - ``last_charge_work_status`` (int): 6 = actively charging, other = not charging
+          - ``last_charge_work_status`` (int): 6 = active session, 8 = finished/idle; other codes unverified
           - ``last_charge_power`` (float): actual EV power draw in kW (pevChar)
         Returns None on any error (non-blocking -- detail data is still valid).
         """
@@ -973,7 +1189,7 @@ class SemsApi:
         url = self._eu_url(_PATH_GET_LAST_CHARGE)
         params = {"chargeSn": wallbox_sn, "pwId": plant_id}
         try:
-            resp = self._request_gate.request(requests.get, url, headers=headers, params=params, timeout=request_timeout(_RequestTimeout))
+            resp = self._request_gate.request(requests.get, url, retry_read=True, headers=headers, params=params, timeout=request_timeout(_RequestTimeout))
             rj = _response_json(resp)
             if _LOGGER.isEnabledFor(logging.DEBUG):
                 _LOGGER.debug(
@@ -987,7 +1203,7 @@ class SemsApi:
                 if not self._ensure_web_token(renew=True):
                     return None
                 headers = self._build_web_headers()
-                resp = self._request_gate.request(requests.get, url, headers=headers, params=params, timeout=request_timeout(_RequestTimeout))
+                resp = self._request_gate.request(requests.get, url, retry_read=True, headers=headers, params=params, timeout=request_timeout(_RequestTimeout))
                 rj = _response_json(resp)
                 if _LOGGER.isEnabledFor(logging.DEBUG):
                     _LOGGER.debug(

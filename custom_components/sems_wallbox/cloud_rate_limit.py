@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from email.utils import parsedate_to_datetime
 import math
+from http.client import RemoteDisconnected
+
+import requests
 import threading
 import time
 
@@ -31,13 +34,15 @@ class CloudRequestGate:
         self._retry_at = 0.0
         self._delay = 30.0
 
-    def request(self, send, *args, raise_on_limit=True, **kwargs):
-        """Send once unless cooling down, and record a server-directed pause.
+    def request(self, send, *args, raise_on_limit=True, retry_read=False, **kwargs):
+        """Send within the shared budget, optionally retrying a read-only peer reset.
 
         Args:
             send: HTTP callable, kept injectable for existing request mocks.
             *args: Positional HTTP arguments.
             raise_on_limit: False lets the login-specific policy inspect the response.
+            retry_read: Permit one retry of an explicitly read-only observation
+                after the peer closes/resets the connection, within its timeout.
             **kwargs: Keyword HTTP arguments, including a numeric timeout.
 
         Returns:
@@ -53,7 +58,23 @@ class CloudRequestGate:
             # Lock acquisition can consume the caller's operation budget.
             if isinstance(kwargs.get("timeout"), (int, float)):
                 kwargs["timeout"] = request_timeout(kwargs["timeout"])
-            response = send(*args, **kwargs)
+            started = time.monotonic()
+            timeout = kwargs.get("timeout")
+            try:
+                response = send(*args, **kwargs)
+            except requests.exceptions.ConnectionError as error:
+                if (not retry_read or isinstance(error, requests.exceptions.SSLError)
+                        or not _peer_closed(error)):
+                    raise
+                if not isinstance(timeout, (int, float)):
+                    raise
+                remaining = timeout - (time.monotonic() - started)
+                if remaining <= 0:
+                    raise
+                # Recheck cancellation/budget before the sole read retry. The
+                # shared lock still prevents interleaved requests/cooldowns.
+                kwargs["timeout"] = request_timeout(remaining)
+                response = send(*args, **kwargs)
             status = response.status_code
             value = response.headers.get("Retry-After") if status in (429, 503) else None
             delay = None
@@ -76,3 +97,20 @@ class CloudRequestGate:
             if isinstance(status, int) and 200 <= status < 300:
                 self._delay = 30.0
             return response
+
+
+def _peer_closed(error: BaseException) -> bool:
+    """Recognize nested requests/urllib3 peer resets without matching error text."""
+    pending = [error]
+    seen = set()
+    while pending:
+        cause = pending.pop()
+        if id(cause) in seen:
+            continue
+        seen.add(id(cause))
+        if isinstance(cause, (RemoteDisconnected, ConnectionResetError)):
+            return True
+        pending.extend(arg for arg in cause.args if isinstance(arg, BaseException))
+        if cause.__cause__ is not None:
+            pending.append(cause.__cause__)
+    return False

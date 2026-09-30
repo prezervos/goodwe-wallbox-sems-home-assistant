@@ -4,6 +4,7 @@ import asyncio
 from unittest.mock import MagicMock
 
 import pytest
+from homeassistant.exceptions import HomeAssistantError
 
 from tests.test_number import _make_entity as power_entity
 from tests.test_number import _make_power_limit_entity
@@ -125,7 +126,13 @@ async def test_overlapping_writes_keep_authoritative_baseline_and_latest_success
     order = [0, 1] if first_finishes_first else [1, 0]
     for index in order:
         release[index].set()
-        await asyncio.gather(tasks[index], return_exceptions=True)
+        result, = await asyncio.gather(tasks[index], return_exceptions=True)
+        outcome = [first_outcome, second_outcome][index]
+        if outcome is True:
+            assert result is None
+        else:
+            expected_error = TimeoutError if outcome == "timeout" else HomeAssistantError
+            assert isinstance(result, expected_error), result
     expected = 6.0 if second_outcome is True else 7.4
     assert entity.coordinator.data[entity.sn]["set_charge_power"] == expected
     assert entity.native_value == expected
@@ -139,7 +146,7 @@ async def test_false_return_cannot_overwrite_newer_report():
         entity.coordinator.data = {entity.sn: {"chargeMode": 0, "set_charge_power": 6.0}}
         return False
     entity.hass.async_add_executor_job = executor
-    with pytest.raises(Exception):
+    with pytest.raises(HomeAssistantError):
         await entity.async_set_native_value(5.0)
     assert entity.coordinator.data[entity.sn]["set_charge_power"] == 6.0
     assert entity.native_value == 6.0

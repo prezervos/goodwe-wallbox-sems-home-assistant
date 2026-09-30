@@ -73,6 +73,7 @@ async def run(config_dir):
                 self.journal = None
 
     class Cloud:
+        supports_timestamped_observation = True
         stale = False
         error = None
 
@@ -84,8 +85,14 @@ async def run(config_dir):
         def test_authentication(self):
             return True
 
+        def get_data_gen2(self, serial):
+            """Return configuration independently from the telemetry endpoint."""
+            return self._snapshot(serial)
+
         def fetch_status_observation(self, serial):
-            return self.get_data_gen2(serial)
+            report = self._snapshot(serial)
+            report["set_charge_power"] = 4.2
+            return report
 
         def close(self):
             """Fake client has no HTTP resources to release."""
@@ -93,7 +100,7 @@ async def run(config_dir):
         def configure_gen2(self, *args):
             pass
 
-        def get_data_gen2(self, serial):
+        def _snapshot(self, serial):
             if self.error is not None:
                 raise self.error
             return {
@@ -112,6 +119,12 @@ async def run(config_dir):
                 else datetime.now(timezone.utc).isoformat(),
                 "startStatus": device.state == 2,
             }
+
+        def set_charge_mode_gen2(self, serial, mode, power=None):
+            device.mode = mode
+            if power is not None:
+                device.limit = round(power * 10)
+            return True
 
         def fetch_last_charge(self, serial):
             return {"last_charge_work_status": 6 if device.state == 2 else 0}
@@ -141,6 +154,8 @@ async def run(config_dir):
     try:
         with (
             patch.object(integration, "SemsApi", return_value=cloud),
+            patch("requests.sessions.Session.request",
+                  side_effect=AssertionError("Unexpected HTTP in loopback smoke test")),
             patch.object(native_coordinator, "EndpointManager", Endpoint),
             # Advance policy deadlines explicitly; avoid background timing races.
             patch.object(native_coordinator.AutomaticFallback, "start", lambda self: None),
@@ -256,6 +271,12 @@ async def run(config_dir):
                 await hass.services.async_call(
                     domain, action, {"entity_id": target, **values}, blocking=True
                 )
+
+            if "--cloud-settings-only" in sys.argv:
+                from ha_cloud_settings_checks import check_cloud_settings
+                await check_cloud_settings(hass, owner, cloud, entity, service, device)
+                assert await hass.config_entries.async_unload(entry.entry_id)
+                return
 
             transport_status = entity("_active_transport")
 

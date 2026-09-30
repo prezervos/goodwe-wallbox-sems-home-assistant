@@ -219,12 +219,14 @@ class TestChangeStatusGen2:
 
     @pytest.mark.parametrize("action", ["start", "stop"])
     @pytest.mark.parametrize("code", ["E0001", "A0201"])
-    def test_non_success_code_returns_false(self, action, code):
+    def test_non_success_code_preserves_reason(self, action, code):
         api = self._setup_api()
         resp = self._gen2_response(code=code)
         with patch("requests.post", return_value=resp) as post:
-            result = api.change_status_gen2("SN001", action)
-        assert result is False
+            with pytest.raises(sems_api_module.CloudCommandError) as caught:
+                api.change_status_gen2("SN001", action)
+        assert caught.value.code == code
+        assert not caught.value.cloud_command_uncertain
         post.assert_called_once()
 
     @pytest.mark.parametrize("final_code, expected", [("00000", True), ("C0602", False)])
@@ -236,7 +238,12 @@ class TestChangeStatusGen2:
         ]) as post, patch.object(api, "_fetch_web_token", return_value={
             "uid": "u", "token": "renewed", "timestamp": 2,
         }) as renew:
-            assert api.change_status_gen2("SN001", "stop") is expected
+            if expected:
+                assert api.change_status_gen2("SN001", "stop") is True
+            else:
+                with pytest.raises(sems_api_module.CloudCommandError) as caught:
+                    api.change_status_gen2("SN001", "stop")
+                assert caught.value.code == final_code
         assert post.call_count == 2
         renew.assert_called_once()
 
@@ -260,6 +267,10 @@ class TestChangeStatusGen2:
             if failure in (429, 503):
                 with pytest.raises(sems_api_module.CloudRateLimitedError):
                     api.change_status_gen2("SN001", action)
+            elif failure in ("connection", "timeout"):
+                with pytest.raises(sems_api_module.CloudCommandError) as caught:
+                    api.change_status_gen2("SN001", action)
+                assert caught.value.cloud_command_uncertain
             else:
                 assert api.change_status_gen2("SN001", action) is False
         post.assert_called_once()
@@ -287,6 +298,11 @@ def test_command_status_code_takes_precedence_over_boolean(operation, payload, e
             result = api.set_charge_mode_gen2("SN001", 0, 4.2)
         elif operation == "config":
             result = api.set_config_gen2("SN001", chargedNow=1)
+        elif not expected:
+            with pytest.raises(sems_api_module.CloudCommandError) as caught:
+                api.change_status_gen2("SN001", operation)
+            assert caught.value.code == payload["code"]
+            result = False
         else:
             result = api.change_status_gen2("SN001", operation)
     assert result is expected
@@ -837,3 +853,78 @@ def test_detail_preserves_explicit_vehicle_connection(fields):
     if fields:
         assert result["vehConnStu"] == fields["vehConnStu"]
     assert result["workstate"] == "available_gun_no_insered"
+
+
+def test_set_mode_socket_timeout_is_uncertain_and_never_replayed(caplog):
+    """A response timeout is not a rejection, even if the wallbox applied it."""
+    api = _make_api()
+    api._ensure_plant_id = MagicMock(return_value="PLANT")
+    api._ensure_web_token = MagicMock(return_value=True)
+    api._build_web_headers = MagicMock(return_value={})
+    with patch.object(api._request_gate, "request", side_effect=sems_api_module.requests.Timeout("lost reply")) as request:
+        with pytest.raises(TimeoutError, match="outcome unknown"):
+            api.set_charge_mode_gen2("TEST", 0, 2.6)
+    assert request.call_count == 1
+    assert "device outcome is unknown" in caplog.text
+    assert "after 90s" not in caplog.text
+    api.close()
+
+
+@pytest.mark.parametrize("action", ["start", "stop"])
+@pytest.mark.parametrize("code,category", [
+    ("C0001", "error_calling_third_party_service"),
+    ("R0305", "remote_control_fail"),
+])
+def test_third_party_failure_preserves_uncertainty_and_category(action, code, category):
+    api = TestChangeStatusGen2()._setup_api()
+    reply = TestChangeStatusGen2()._gen2_response(code=code)
+    reply.json.return_value = {"code": code, "translationCode": category}
+    with patch("requests.post", return_value=reply) as post:
+        with pytest.raises(sems_api_module.CloudCommandError) as caught:
+            api.change_status_gen2("SN001", action)
+    assert caught.value.code == code
+    assert caught.value.category == category
+    assert caught.value.cloud_command_uncertain
+    post.assert_called_once()
+
+
+@pytest.mark.parametrize("raw,expected", [(None, None), (True, None), (False, None),
+    (999, None), ("0", None), ("bad", None), (0, 0), (1, 1), (2, 2)])
+@pytest.mark.parametrize("alias", ["chargeMode", "mode", "workMode"])
+def test_detail_mode_aliases_preserve_unknown_without_defaulting_to_fast(raw, expected, alias):
+    api = _make_api()
+    api._ensure_plant_id = MagicMock(return_value="PLANT")
+    api._ensure_web_token = MagicMock(return_value=True)
+    api._build_web_headers = MagicMock(return_value={})
+    reply = MagicMock(status_code=200)
+    reply.json.return_value = {"code": "00000", "data": {"sn": "TEST", alias: raw}}
+    with patch("requests.post", return_value=reply):
+        data = api.get_data_gen2("TEST")
+    assert data["chargeMode"] is expected
+    assert data["_reported_charge_mode"] is expected
+    api.close()
+
+
+@pytest.mark.parametrize("reported", ["OTHER", "", None, True, 123, [], {}])
+def test_detail_rejects_explicit_mismatched_or_malformed_identity(reported):
+    api = _make_api()
+    api._ensure_plant_id = MagicMock(return_value="PLANT")
+    api._ensure_web_token = MagicMock(return_value=True)
+    api._build_web_headers = MagicMock(return_value={})
+    reply = MagicMock(status_code=200)
+    reply.json.return_value = {"code": "00000", "data": {"sn": reported, "chargeMode": 0}}
+    with patch("requests.post", return_value=reply):
+        assert api.get_data_gen2("TEST") is None
+    api.close()
+
+
+def test_detail_retains_legacy_request_scope_when_serial_field_is_absent():
+    api = _make_api()
+    api._ensure_plant_id = MagicMock(return_value="PLANT")
+    api._ensure_web_token = MagicMock(return_value=True)
+    api._build_web_headers = MagicMock(return_value={})
+    reply = MagicMock(status_code=200)
+    reply.json.return_value = {"code": "00000", "data": {"chargeMode": 0}}
+    with patch("requests.post", return_value=reply):
+        assert api.get_data_gen2("TEST")["sn"] == "TEST"
+    api.close()

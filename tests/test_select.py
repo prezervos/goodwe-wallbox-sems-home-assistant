@@ -7,6 +7,7 @@ import importlib.util
 import time
 from unittest.mock import MagicMock
 import pytest
+from homeassistant.exceptions import HomeAssistantError
 
 # ---------------------------------------------------------------------------
 # All HA stubs are set up by conftest.py before this file is collected.
@@ -279,7 +280,7 @@ class TestSelectOption:
         entity = _make_entity(chargeMode=0, set_charge_power=6.0)  # currently Fast
         entity.api.set_charge_mode_gen2 = MagicMock(return_value=False)
         entity.coordinator.schedule_delayed_refresh = MagicMock()
-        with pytest.raises(Exception):  # HomeAssistantError
+        with pytest.raises(HomeAssistantError):
             await entity.async_select_option("pv_priority")
         # _attr_current_option must be reverted to "fast" (chargeMode=0 in coordinator)
         assert entity._attr_current_option == "fast"
@@ -288,14 +289,6 @@ class TestSelectOption:
         # A refresh must be scheduled so the UI catches up with the real device
         entity.coordinator.schedule_delayed_refresh.assert_called_once_with(3.0)
 
-    @pytest.mark.asyncio
-    async def test_mode_switch_revert_calls_write_ha_state_on_failure(self):
-        """async_write_ha_state must be called after reverting so the UI
-        reflects the correct option without waiting for the next poll."""
-        entity = _make_entity(chargeMode=0, set_charge_power=6.0)
-        entity.api.set_charge_mode_gen2 = MagicMock(return_value=False)
-        with pytest.raises(Exception):  # HomeAssistantError
-            await entity.async_select_option("pv_priority")
         entity.async_write_ha_state.assert_called()
 
 
@@ -416,6 +409,9 @@ def _make_duration_entity(chargeMode=1, finish_time="0", **extra_data):
     coordinator = _FakeCoordinator({SAMPLE_SN: data})
     api = MagicMock()
     api.set_charge_mode_gen2 = MagicMock(return_value=True)
+    from tests.cloud_settings_harness import bind_settings_api
+    api.get_data_gen2.side_effect = lambda serial: {"sn": serial, **coordinator.data[serial]}
+    bind_settings_api(api, _select_mod.__package__)
     entity = SemsChargeDurationSelect(coordinator, SAMPLE_SN, api)
     hass = MagicMock()
 
@@ -573,3 +569,23 @@ async def test_legacy_mode_cooldown_is_translated_without_replay(policy_enabled,
     assert entity._pending_mode is None
     assert entity._attr_current_option == "fast"
     entity.coordinator.schedule_delayed_refresh.assert_called_once_with(3.0)
+
+
+@pytest.mark.parametrize("report", [None, True, False, "0", 999])
+def test_unknown_mode_clears_old_fast_after_pending_window(report):
+    entity = _make_entity()
+    entity.coordinator.data[SAMPLE_SN]["chargeMode"] = report
+    entity._pending_mode = 1
+    entity._pending_mode_set_at = time.monotonic()
+    entity._attr_current_option = "pv_priority"
+    entity._handle_coordinator_update()
+    assert entity._attr_current_option == "pv_priority"
+    entity._pending_mode_set_at -= 61
+    entity._handle_coordinator_update()
+    assert entity._attr_current_option is None
+    assert entity._pending_mode is None
+
+
+def test_missing_mode_constructs_unknown_option_not_literal_none():
+    entity = _make_entity(chargeMode=None)
+    assert entity._attr_current_option is None

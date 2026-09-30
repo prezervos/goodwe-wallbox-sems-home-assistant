@@ -1,3 +1,150 @@
+# 3.0.4 — Reliable controls and audited state handling
+
+This maintenance release brings the 3.0.4 beta fixes to stable and includes a complete independent audit of the integration, tests, configuration UI and translations.
+
+## Control feedback and cloud recovery
+
+- Read back accepted cloud and Modbus changes sooner instead of waiting for the next normal polling interval. Cloud checks use target offsets of 5/10/20/35/60 seconds; Modbus checks run every five seconds for up to one minute. Existing throttling, response latency and HA scheduling still apply. Normal polling settings are unchanged.
+- Keep accepted Start/Stop intent visible while telemetry catches up, including preferred-mode restoration. An older failed Start cannot clear or replace a newer Stop.
+- Treat missing acknowledgements and GoodWe C0001/R0305 control errors as uncertain outcomes. Show a translated service message and reconcile through bounded reads without replaying Start/Stop or issuing a second TCP command. This does not turn an error into a fabricated success.
+- Recognize the HCA-20 vehicle connection code confirmed in issue #21. A connected vehicle or a Charging session at zero watts does not prove actual energy flow or completed charging.
+- Retry an explicitly read-only cloud request once after peer-close/reset, within the shared request limits and remaining timeout. No new login or control replay is introduced.
+
+## Audit fixes
+
+- Prevent consecutive cloud mode, power and partial-setting writes from restoring stale companion settings. A prior compound write must be independently reported before another mode-setting edit can proceed. Definite rejection clears the guard; uncertain delivery retains it. Desired values never replace telemetry. Direct Start/Stop remain available; a Start requiring a preferred-mode write may need that confirmation first.
+- Check first-generation minimum-power changes using fresh, identity-checked measured telemetry under the shared API lock. Configured power or last-session history cannot establish that charging is idle. Generation2 independent settings retain their separate behavior.
+- Preserve unknown cloud modes and reject explicitly mismatched device identities. Missing mode data no longer silently selects Fast.
+- Decode unavailable Modbus register values as unknown instead of large energy counters or invented status values. Preserve valid zero and legitimate counter values; correctly confirm EMS switch readback.
+- Retain native endpoint ownership until its worker finishes, even through repeated cancellation, preventing overlapping endpoint restoration.
+- Reject invalid, nonfinite and negative numeric observations. Unknown session states no longer fabricate zero power.
+
+## UI and compatibility
+
+- Clarify session-energy labels, complete German/Spanish native setup translations, and show transport-specific Modbus connection errors. English/Czech/German/Spanish translation keys and placeholders are aligned.
+- Preserve entity IDs, saved preferences, custom names and normal polling options. A default session-energy name may become clearer when no custom name is set.
+- Minimum Home Assistant version remains **2026.9.2**. Install through HACS and restart Home Assistant. Native TCP remains opt-in; no new setup migration is required.
+
+## Validation and known limits
+
+**1,716 unit tests and all 16 development-HA scenarios passed**, together with focused independent retests, Ruff F checks and whitespace checks. The independent reviewer closed all 13 audit findings and the additional edge cases discovered during repair. These final runs use simulated API/device I/O on Home Assistant 2026.9.2; they are not new physical validation of every model or firmware.
+
+GoodWe response delays, firmware-specific Modbus charging interruptions, and cloud Auto start on the original HCA remain outside the guarantees of this release. Missing data stays unknown. The cloud compound-write guard is runtime-only: reload does not replay pending settings, and subsequent edits read configuration again. Existing corrupted historical statistics are not automatically repaired.
+
+Thanks to @GregoryDC for detailed logs and hardware testing, and to the contributors credited in the README.
+
+# 3.0.4b4 — Cloud connection state and recovery
+
+## Fixed
+
+- **Cloud vehicle connection (#21):** recognize the HCA-20 connection code observed in the reporter's logs during both active charging and zero-load suspension. Vehicle status now shows Connected instead of Unknown. Connection alone does not imply energy flow or completed charging.
+- **Interrupted cloud reads:** retry a peer-closed/reset read once, only for explicitly read-only detail, session and telemetry requests, within the remaining timeout and shared rate limits. No new login or control replay is introduced.
+- **Uncertain Start/Stop responses:** retain the cloud error code and show a translated message when acknowledgement is missing or GoodWe returns C0001. Bounded read-only reconciliation can subsequently confirm the reported state without resending the command or fabricating success.
+
+Includes the control readback and switch-feedback fixes from b1–b3. Entity identities, saved preferences and normal polling settings are unchanged.
+
+## Validation
+
+All 1,566 unit tests and real Home Assistant audit regressions passed on HP840; lint and whitespace checks passed. These runs use simulated gateways and recorded observations. Physical HCA-20/Modbus confirmation remains with the reporter.
+
+## Please test
+
+Install **3.0.4b4** with prereleases enabled in HACS and restart Home Assistant (minimum **2026.9.2**).
+
+1. In cloud mode, verify Vehicle status is Connected while the car draws power and while it remains plugged in at zero load.
+2. Verify one Start and Stop when convenient. If an error appears, inspect actual state before retrying. Send the exact time, error and debug log plus integration diagnostics after approximately one minute of readback.
+3. Recheck Modbus Start/Stop for regressions; this beta does not change its protocol mapping.
+
+A Charging session at zero watts can mean the car has suspended energy intake. It is not proof of completed charging, and the beta deliberately preserves that distinction. It does not promise faster GoodWe responses or resolve every firmware-level Modbus interruption.
+
+**3.0.3 remains the stable release** and rollback option. No production deployment accompanies this prerelease.
+
+Thanks to @GregoryDC for the detailed logs and continued hardware testing.
+
+# 3.0.4b3 — Consistent Start/Stop feedback
+
+## Fixed
+
+- **Charging switch feedback with a preferred mode:** cloud and Modbus Start/Stop now retain the accepted control intent while telemetry catches up, including when the saved charging-mode policy handles the command. That path previously bypassed the existing pending-command display and could briefly show Off after an accepted Start.
+- **Latest request wins:** a delayed completion of an older policy Start cannot overwrite a newer Stop in the switch presentation.
+- **Modbus cached state:** a cached pre-Start idle snapshot no longer immediately cancels newly acknowledged policy intent. Fresh terminal reports and the existing pending timeout still clear it.
+- **Regression coverage:** delayed cloud sessions, Modbus handshake/terminal reports, expiry, rejected/uncertain commands and overlapping Start/Stop. Stabilize a Windows-sensitive deadline test while retaining real async cancellation.
+
+The Charging switch represents control/session state; measured power and charging activity remain independently reported. No additional Start writes are sent and telemetry is not fabricated. Native TCP behavior, entity identities, saved preferences and normal polling settings are unchanged. Includes the readback and uncertain-setting fixes from b1/b2.
+
+## Please test
+
+Enable prereleases in HACS, install **3.0.4b3**, and restart Home Assistant (minimum **2026.9.2**).
+
+1. With your usual preferred-mode settings, issue **Start once**, first using Modbus and then cloud. Check whether the Charging switch stays On through the initial handshake instead of briefly bouncing Off. Compare it with the actual power/station status; an accepted Start does not itself prove energy flow.
+2. Verify **Stop**, including a short Start-to-Stop sequence when safe. A delayed Start response must not turn the switch back On after a newer Stop.
+3. If Start displays an error but charging begins afterwards, capture debug logs from before the request through the next minute, with the exact error and timestamps. Check actual state before retrying; do not repeatedly click Start. Redact credentials/tokens before attaching logs.
+
+## Known limits
+
+This beta does **not** claim to fix GoodWe cloud response latency. The reported first cloud request took about 14 seconds for acknowledgement, and positive power first appeared about 39 seconds after the request. Logs do not establish the precise physical start time. The separate unlogged service-error-then-charging case remains unconfirmed.
+
+Hardware confirmation is still requested, especially for Modbus. **3.0.3 remains the stable release** and rollback option. No production deployment accompanies this prerelease.
+
+Thanks to @GregoryDC for the logs and hardware testing.
+
+# 3.0.4b2 — Readback timing and uncertain cloud writes
+
+This beta follows the hardware feedback for 3.0.4b1 in #21. It fixes a remaining readback delay and improves handling of contradictory cloud responses and uncertain setting writes.
+
+## Fixed
+
+- **Repeated readback cadence:** configure HA's shared refresh debouncer for five seconds instead of its default ten. Successive unresolved checks no longer acquire an extra ten-second delay. Network/response time still adds latency; normal configured polling intervals remain unchanged.
+- **Cloud Start/Stop confirmation:** the SEMS+ coordinator uses its newly fetched charging-session status, consistent with the source used by the Charging switch. An unreliable detail response saying `available` cannot prematurely confirm Stop or prevent confirmation of an active session. Missing or ambiguous session data stays unconfirmed. Native TCP/v3 keeps its own state interpretation.
+- **Uncertain cloud settings:** a setting request that times out remains a service error with a clearer translated message: the change may already have applied. Bounded read-only checks can subsequently record `confirmed_after_timeout` or `unconfirmed_after_timeout` in diagnostics. This does not resend the write, fabricate telemetry, or turn a timeout into an acknowledged success. Superseding commands, cancellation, authentication recovery and transport changes remain protected.
+- **Timeout logs:** report actual elapsed set-mode response time rather than a hard-coded 90 seconds when a shorter operation budget applied.
+
+## Validation
+
+Regression coverage now exercises two successive unresolved checks through real HA timers/debouncing, contradictory SEMS+ detail/session reports, old in-flight reads, uncertain setting readback, cancellation and latest-command handling. A mutation check restored the old ten-second debounce and confirmed that the new second-read test detects it. No physical charging or production deployment was performed for beta2.
+
+## Please test
+
+Install **3.0.4b2** with prereleases enabled in HACS and restart Home Assistant. The minimum remains **2026.9.2**; entity identities, saved preferences and normal polling options are unchanged.
+
+1. **Modbus:** issue Start once and record the delay until the Charging switch/station status reflect charging. If handshaking lasts through several checks, include the debug log so we can verify consecutive read intervals. Then verify Stop.
+2. **Cloud:** verify Start and Stop again. If the detail API still says `available`, downloaded diagnostics should nevertheless show correct confirmation based on the current session report.
+3. **Cloud power limit:** during a suitable session, change the limit once. If the cloud times out, check the reported limit before retrying. Send the timestamp, requested/reported limit, service message and diagnostics after readback completes (up to one minute after the request finishes). A timeout may still occur; this beta improves reconciliation and explains the uncertainty rather than promising faster GoodWe processing.
+
+Please review attachments for private information before posting. Stable **3.0.3** remains available for rollback. This update does not claim to restore SEMS connectivity while Modbus owns the charger or resolve every firmware-level interruption.
+
+Thanks to @GregoryDC for the logs and continued hardware testing.
+
+# 3.0.4b1 — Faster control feedback (prerelease)
+
+This prerelease shortens the delay before controls reflect independently reported wallbox state. It targets the delayed Modbus Start feedback reported in #21; hardware confirmation is still requested.
+
+## Changes
+
+- After an accepted Modbus control, read back every five seconds for up to one minute, stopping earlier when the requested state is confirmed or the device reports rejection.
+- After an accepted cloud control, use progressively spaced readback at target offsets of 5, 10, 20, 35 and 60 seconds. Existing reads and in-flight requests are reused; response latency, request throttling and HA scheduling can delay these targets.
+- Track only the latest request per setting. Start and Stop supersede each other. No control writes are replayed by this readback mechanism.
+- Confirm configuration against the appropriate settings source, not measured charging watts or an optimistic UI state. Preserve unknown values when data is missing.
+- Stop accelerated reads on read failure, transport change or unload. Normal polling and existing recovery remain in charge. Expiry creates no persistent notification and does not stop charging.
+- Add credential-free confirmation outcomes to downloaded diagnostics. Native Socket A TCP retains its existing immediate reporting and short polling cadence.
+- Audit and consolidate regression tests, strengthen stale-read and lifecycle coverage, and add real-HA timer/service checks.
+
+## Validation
+
+The full offline suite passed 1,510 tests. Final refinements passed 459 focused tests, including 30 confirmation cases. Six affected real-HA smoke runs passed in Home Assistant 2026.9.2, covering cloud/Modbus timers, latest-command handling, cloud and native controls, settings, handover and lifecycle. Hardware/API responses in these runs are simulated; no physical charging was performed for this change.
+
+## Please test (#21)
+
+1. Install **3.0.4b1** through HACS with prereleases enabled, then restart Home Assistant. Minimum HA version remains **2026.9.2**; existing entity IDs, preferences and normal polling settings are preserved.
+2. In Modbus mode, keep your usual idle polling interval and issue Start once. Record when the switch and station status leave Handshaking and report charging. Do not repeatedly press Start; observe actual charging independently.
+3. Check an explicit power-limit or charge-mode change and one Stop when appropriate. Compare the reported configuration with the requested setting; actual consumption need not equal the power limit. Do not change installation/current-protection settings for this test.
+4. If possible, repeat through cloud. Report the transport, timing, requested/reported values and any charging interruption. Cloud latency may still exceed five seconds.
+5. If feedback is still delayed or a change remains unconfirmed, download the integration diagnostics after the event and provide its timestamp and the relevant log excerpt. The new `write_confirmation` section records the outcome. Review diagnostic/log attachments for private information before posting.
+
+This prerelease does not claim a general fix for firmware-level Modbus charging interruptions, restore SEMS cloud visibility while Modbus owns the charger, or prove every model's timing. You can return to stable **3.0.3** if needed.
+
+Thanks to @GregoryDC for the detailed report and continued hardware testing.
+
 # 3.0.3 — Cloud state, power controls and TCP reliability
 
 This maintenance release fixes cloud status and authentication inconsistencies, restores Fast-mode selection from PV modes, and improves native TCP Stop verification. It includes the fixes previously tested in 3.0.3b1–b3.

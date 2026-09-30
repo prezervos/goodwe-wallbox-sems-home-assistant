@@ -1,6 +1,9 @@
 """Verify independent SEMS observations without using HTTP receipt time as freshness."""
 
 import importlib
+import json
+
+import requests
 from unittest.mock import MagicMock
 
 import pytest
@@ -10,9 +13,12 @@ from tests.test_native_transport import PACKAGE
 module = importlib.import_module(PACKAGE + ".cloud_observation")
 
 
-def response(body):
-    result = MagicMock()
-    result.json.return_value = body
+def response(body, status=200):
+    """Model HTTP status and JSON decoding with the real requests contract."""
+    result = requests.Response()
+    result.status_code = status
+    result.url = module.STATUS_URL
+    result._content = json.dumps(body).encode()
     return result
 
 
@@ -307,3 +313,40 @@ def test_reader_close_waits_for_inflight_read():
         assert read.result(timeout=2) == STATUS["data"]
         close.result(timeout=2)
     session.close.assert_called_once_with()
+
+
+@pytest.mark.parametrize("status", [401, 403])
+@pytest.mark.parametrize("persistent", [False, True])
+def test_http_telemetry_rejection_renews_once_and_uses_new_token(status, persistent):
+    client, session = reader()
+    client._token_provider.side_effect = [{"token": "old"}, {"token": "renewed"}]
+    session.post.side_effect = [response({}, status), response(STATUS, status if persistent else 200)]
+    if persistent:
+        with pytest.raises(ConnectionError, match="session renewal"):
+            client.read("TEST")
+        with pytest.raises(ConnectionError, match="temporarily unavailable"):
+            client.read("TEST")
+    else:
+        assert client.read("TEST") == STATUS["data"]
+    client._token_rejected.assert_called_once_with()
+    assert session.post.call_count == 2
+    assert [json.loads(call.kwargs["headers"]["token"])["token"]
+            for call in session.post.call_args_list] == ["old", "renewed"]
+
+
+@pytest.mark.parametrize("failure", ["server", "invalid_json", "invalid_shape"])
+def test_bad_http_response_does_not_invalidate_shared_credentials_or_retry(failure):
+    client, session = reader()
+    reply = response([] if failure == "invalid_shape" else STATUS,
+                     503 if failure == "server" else 200)
+    if failure == "invalid_json":
+        reply._content = b"<html>upstream failure</html>"
+    session.post.return_value = reply
+    session.post.side_effect = None
+    expected = {"server": requests.HTTPError,
+                "invalid_json": requests.exceptions.JSONDecodeError,
+                "invalid_shape": ConnectionError}[failure]
+    with pytest.raises(expected):
+        client.read("TEST")
+    session.post.assert_called_once()
+    client._token_rejected.assert_not_called()

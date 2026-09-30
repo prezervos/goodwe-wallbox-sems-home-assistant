@@ -136,3 +136,44 @@ async def test_lost_write_ack_uses_readback_without_replaying_write():
     await manager.async_restore()
     assert device.store.data is None
     assert sum(value.startswith("AT+NETP=") for value in device.commands) == 2
+
+
+@pytest.mark.parametrize("worker_fails", [False, True])
+async def test_repeated_cancellation_drains_mutation_before_restore(worker_fails):
+    import asyncio
+    import threading
+
+    device = Module()
+    manager = device.manager()
+    entered, release = threading.Event(), threading.Event()
+    original = manager._change
+
+    def blocked(expected, target):
+        entered.set()
+        assert release.wait(3)
+        original(expected, target)
+        if worker_fails:
+            raise OSError("Reply lost after mutation")
+
+    manager._change = blocked
+    task = asyncio.create_task(manager.async_activate())
+    restore = None
+    try:
+        assert await asyncio.to_thread(entered.wait, 2)
+        task.cancel()
+        await asyncio.sleep(0)
+        task.cancel()
+        await asyncio.sleep(0)
+        restore = asyncio.create_task(manager.async_restore())
+        await asyncio.sleep(0)
+        assert not task.done() and manager._lock.locked()
+        assert device.store.data is not None
+    finally:
+        manager._change = original
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        if restore is not None:
+            await restore
+    assert device.endpoint == "TCP,Client,22001,cloud.example.test,TLS"
+    assert device.store.data is None

@@ -84,9 +84,20 @@ def _decode_str(regs: list[int]) -> str:
     return "".join(chars).rstrip("\x00").strip()
 
 
-def _decode_u32(hi: int, lo: int) -> int:
-    """Combine two U16 registers into a U32 value (big-endian)."""
-    return (hi << 16) | lo
+def _decode_u16(value: int) -> int | None:
+    """Decode a U16 observation, retaining the protocol's unavailable sentinel."""
+    return None if value == 0xFFFF else value
+
+
+def _decode_u32(hi: int, lo: int) -> int | None:
+    """Decode a complete U32; an individual FFFF half can still be valid."""
+    value = (hi << 16) | lo
+    return None if value == 0xFFFFFFFF else value
+
+
+def _tenths(value: int | None) -> float | None:
+    """Scale a decoded observation without replacing absence with zero."""
+    return value / 10.0 if value is not None else None
 
 
 class WallboxModbusClient:
@@ -428,58 +439,58 @@ class WallboxModbusClient:
         b5 = self._read(client, 10084, 26)
 
         # -- Parse block 1 --
-        ems_dispatch = b1[0]
-        fault_01 = b1[1]
-        fault_02 = b1[2]
-        fault_03 = b1[3]
-        fault_04 = b1[4]
-        warn_05 = b1[5]
-        warn_06 = b1[6]
-        hw_fault_07 = b1[7]
-        hw_fault_08 = b1[8]
-        voltage_a = b1[9] / 10.0
-        voltage_b = b1[10] / 10.0
-        voltage_c = b1[11] / 10.0
-        current_a = b1[12] / 10.0
-        current_b = b1[13] / 10.0
-        current_c = b1[14] / 10.0
-        charging_power = b1[15] / 10.0   # kW
-        session_energy = b1[16] / 10.0   # kWh
-        raw_status = b1[17]
-        comm_status = b1[18]
-        plug_charge = b1[19]
+        ems_dispatch = _decode_u16(b1[0])
+        fault_01 = _decode_u16(b1[1])
+        fault_02 = _decode_u16(b1[2])
+        fault_03 = _decode_u16(b1[3])
+        fault_04 = _decode_u16(b1[4])
+        warn_05 = _decode_u16(b1[5])
+        warn_06 = _decode_u16(b1[6])
+        hw_fault_07 = _decode_u16(b1[7])
+        hw_fault_08 = _decode_u16(b1[8])
+        voltage_a = _tenths(_decode_u16(b1[9]))
+        voltage_b = _tenths(_decode_u16(b1[10]))
+        voltage_c = _tenths(_decode_u16(b1[11]))
+        current_a = _tenths(_decode_u16(b1[12]))
+        current_b = _tenths(_decode_u16(b1[13]))
+        current_c = _tenths(_decode_u16(b1[14]))
+        charging_power = _tenths(_decode_u16(b1[15]))   # kW
+        session_energy = _tenths(_decode_u16(b1[16]))   # kWh
+        raw_status = _decode_u16(b1[17])
+        comm_status = _decode_u16(b1[18])
+        plug_charge = _decode_u16(b1[19])
 
         # -- Parse block 2 (config) --
-        reservation_status = b2[0] if b2 else None
-        phase_switch = b2[3] if b2 else None
-        maintain_min_power = b2[4] if b2 else None
-        dynamic_load = b2[5] if b2 else None
-        breaker_current = b2[6] if b2 else None
-        max_cap = b2[7] / 10.0 if b2 else None
-        min_cap = b2[8] / 10.0 if b2 else None
-        max_power_raw = b2[9] if b2 else None
-        max_power = max_power_raw / 10.0 if max_power_raw is not None else None
-        bat_soc_limit = b2[10] if b2 else None
-        completion_time = b2[11] if b2 else None
-        charging_mode = b2[12] if b2 else None
+        reservation_status = _decode_u16(b2[0]) if b2 else None
+        phase_switch = _decode_u16(b2[3]) if b2 else None
+        maintain_min_power = _decode_u16(b2[4]) if b2 else None
+        dynamic_load = _decode_u16(b2[5]) if b2 else None
+        breaker_current = _decode_u16(b2[6]) if b2 else None
+        max_cap = _tenths(_decode_u16(b2[7])) if b2 else None
+        min_cap = _tenths(_decode_u16(b2[8])) if b2 else None
+        max_power_raw = _decode_u16(b2[9]) if b2 else None
+        max_power = _tenths(max_power_raw)
+        bat_soc_limit = _decode_u16(b2[10]) if b2 else None
+        completion_time = _decode_u16(b2[11]) if b2 else None
+        charging_mode = _decode_u16(b2[12]) if b2 else None
 
         # -- Parse block 3 (device info) --
         sn = _decode_str(b3[0:8])
         sw_version = _decode_str(b3[8:10])
         wifi_ble_version = _decode_str(b3[11:16])
         hw_version = _decode_str(b3[16:18])
-        power_spec = b3[18]
-        pile_type = b3[19]
+        power_spec = _decode_u16(b3[18])
+        pile_type = _decode_u16(b3[19])
 
         # -- Parse block 4 (runtime) --
-        charging_on_off = b4[0]   # 1=off, 2=on (reg 10060)
+        charging_on_off = _decode_u16(b4[0])   # 1=off, 2=on (reg 10060)
         charge_duration_s = _decode_u32(b4[3], b4[4])
         hist_energy_raw = _decode_u32(b4[5], b4[6])
-        hist_energy = hist_energy_raw / 10.0
-        car_connection = b4[15]
-        start_mode = b4[16]
-        charging_strategy = b4[17]
-        appointment_sign = b4[19]
+        hist_energy = _tenths(hist_energy_raw)
+        car_connection = _decode_u16(b4[15])
+        start_mode = _decode_u16(b4[16])
+        charging_strategy = _decode_u16(b4[17])
+        appointment_sign = _decode_u16(b4[19])
 
         # -- Parse block 5 (extras) --
         cp_state = None
@@ -488,13 +499,13 @@ class WallboxModbusClient:
         project_type = None
         power_source = None
         if b5:
-            cp_state = b5[0]
+            cp_state = _decode_u16(b5[0])
             # b5[1:19] = SEMS account (18 registers = 36 bytes)
             if len(b5) >= 25:
-                green_energy = _decode_u32(b5[19], b5[20]) / 10.0 if len(b5) > 20 else None
-                grid_energy = _decode_u32(b5[21], b5[22]) / 10.0 if len(b5) > 22 else None
-                project_type = b5[23] if len(b5) > 23 else None
-                power_source = b5[24] if len(b5) > 24 else None
+                green_energy = _tenths(_decode_u32(b5[19], b5[20])) if len(b5) > 20 else None
+                grid_energy = _tenths(_decode_u32(b5[21], b5[22])) if len(b5) > 22 else None
+                project_type = _decode_u16(b5[23]) if len(b5) > 23 else None
+                power_source = _decode_u16(b5[24]) if len(b5) > 24 else None
 
         # -- Derive compatibility fields for existing sensor classes --
         # Map raw_status (0-10) to cloud workstate strings
@@ -527,16 +538,16 @@ class WallboxModbusClient:
             9: "EVDetail_Status_Title_Offline",
             10: "EVDetail_Status_Title_Waiting",
         }
-        status_str = raw_to_status.get(raw_status, "EVDetail_Status_Title_Waiting")
+        status_str = raw_to_status.get(raw_status, "unknown")
 
         # Emulate last_charge_work_status (6 = charging) for existing power/workstate sensors
-        last_charge_work_status = 6 if raw_status == 3 else 0
+        last_charge_work_status = (6 if raw_status == 3 else 0) if raw_status in STATUS_MAP else None
 
         # Model string
         model_str = POWER_MAP.get(power_spec, "unknown")
         if pile_type == 1:
             model_str += " single-phase"
-        else:
+        elif pile_type == 0:
             model_str += " three-phase"
 
         return {
@@ -552,8 +563,8 @@ class WallboxModbusClient:
             "scheduleMode": reservation_status,
             "last_charge_work_status": last_charge_work_status,
             "last_charge_power": charging_power,
-            "last_charge_energy": round(session_energy, 2),
-            "last_charge_duration_minutes": charge_duration_s // 60 if charge_duration_s else 0,
+            "last_charge_energy": round(session_energy, 2) if session_energy is not None else None,
+            "last_charge_duration_minutes": charge_duration_s // 60 if charge_duration_s is not None else None,
             "name": f"GoodWe Wallbox {sn}",
             "model": model_str,
             "fireware": sw_version,
@@ -602,7 +613,7 @@ class WallboxModbusClient:
             "modbus_ems_dispatch": ems_dispatch,
             # reg 10060: 2=charging enabled by HA command, 1=off, 0=not set (e.g. Plug&Charge)
             "modbus_charging_on_off": charging_on_off,
-            "modbus_charging_enabled": (charging_on_off == 2),
+            "modbus_charging_enabled": (charging_on_off == 2) if charging_on_off in (0, 1, 2) else None,
             "modbus_start_mode": start_mode,
             "modbus_charging_strategy": charging_strategy,
             "modbus_appointment_sign": appointment_sign,

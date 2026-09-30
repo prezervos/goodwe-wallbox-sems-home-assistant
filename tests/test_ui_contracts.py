@@ -58,11 +58,10 @@ def test_catalog_covers_the_complete_source_structure(language):
         return {prefix}
 
     assert paths(catalog("strings.json")) == paths(catalog(f"translations/{language}.json"))
-    for filename in ("strings.json", "translations/en.json", "translations/cs.json"):
-        for definitions in catalog(filename)["entity"].values():
-            for definition in definitions.values():
-                assert definition["name"].strip()
-                assert all(value.strip() for value in definition.get("state", {}).values())
+    for definitions in catalog(f"translations/{language}.json")["entity"].values():
+        for definition in definitions.values():
+            assert definition["name"].strip()
+            assert all(value.strip() for value in definition.get("state", {}).values())
 
 
 def test_entity_code_uses_translated_names_and_known_keys():

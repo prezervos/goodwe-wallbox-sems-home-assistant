@@ -80,8 +80,9 @@ async def connect(subject, response):
                 elif frame.command == 1:
                     writer.write(report()); await writer.drain()
     task = asyncio.create_task(peer())
-    while not subject.available:
-        await asyncio.sleep(.01)
+    async with asyncio.timeout(2):
+        while not subject.available:
+            await asyncio.sleep(.01)
     return writer, task, seen
 
 
@@ -107,7 +108,7 @@ async def test_optional_read_failure_keeps_controls_but_blocks_late_retry(respon
     subject = transport.NativeTransport(SERIAL, "127.0.0.1")
     writer, task, seen = await connect(subject, corrupt if response else None)
     try:
-        with pytest.raises((TimeoutError, ValueError)):
+        with pytest.raises(ValueError if response else TimeoutError):
             await subject.async_read_energy(timeout=.7)
         assert subject.available
         with pytest.raises(ConnectionError):
@@ -124,8 +125,9 @@ async def test_cancellation_after_send_keeps_status_path_alive():
     writer, task, seen = await connect(subject, None)
     try:
         request = asyncio.create_task(subject.async_read_energy())
-        while 5 not in seen:
-            await asyncio.sleep(.01)
+        async with asyncio.timeout(2):
+            while 5 not in seen:
+                await asyncio.sleep(.01)
         request.cancel()
         with pytest.raises(asyncio.CancelledError):
             await request
@@ -141,8 +143,9 @@ async def test_active_session_rejected_before_any_storage_command():
     writer, task, seen = await connect(subject, snapshot)
     try:
         writer.write(report(state=2, power=42)); await writer.drain()
-        while not subject.latest.charging:
-            await asyncio.sleep(.01)
+        async with asyncio.timeout(2):
+            while not subject.latest.charging:
+                await asyncio.sleep(.01)
         with pytest.raises(ConnectionError):
             await subject.async_read_energy()
         assert 5 not in seen

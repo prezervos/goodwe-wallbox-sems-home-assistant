@@ -10,7 +10,7 @@ import asyncio
 import json
 import sys
 import tempfile
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -24,6 +24,8 @@ from homeassistant.helpers import entity_registry as er
 class Gateway:
     """Simulate explicit device reports without opening network connections."""
 
+    supports_timestamped_observation = True
+
     def __init__(self) -> None:
         self.mode = 0
         self.power = 4.2
@@ -31,6 +33,7 @@ class Gateway:
         self.report_power = True
         self.minimum_power = False
         self.tick = 0
+        self.report_time = datetime.now(timezone.utc)
         self.writes = []
         self.behavior = "apply"
 
@@ -40,9 +43,11 @@ class Gateway:
     def configure_gen2(self, *args: object) -> None:
         """Accept simulated configuration."""
 
-    def get_data_gen2(self, serial: str) -> dict[str, object]:
+    def _snapshot(self, serial: str) -> dict[str, object]:
         """Return a fresh simulated report."""
         self.tick += self.behavior != "stale"
+        if self.behavior != "stale":
+            self.report_time = datetime.now(timezone.utc)
         return {
             "sn": serial,
             "name": "Simulated Wallbox",
@@ -55,11 +60,26 @@ class Gateway:
             "set_charge_power": self.power,
             "min_charge_power": 4.2,
             "max_charge_power": 11.0,
-            "lastUpdate": (
-                datetime(2026, 9, 17, tzinfo=timezone.utc)
-                + timedelta(seconds=self.tick)
-            ).isoformat(),
+            "lastUpdate": self.report_time.isoformat(),
         }
+
+    def get_data_gen2(self, serial):
+        """Return configuration independently from the telemetry endpoint."""
+        return {**self._snapshot(serial), "power": self.power}
+
+    def _confirm_previous_mode_edit(self, serial, reported=None):
+        """The fixture applies companion settings immediately and has no fence."""
+
+    def set_minimum_power_checked(self, serial, generation, enabled, zone):
+        """Exercise the real validation wrapper with distinct fake endpoints."""
+        from custom_components.sems_wallbox.minimum_power import write_checked_minimum_power
+        return write_checked_minimum_power(self, serial, generation, enabled, zone)
+
+    def fetch_status_observation(self, serial: str) -> dict[str, object]:
+        """Keep the old telemetry allocation distinct from configured power."""
+        report = self._snapshot(serial)
+        report["set_charge_power"] = 4.2
+        return report
 
     def fetch_last_charge(self, serial: str) -> dict[str, int]:
         """Report simulated charging state."""
@@ -219,7 +239,8 @@ async def run(config_dir: str) -> None:
                                 await hass.services.async_call("switch", "turn_on",
                                     {"entity_id": minimum}, blocking=True)
                             except HomeAssistantError as error:
-                                assert error.translation_key == "minimum_power_stop_first"
+                                assert error.translation_key == ("minimum_power_stop_first" if active
+                                    else "minimum_power_idle_unverified")
                             else:
                                 raise AssertionError("Unconfirmed idle allowed a minimum-power write")
                             assert gateway.writes == writes_before

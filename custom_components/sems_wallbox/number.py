@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from .write_confirmation import confirm_write
 from .optimistic_write import optimistic_write
 
 import logging
@@ -213,7 +214,7 @@ class SemsNumber(CoordinatorEntity, NumberEntity):
         if not self.coordinator.last_update_success:
             return False
         data = self.coordinator.data.get(self.sn, {}) or {}
-        return data.get("chargeMode") in (0, 1, 2)
+        return type(data.get("chargeMode")) is int and data["chargeMode"] in (0, 1, 2)
 
     @callback
     def _handle_coordinator_update(self) -> None:
@@ -259,6 +260,7 @@ class SemsNumber(CoordinatorEntity, NumberEntity):
         await self.coordinator.async_request_refresh()
 
     @prepare_fast_power
+    @confirm_write("set_charge_power")
     @mode_setting_write(desired_mode=0, remember_power=True)
     @optimistic_write
     async def async_set_native_value(self, value: float) -> None:
@@ -311,9 +313,8 @@ class SemsNumber(CoordinatorEntity, NumberEntity):
             )
 
         # 3) Schedule a delayed refresh to confirm state from the API.
-        # set-mode can take up to 90s to return, then device needs more time to apply.
-        # Poll 60s after set-mode returns (total from user action up to ~150s).
-        self.coordinator.schedule_delayed_refresh(60)
+        # The shared readback monitor continues if the first report is still old.
+        self.coordinator.schedule_delayed_refresh(5)
 
 
 class SemsOutputPowerLimitNumber(CoordinatorEntity, NumberEntity):
@@ -394,6 +395,7 @@ class SemsOutputPowerLimitNumber(CoordinatorEntity, NumberEntity):
     def _handle_coordinator_update(self) -> None:
         self.async_write_ha_state()
 
+    @confirm_write("rated_max_charge_power")
     @mode_setting_write
     @optimistic_write
     async def async_set_native_value(self, value: float) -> None:
@@ -482,6 +484,7 @@ class SemsCurrentLimitNumber(CoordinatorEntity, NumberEntity):
     def _handle_coordinator_update(self) -> None:
         self.async_write_ha_state()
 
+    @confirm_write("currentLimit")
     @mode_setting_write
     async def async_set_native_value(self, value: float) -> None:
         try:
@@ -555,7 +558,7 @@ class _SemsModeParamNumber(CoordinatorEntity, NumberEntity):
         if not self.coordinator.last_update_success:
             return False
         data = self.coordinator.data.get(self.sn, {}) or {}
-        return data.get("chargeMode") in self._available_modes
+        return type(data.get("chargeMode")) is int and data["chargeMode"] in self._available_modes
 
     @property
     def native_value(self) -> float | None:
@@ -579,33 +582,20 @@ class _SemsModeParamNumber(CoordinatorEntity, NumberEntity):
     def _handle_coordinator_update(self) -> None:
         self.async_write_ha_state()
 
+    @confirm_write(lambda entity: entity._data_key)
     @mode_setting_write
     @optimistic_write
     async def async_set_native_value(self, value: float) -> None:
         data = self.coordinator.data.get(self.sn, {}) or {}
-        mode = data.get("chargeMode", 0)
-        # Build full current-param kwargs so the API call preserves other settings.
-        # chargeMaxPower is only relevant for mode 0.
-        charge_power = data.get("set_charge_power") if mode == 0 else None
-        from .mode_parameters import preserved_mode_parameters
+        mode = data.get("chargeMode")
         from .ui_errors import operation_error
-
-        try:
-            kwargs = preserved_mode_parameters(data, mode)
-            if mode == 0 and charge_power is None:
-                raise ValueError("Cannot preserve unreported charging power")
-        except (ValueError, RuntimeError) as error:
-            raise operation_error(error) from error
-        kwargs[self._override_kwarg] = int(value)
 
         self._pending_value = value
         self._pending_until = time.monotonic() + self._PENDING_TIMEOUT
         self.async_write_ha_state()
-
-        ok = await async_execute(self.hass,
-            lambda: self.api.set_charge_mode_gen2(
-                self.sn, mode, charge_power, None, **kwargs
-            )
+        ok = await async_execute(
+            self.hass, self.api.edit_mode_parameter,
+            self.sn, mode, self._override_kwarg, value,
         )
         if not ok:
             _LOGGER.warning("%s: set_charge_mode failed, reverting pending value", self.unique_id)
@@ -727,6 +717,7 @@ class _ModbusNumber(CoordinatorEntity, NumberEntity):
     def _handle_coordinator_update(self) -> None:
         self.async_write_ha_state()
 
+    @confirm_write(lambda entity: entity._confirmation_field)
     @mode_setting_write
     @optimistic_write
     async def async_set_native_value(self, value: float) -> None:
@@ -743,6 +734,8 @@ class _ModbusNumber(CoordinatorEntity, NumberEntity):
 
 class ModbusMaxChargePowerNumber(_ModbusNumber):
     """Max charge power limit in kW (reg 10029, SF=10)."""
+
+    _confirmation_field = "set_charge_power"
 
     _remember_charge_power = True
     _attr_translation_key = "modbus_charge_power"
@@ -829,6 +822,8 @@ class ModbusMaxChargePowerNumber(_ModbusNumber):
 class ModbusMaxChargeCapacityNumber(_ModbusNumber):
     """Max session energy limit in kWh (reg 10027, SF=10). 0 = unlimited."""
 
+    _confirmation_field = "modbus_max_capacity"
+
     _attr_translation_key = "modbus_max_capacity"
     _attr_device_class = NumberDeviceClass.ENERGY
     _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
@@ -852,6 +847,8 @@ class ModbusMaxChargeCapacityNumber(_ModbusNumber):
 
 class ModbusMinChargeCapacityNumber(_ModbusNumber):
     """Min session energy target in kWh (reg 10028, SF=10). 0 = no minimum."""
+
+    _confirmation_field = "modbus_min_capacity"
 
     _attr_translation_key = "modbus_min_capacity"
     _attr_device_class = NumberDeviceClass.ENERGY
@@ -884,6 +881,8 @@ class ModbusMinChargeCapacityNumber(_ModbusNumber):
 class ModbusBatteryDischargeSocNumber(_ModbusNumber):
     """Battery discharge SOC threshold in % (reg 10030). Used in PV+battery mode."""
 
+    _confirmation_field = "modbus_bat_soc_limit"
+
     _attr_translation_key = "modbus_bat_soc_limit"
     _attr_native_unit_of_measurement = "%"
     _attr_native_min_value = 0.0
@@ -913,6 +912,8 @@ class ModbusBatteryDischargeSocNumber(_ModbusNumber):
 
 class ModbusCurrentLimitNumber(_ModbusNumber):
     """Household breaker current (reg 10026), not the EV charging current."""
+
+    _confirmation_field = "modbus_breaker_current"
 
     _attr_translation_key = "current_limit"
     _attr_device_class = NumberDeviceClass.CURRENT

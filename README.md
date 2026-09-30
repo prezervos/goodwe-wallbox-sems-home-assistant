@@ -7,10 +7,10 @@
 
 Home Assistant custom integration for the **GoodWe Wallbox**.
 
-The 3.0.3 update fixes cloud connection-state and shared-authentication issues,
-PV-to-Fast power preparation, diagnostic limit readback and native TCP Stop
-verification. It includes the 3.0.3 beta fixes; the separate Modbus charging
-interruption remains under investigation. See [release notes](docs/RELEASE_NOTES.md).
+**3.0.4** improves cloud and Modbus control feedback, reconciles uncertain cloud
+responses, and fixes state handling, concurrent settings and native endpoint
+cleanup after an independent audit. Entity identities and saved preferences are
+preserved. See [release notes](docs/RELEASE_NOTES.md) for validation and known limits.
 
 Supports cloud, local Modbus and optional native Socket A TCP connections:
 
@@ -39,6 +39,12 @@ Supports cloud, local Modbus and optional native Socket A TCP connections:
 | Charge power limit | Number (kW) | Set max charge power |
 | Ensure minimum power | Switch | Device minimum-power policy; availability and writable modes depend on model/transport. Tested original HCA changes require idle. |
 
+Vehicle state describes whether a car is connected; it does not prove that
+energy is flowing. A cloud session or raw station status may remain Charging
+while the car suspends charging at zero power. Use measured Charging power or
+Charging activity to distinguish actual energy flow. Zero power alone does not
+prove that the target SOC was reached or that a Stop command was completed.
+
 ### Additional Modbus entities
 
 | Entity | Type | Description |
@@ -63,13 +69,13 @@ Supports cloud, local Modbus and optional native Socket A TCP connections:
 
 ### Optional settings and transport support
 
-Development behavior: in cloud-only and Modbus PV modes, the charge-power control
+In cloud-only and Modbus PV modes, the charge-power control
 can prepare a **Fast-mode preference**. Changing it saves the requested kW in HA
 without switching mode or writing to the wallbox. Selecting Fast applies and
 verifies that preference, even with automatic mode restoration disabled. The
 preference survives reload; `reported_power_limit` remains the separate actual
 device report. No power preference means a valid limit must be chosen before a
-verified Fast transition. This change is not yet in a published release.
+verified Fast transition.
 
 
 Cloud integrations also retain capability-dependent controls for grid current,
@@ -84,7 +90,7 @@ distinct from **Max charge power** (kW), which limits vehicle charging, and
 **Phase A/B/C current** (A), which reports measurements. A 63 A household limit
 does not mean the vehicle can charge at 63 A.
 
-In the unreleased cloud range fix, this control uses the device's SEMS+ range
+This control uses the device's SEMS+ range
 metadata, with 0–2000 A defaults for missing/null bounds in a successful response
 and a 0.01 A input step. These are accepted input bounds, not recommended breaker
 settings or proof of physical support on every model. Failed discovery, malformed
@@ -283,6 +289,12 @@ do not treat unavailable measurements as zero.
 
 ## Changelog
 
+### 3.0.4
+
+Bounded control readback, reliable Start/Stop presentation, uncertain cloud-command
+reconciliation, serialized settings, Modbus unknown-value handling, native endpoint
+cleanup and translated UI fixes. See [release notes](docs/RELEASE_NOTES.md).
+
 ### 3.0.3
 
 Cloud state/authentication, PV-to-Fast power preparation, current-limit ranges,
@@ -404,8 +416,10 @@ Legacy cloud-only and Modbus entries enable the saved mode/power policy through
 the mode-restoration option; they do not provide the same unconditional saved-power
 behavior as native-enabled entries.
 
-In the existing cloud path, changing the power number also selects Fast. In the
-native TCP path, the power number preserves the selected mode, and the saved
+In cloud-only and Modbus PV modes, changing the power number stages the Fast
+preference without changing the device mode. Selecting Fast applies and verifies
+that preference; changing the number while already in Fast updates its limit.
+In the native TCP path, the power number preserves the selected mode, and the saved
 power ceiling applies to Fast, PV priority and PV + battery. The number shows the
 requested value; `reported_power_limit` and the power sensor show the distinct
 device setpoint and actual consumption. These quantities need not be identical.

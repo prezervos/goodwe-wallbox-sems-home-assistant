@@ -1,5 +1,6 @@
 """Support for select entity controlling GoodWe SEMS Wallbox charge mode."""
 
+from .write_confirmation import confirm_write
 from .optimistic_write import optimistic_write
 
 import logging
@@ -16,7 +17,8 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from .cloud_rate_limit import CloudRateLimitedError
 from .operation_budget import async_execute
 from .const import DOMAIN, CONN_TYPE_MODBUS
-from .charge_mode_policy import async_apply_policy, mode_setting_write
+from .charge_mode_policy import ModeVerificationError, async_apply_policy, mode_setting_write
+from .cloud_command import CloudCommandError
 from .coordinator import SemsUpdateCoordinator
 from .ui_errors import operation_error
 
@@ -73,7 +75,8 @@ async def async_setup_entry(
     entities: list[InverterOperationModeEntity] = []
 
     for sn, inverter in coordinator.data.items():
-        active_mode = inverter["chargeMode"]
+        active_mode = inverter.get("chargeMode")
+        active_mode = active_mode if type(active_mode) is int else None
         entities.append(
             InverterOperationModeEntity(
                 coordinator,
@@ -120,7 +123,7 @@ class InverterOperationModeEntity(CoordinatorEntity, SelectEntity):
         self.entity_description = description
         self._attr_unique_id = f"{self.sn}-select-charge-mode"
         self._attr_options = supported_options
-        self._attr_current_option = str(current_mode)
+        self._attr_current_option = current_mode if current_mode in supported_options else None
         # Pending mode: set while we wait for the API to confirm a mode change.
         # Prevents regular polls from reverting the optimistic UI state.
         self._pending_mode: int | None = None
@@ -141,12 +144,13 @@ class InverterOperationModeEntity(CoordinatorEntity, SelectEntity):
         """When entity is added to hass."""
         await super().async_added_to_hass()
 
+    @confirm_write("chargeMode", value=lambda entity, value: _OPTION_TO_MODE.get(value))
     @optimistic_write
     async def async_select_option(self, option: str) -> None:
         """Change mode and translate cooldowns from either cloud write."""
         try:
             await self._async_select_option(option)
-        except CloudRateLimitedError as error:
+        except (CloudRateLimitedError, CloudCommandError, ModeVerificationError) as error:
             raise operation_error(error) from error
 
     async def _async_select_option(self, option: str) -> None:
@@ -280,6 +284,7 @@ class InverterOperationModeEntity(CoordinatorEntity, SelectEntity):
         """Handle updated data from the coordinator."""
         inverter = self.coordinator.data.get(self.sn, {}) or {}
         mode = inverter.get("chargeMode")
+        mode = mode if type(mode) is int and mode in _MODE_TO_OPTION else None
         _LOGGER.debug(
             "Coordinator update for wallbox %s: chargeMode=%s (pending=%s)",
             self.sn,
@@ -311,9 +316,10 @@ class InverterOperationModeEntity(CoordinatorEntity, SelectEntity):
                 self.async_write_ha_state()
                 return
 
-        if mode in _MODE_TO_OPTION:
+        if type(mode) is int and mode in _MODE_TO_OPTION:
             self._attr_current_option = _MODE_TO_OPTION[mode]
         else:
+            self._attr_current_option = None
             _LOGGER.warning(
                 "Unknown chargeMode %s for wallbox %s in coordinator update",
                 mode,
@@ -374,7 +380,7 @@ class SemsChargeDurationSelect(CoordinatorEntity, SelectEntity):
         if not self.coordinator.last_update_success:
             return False
         data = self.coordinator.data.get(self.sn, {}) or {}
-        return data.get("chargeMode") in (1, 2)
+        return type(data.get("chargeMode")) is int and data["chargeMode"] in (1, 2)
 
     @property
     def current_option(self) -> str | None:
@@ -407,6 +413,7 @@ class SemsChargeDurationSelect(CoordinatorEntity, SelectEntity):
     def _handle_coordinator_update(self) -> None:
         self.async_write_ha_state()
 
+    @confirm_write("finish_time", value=lambda entity, value: _DURATION_TO_HOURS.get(value))
     @mode_setting_write
     @optimistic_write
     async def async_select_option(self, option: str) -> None:
@@ -415,27 +422,15 @@ class SemsChargeDurationSelect(CoordinatorEntity, SelectEntity):
             return
         hours = _DURATION_TO_HOURS[option]
         data = self.coordinator.data.get(self.sn, {}) or {}
-        mode = data.get("chargeMode", 1)
-        # Re-send full mode params so existing settings are preserved
-        charge_power = data.get("set_charge_power") if mode == 0 else None
-        from .mode_parameters import preserved_mode_parameters
+        mode = data.get("chargeMode")
         from .ui_errors import operation_error
-
-        try:
-            params = preserved_mode_parameters(data, mode)
-        except (ValueError, RuntimeError) as error:
-            raise operation_error(error) from error
-        params["finish_time"] = str(hours)
 
         self._pending_value = option
         self._pending_until = time.monotonic() + _SEMS_PENDING_DURATION_TIMEOUT
         self.async_write_ha_state()
-
-        ok = await async_execute(self.hass,
-            lambda: self.api.set_charge_mode_gen2(
-                self.sn, mode, charge_power, None,
-                **params,
-            )
+        ok = await async_execute(
+            self.hass, self.api.edit_mode_parameter,
+            self.sn, mode, "finish_time", str(hours),
         )
         if not ok:
             _LOGGER.warning("SemsChargeDurationSelect %s: set_charge_mode_gen2 failed", self.sn)
@@ -519,6 +514,7 @@ class ModbusChargeModeSelect(CoordinatorEntity, SelectEntity):
     def _handle_coordinator_update(self) -> None:
         self.async_write_ha_state()
 
+    @confirm_write("chargeMode", value=lambda entity, value: _OPTION_TO_MODE.get(value))
     @optimistic_write
     async def async_select_option(self, option: str) -> None:
         if option not in _OPTION_TO_MODE:
@@ -583,7 +579,7 @@ class ModbusChargeDurationSelect(CoordinatorEntity, SelectEntity):
         if not self.coordinator.last_update_success:
             return False
         data = self.coordinator.data.get(self.sn, {}) or {}
-        return data.get("chargeMode") in (1, 2)  # PV priority and PV+battery
+        return type(data.get("chargeMode")) is int and data["chargeMode"] in (1, 2)  # PV priority and PV+battery
 
     @property
     def current_option(self) -> str | None:
@@ -608,6 +604,7 @@ class ModbusChargeDurationSelect(CoordinatorEntity, SelectEntity):
     def _handle_coordinator_update(self) -> None:
         self.async_write_ha_state()
 
+    @confirm_write("modbus_completion_time", value=lambda entity, value: _DURATION_TO_HOURS.get(value))
     @mode_setting_write
     @optimistic_write
     async def async_select_option(self, option: str) -> None:
