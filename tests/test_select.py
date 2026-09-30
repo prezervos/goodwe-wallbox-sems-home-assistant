@@ -28,6 +28,8 @@ sys.modules[_pkg_name] = _pkg
 _const = types.ModuleType(f"{_pkg_name}.const")
 _const.DOMAIN = "sems_wallbox"
 _const.CONN_TYPE_MODBUS = "modbus"
+_const.CAP_OUTPUT_POWER_SETTING = "Output_Power_Setting"
+_const.CAP_DYNAMIC_LOAD_CONTROL = "Dynamic_Load_Control"
 sys.modules[f"{_pkg_name}.const"] = _const
 setattr(_pkg, "const", _const)
 
@@ -605,7 +607,7 @@ async def test_charge_duration_select_only_for_generations_with_finish_time(
         "capabilities": {"pile_generation": generation}}}}
     removed = []
     monkeypatch.setattr(_select_mod, "remove_unsupported",
-                        lambda _hass, platform, ids: removed.extend((platform, i) for i in ids))
+                        lambda _hass, _entry, platform, ids: removed.extend((platform, i) for i in ids))
     added = []
     await _select_mod.async_setup_entry(hass, types.SimpleNamespace(entry_id="test"), added.extend)
     assert any(isinstance(e, SemsChargeDurationSelect) for e in added) is has_duration

@@ -612,7 +612,7 @@ async def _setup_cloud_numbers(monkeypatch, caps):
         "coordinator": coordinator, "api": api, "capabilities": caps}}}
     removed = []
     monkeypatch.setattr(_number_mod, "remove_unsupported",
-                        lambda _hass, platform, ids: removed.extend((platform, i) for i in ids))
+                        lambda _hass, _entry, platform, ids: removed.extend((platform, i) for i in ids))
 
     async def run(_hass, func, *args):
         return func(*args)

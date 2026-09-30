@@ -27,6 +27,7 @@ from homeassistant.const import EntityCategory
 
 from .charge_mode_policy import ModeVerificationError
 from .native_entities import NativeEntity
+from .cloud_capabilities import control_support
 from .write_confirmation import confirm_write
 from .ui_errors import operation_error
 
@@ -716,14 +717,13 @@ def setup_cloud_settings(platform, coordinator):
     }
     if platform not in classes:
         return []
-    # Keep the seven existing configuration controls. Optional feature controls
-    # retain upstream capability gates; registry identities do not depend on mode.
+    # Cloud-only and combined entries share model support. Unknown metadata
+    # retains this branch's legacy entity set, including the output limit.
     data = coordinator.entry.data
     more = data.get("more_device_controls") or []
     dashboard = data.get("dashboard_functions") or []
     gates = {
         "dynamicLoad": not more or "Dynamic_Load_Control" in more,
-        "rated_max_charge_power": not more or "Dynamic_Load_Control" in more,
         "phaseSwitch": "Phase_Switch" in more,
         "plug_and_charge": "plugAndCharge" in dashboard or native_auto_start,
         "ensure_minimum_charging_power": not more
@@ -743,6 +743,7 @@ def setup_cloud_settings(platform, coordinator):
          else classes[platform])(coordinator, setting)
         for setting in SETTINGS
         if setting.platform == platform and gates.get(setting.field, True)
+        and control_support(data, setting.field) is not False
     ]
 
 
