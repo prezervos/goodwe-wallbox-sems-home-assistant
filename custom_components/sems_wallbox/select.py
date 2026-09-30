@@ -14,6 +14,7 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
+from .cloud_capabilities import first_generation, remove_unsupported
 from .cloud_rate_limit import CloudRateLimitedError
 from .operation_budget import async_execute
 from .const import DOMAIN, CONN_TYPE_MODBUS
@@ -71,6 +72,8 @@ async def async_setup_entry(
         return
 
     api = runtime["api"]
+    # The generation1 mode form has no finishTime (charge duration) field.
+    first_gen = first_generation(runtime.get("capabilities", {}))
 
     entities: list[InverterOperationModeEntity] = []
 
@@ -87,7 +90,10 @@ async def async_setup_entry(
                 _MODE_TO_OPTION.get(active_mode),
             )
         )
-        entities.append(SemsChargeDurationSelect(coordinator, sn, api))
+        if first_gen:
+            remove_unsupported(hass, "select", [f"{sn}-select-charge-duration"])
+        else:
+            entities.append(SemsChargeDurationSelect(coordinator, sn, api))
 
     async_add_entities(entities)
 

@@ -39,6 +39,12 @@ Supports cloud, local Modbus and optional native Socket A TCP connections:
 | Charge power limit | Number (kW) | Set max charge power |
 | Ensure minimum power | Switch | Device minimum-power policy; availability and writable modes depend on model/transport. Tested original HCA changes require idle. |
 
+Cloud controls follow what SEMS+ offers for the wallbox generation. First-generation
+wallboxes (original HCA, `pileGeneration` 1) get the Fast charge power limit, charge
+mode, minimum power and dynamic load control, but no session energy, target SOC,
+charge duration or output power limit entities; SEMS+ has no such settings for them.
+Entities left from earlier versions for those controls are removed.
+
 Vehicle state describes whether a car is connected; it does not prove that
 energy is flowing. A cloud session or raw station status may remain Charging
 while the car suspends charging at zero power. Use measured Charging power or
