@@ -7,6 +7,8 @@
 - Preserve a newer Stop or setting choice during reconciliation and handover, the bounded request lifetime, manual TCP selection and authentication/configuration exclusions. A failed local Start is not retried.
 - Keep the Charging switch on during supervised native Starting, while measured power and charging activity remain separate. Retain the existing 45-second ramp-up guard and protective Stop.
 
+- Follow the current Home Assistant shared-dependency requirement: allow `pymodbus>=3.13.1` instead of an exact pin, avoiding conflicts with HA-managed upgrades. Validation used 3.13.1.
+
 ## Testing and scope
 
 This beta targets combined cloud/native HCA control with automatic fallback enabled. Modbus and cloud-only configurations do not acquire a new transport. Existing entity IDs and names remain unchanged. No new persistent notifications or extra parallel cloud polling are introduced.
