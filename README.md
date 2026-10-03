@@ -115,6 +115,14 @@ setting does not gain native TCP support from the fix. Modbus uses its separate
 register contract (10026, integer 0–2000 A). See
 [cloud current-limit behavior and evidence](docs/CLOUD_CURRENT_LIMIT.md).
 
+During a native TCP Fast Start, the **Charging** switch stays on while the
+bounded Start supervision is active, and **Status** shows **Starting**. This
+indicates an active session request, not measured energy flow. The existing
+45-second observation deadline initiates a protective Stop if charging is not
+observed. A confirmed Stop returns the switch to off; connection loss makes
+control unavailable. Use **Charging power** or **Charging activity** to confirm
+actual energy flow. Cloud switch behavior remains unchanged.
+
 Enabling native TCP keeps the core Start/Stop, mode, power and session-energy
 identities. Extended cloud-only settings become unavailable while TCP owns the
 connection. The verified original-HCA minimum-power control is an exception: its
@@ -529,3 +537,17 @@ diagnostics to see whether the optional event connection is established.
 
 Delivery timing depends on GoodWe and is not guaranteed for every state change.
 See [validation and known limitations](docs/VALIDATION.md) for measured limitations.
+
+
+### Recovery after an uncertain cloud Start
+
+With automatic native TCP fallback enabled, a cloud Start returning GoodWe
+`R0305`, `C0001`, or an explicitly uncertain transport error is reconciled for 15 seconds using the existing readback
+scheduler. Observed charging keeps the cloud route. Otherwise the integration
+switches to TCP, requests fresh device status, and sends one local Start only
+when the wallbox is independently confirmed idle, connected and fault-free.
+If it is already charging, no second Start is sent. Unknown state, a failed
+handover, authentication/configuration errors, disabled fallback or a newer
+user choice prevent the recovery Start. A newer Stop takes priority, including
+during handover. The existing bounded intent lifetime still applies; reload
+never replays a pending Start. A failed local attempt is not retried.

@@ -158,8 +158,12 @@ class ChargingSwitch(ControlEntity, SwitchEntity):
     @property
     def is_on(self):
         guard = self.coordinator.transport.session_guard
-        if self.coordinator.local and guard.mode != 0 and guard.phase == "waiting":
-            # An enabled PV session must remain switchable off while drawing zero.
+        if self.coordinator.local and (
+            guard.phase == "starting"
+            or guard.mode != 0 and guard.phase == "waiting"
+        ):
+            # A supervised Start remains switchable off during its bounded ramp-up.
+            # This is session intent, not evidence of measured charging power.
             return True
         return self.values.get("last_charge_work_status") == 6 or str(
             self.values.get("status", "")

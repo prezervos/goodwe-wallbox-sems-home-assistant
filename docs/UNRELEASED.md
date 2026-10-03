@@ -1,5 +1,18 @@
 # Development backlog
 
+## 3.0.6b1: verified cloud Start recovery and TCP Start display
+
+- Keep the Charging switch on while a native Fast Start is supervised in the
+  bounded `starting` phase. The wallbox status displays Starting; measured power
+  and charging activity remain independent and are not synthesized.
+- Retain the existing 45-second observation deadline and protective Stop on
+  failed ramp-up, explicit Stop handling, and invalidation on disconnect.
+- After an uncertain cloud Start (`R0305`/`C0001` or uncertain transport failure), reconcile for 15 seconds,
+  then allow one native attempt only after fresh idle, connected and fault-free
+  telemetry. Preserve newer Stop, expiry, opt-out and no-retry-on-local-failure.
+- Entity identities, measured telemetry and PV waiting behavior are unchanged.
+
+
 Release 3.0.5 packages the fixes summarized in [RELEASE_NOTES.md](RELEASE_NOTES.md).
 The sections below retain the development/validation history, including statements
 that a change had not yet been released at the time of its experiment. They are
