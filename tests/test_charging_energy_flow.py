@@ -22,7 +22,7 @@ def owner(values, *, local=False):
         local=local, last_update_success=True, transitioning=False, _closed=False,
         cloud_restored_at=None, hass=SimpleNamespace(config=SimpleNamespace(time_zone="UTC")),
         transport=SimpleNamespace(available=True, observed_at=100.0,
-            session_guard=SimpleNamespace(phase="idle", mode=0)),
+            session_guard=SimpleNamespace(phase="idle", mode=0, error=None)),
     )
 
 
@@ -130,3 +130,56 @@ def test_cloud_timestamp_formats_use_configured_timezone(stamp):
     coordinator = owner({"power": 0, "lastUpdate": stamp})
     coordinator.hass.config.time_zone = "Europe/Prague"
     assert binary.ChargingActiveSensor(coordinator).is_on is False
+
+
+@pytest.mark.parametrize("local", [False, True])
+def test_starting_switch_is_local_session_intent_not_energy_flow(local):
+    coordinator = owner({"status": "standby", "power": 0,
+        "raw_state": 0, "currents_a": [0, 0, 0]}, local=local)
+    coordinator.transport.session_guard.phase = "starting"
+    switch = entities.ChargingSwitch(coordinator, "TEST_switch", "start_charging")
+    assert switch.is_on is local
+    assert binary.ChargingActiveSensor(coordinator).is_on is False
+    assert switch.extra_state_attributes["tcp_operation"] == ("starting" if local else None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["charging", "stop", "timeout", "disconnect"])
+async def test_supervised_start_switch_resolves_without_inventing_energy(outcome):
+    from unittest.mock import AsyncMock
+
+    guard_module = importlib.import_module(PACKAGE + ".native_session_guard")
+    coordinator = owner({"status": "standby", "power": 0,
+        "raw_state": 0, "currents_a": [0, 0, 0]}, local=True)
+    stop = AsyncMock(return_value=SimpleNamespace(stopped=True))
+    guard = guard_module.NativeSessionGuard(stop)
+    coordinator.transport.session_guard = guard
+    switch = entities.ChargingSwitch(coordinator, "TEST_switch", "start_charging")
+    activity = binary.ChargingActiveSensor(coordinator)
+    try:
+        guard.begin(4.2, timeout=0.01 if outcome == "timeout" else 45)
+        assert switch.is_on is True
+        assert activity.is_on is False
+        if outcome == "charging":
+            coordinator.data["TEST"].update(status="charging", power=4.1,
+                raw_state=2, currents_a=[6, 6, 6])
+            guard.observe(SimpleNamespace(charging=True, power_kw=4.1))
+            assert switch.is_on is True
+            assert activity.is_on is True
+        elif outcome == "stop":
+            guard.disarm()  # Transport calls this after independently confirmed Stop.
+            assert switch.is_on is False
+            assert activity.is_on is False
+        elif outcome == "timeout":
+            await guard._deadline_task
+            await guard.task
+            stop.assert_awaited_once()
+            assert switch.is_on is False
+            assert "Stop confirmed" in guard.error
+        else:
+            await guard.close()
+            coordinator.last_update_success = False
+            assert switch.is_on is False
+            assert activity.is_on is None
+    finally:
+        await guard.close()

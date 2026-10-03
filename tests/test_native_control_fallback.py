@@ -20,6 +20,7 @@ intent = importlib.import_module(PACKAGE + ".native_intent")
 
 @pytest.fixture(autouse=True)
 def no_persistent_notifications(monkeypatch):
+    monkeypatch.setattr(module, "_START_RECONCILIATION", 0)
     notification = types.ModuleType("homeassistant.components.persistent_notification")
     notification.async_create = Mock()
     monkeypatch.setitem(sys.modules, notification.__name__, notification)
@@ -34,7 +35,7 @@ def subject(reply=None):
         return await operation()
     owner = types.SimpleNamespace(
         local=False, _closed=False, transitioning=False, cloud_restored_at=None,
-        routing_epoch=0, serial="test", last_update_success=True,
+        routing_epoch=0, serial="test", last_update_success=True, data={},
         cloud=types.SimpleNamespace(get_data_gen2=Mock(return_value=reply)),
         hass=types.SimpleNamespace(async_add_executor_job=executor,
             async_create_background_task=lambda coro, name: asyncio.create_task(coro)),
@@ -42,7 +43,9 @@ def subject(reply=None):
             next_attempt=0, RETRY_DELAY=300, return_delay=1800, reason=None),
         charge_mode_policy=types.SimpleNamespace(invalidate=Mock(),
             async_setting_write=AsyncMock(side_effect=locked), timeout=1),
-        transport=types.SimpleNamespace(available=True),
+        transport=types.SimpleNamespace(available=True, async_command=AsyncMock(
+            return_value=types.SimpleNamespace(charging=False, stopped=True,
+                fault_code=0, connection=2))),
         connection_intent=types.SimpleNamespace(async_automatic=AsyncMock()),
         async_refresh=AsyncMock(), async_update_listeners=Mock(),
         entry=types.SimpleNamespace(async_start_reauth=Mock()),
@@ -250,16 +253,151 @@ async def test_expired_intent_cannot_trigger_late_handover():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("requested", [True, False])
-async def test_uncertain_dispatched_cloud_command_never_replays_over_tcp(requested):
-    """A healthy preflight cannot turn a lost command ACK into a second write."""
+@pytest.mark.parametrize("outcome", ["idle", "charging", "unknown", "fault", "disconnected"])
+async def test_uncertain_start_recovers_only_after_independent_tcp_observation(outcome):
     command_module = importlib.import_module(PACKAGE + ".cloud_command")
     owner = subject({"sn": "test"})
-    operation = AsyncMock(side_effect=command_module.CloudCommandError(
-        "start" if requested else "stop", "R0305", uncertain=True))
-    assert owner.control_fallback.submit(requested, operation)
+    state = owner.transport.async_command.return_value
+    state.charging = outcome == "charging"
+    state.stopped = outcome in ("idle", "fault", "disconnected")
+    state.fault_code = int(outcome == "fault")
+    state.connection = 0 if outcome == "disconnected" else 2
+    async def operation():
+        if not owner.local:
+            raise command_module.CloudCommandError("start", "R0305", uncertain=True)
+    command = AsyncMock(side_effect=operation)
+    assert owner.control_fallback.submit(True, command)
     await finish(owner)
-    operation.assert_awaited_once()
+    owner._set_local.assert_awaited_once_with(True)
+    owner.transport.async_command.assert_awaited_once_with("status")
+    assert command.await_count == (2 if outcome == "idle" else 1)
+    assert owner.pending_intent.error == (None if outcome in ("idle", "charging") else "operation_failed")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("error", ["stop", "auth", "parameter", "timeout", "disabled"])
+async def test_ineligible_failures_never_switch_after_healthy_preflight(error):
+    command_module = importlib.import_module(PACKAGE + ".cloud_command")
+    owner = subject({"sn": "test"})
+    if error == "auth":
+        failure = module.CloudAuthenticationError()
+    elif error == "timeout":
+        failure = TimeoutError()
+    else:
+        failure = command_module.CloudCommandError(
+            "stop" if error == "stop" else "start",
+            "100004" if error == "parameter" else "R0305", uncertain=error != "parameter")
+    async def operation():
+        if error == "disabled":
+            owner.automatic_fallback.enabled = False
+        raise failure
+    command = AsyncMock(side_effect=operation)
+    owner.control_fallback.submit(error != "stop", command)
+    await finish(owner)
+    command.assert_awaited_once()
     owner._set_local.assert_not_awaited()
-    assert owner.local is False
-    assert not owner.pending_intent.pending
+
+
+@pytest.mark.asyncio
+async def test_cloud_charging_confirmation_prevents_local_takeover(monkeypatch):
+    command_module = importlib.import_module(PACKAGE + ".cloud_command")
+    monkeypatch.setattr(module, "_START_RECONCILIATION", 0.5)
+    owner = subject({"sn": "test"})
+    async def report():
+        await asyncio.sleep(0.01)
+        owner.data = {"test": {"status": "charging"}}
+    async def operation():
+        asyncio.create_task(report())
+        raise command_module.CloudCommandError("start", "C0001", uncertain=True)
+    command = AsyncMock(side_effect=operation)
+    owner.control_fallback.submit(True, command)
+    await finish(owner)
+    command.assert_awaited_once()
+    owner._set_local.assert_not_awaited()
+    assert owner.pending_intent.error is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("when", ["reconcile", "handover", "status"])
+async def test_newer_stop_fences_recovery_and_is_executed(when, monkeypatch):
+    command_module = importlib.import_module(PACKAGE + ".cloud_command")
+    owner = subject({"sn": "test"})
+    stop = AsyncMock()
+    def stop_now():
+        owner.pending_intent.submit("charging", False, stop)
+    async def operation():
+        if when == "reconcile":
+            stop_now()
+        raise command_module.CloudCommandError("start", "R0305", uncertain=True)
+    if when == "handover":
+        original = owner._set_local.side_effect
+        async def handover(local):
+            await original(local)
+            stop_now()
+        owner._set_local.side_effect = handover
+    elif when == "status":
+        state = owner.transport.async_command.return_value
+        async def read(*args):
+            stop_now()
+            return state
+        owner.transport.async_command.side_effect = read
+    command = AsyncMock(side_effect=operation)
+    owner.control_fallback.submit(True, command)
+    await finish(owner)
+    command.assert_awaited_once()
+    stop.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_local_failure_is_never_retried():
+    command_module = importlib.import_module(PACKAGE + ".cloud_command")
+    owner = subject({"sn": "test"})
+    command = AsyncMock(side_effect=command_module.CloudCommandError("start", "R0305", uncertain=True))
+    owner.control_fallback.submit(True, command)
+    await finish(owner)
+    assert command.await_count == 2
+    assert owner._set_local.await_count == 1
+    assert owner.pending_intent.error == "operation_failed"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["handover", "read", "expiry", "closed", "manual", "cooldown"])
+async def test_failed_or_cancelled_recovery_never_dispatches_local_start(failure):
+    command_module = importlib.import_module(PACKAGE + ".cloud_command")
+    owner = subject({"sn": "test"})
+    async def operation():
+        if failure == "expiry":
+            owner.pending_intent.batch_deadline = 0
+        elif failure == "closed":
+            owner._closed = True
+        elif failure == "manual":
+            owner.automatic_fallback.paused = True
+        elif failure == "cooldown":
+            owner.automatic_fallback.next_attempt = float("inf")
+        raise command_module.CloudCommandError("start", "R0305", uncertain=True)
+    if failure == "handover":
+        owner._set_local.side_effect = ConnectionError("LAN unavailable")
+    elif failure == "read":
+        owner.transport.async_command.side_effect = TimeoutError("No fresh status")
+    command = AsyncMock(side_effect=operation)
+    owner.control_fallback.submit(True, command)
+    await finish(owner)
+    command.assert_awaited_once()
+    assert owner.pending_intent.error == "operation_failed"
+
+
+@pytest.mark.asyncio
+async def test_translated_error_preserves_recovery_and_confirmation(monkeypatch):
+    command_module = importlib.import_module(PACKAGE + ".cloud_command")
+    owner = subject({"sn": "test"})
+    async def operation():
+        if not owner.local:
+            try:
+                raise command_module.CloudCommandError("start", "R0305", uncertain=True)
+            except command_module.CloudCommandError as error:
+                raise RuntimeError("Translated service failure") from error
+    command = AsyncMock(side_effect=operation)
+    owner.control_fallback.submit(True, command)
+    await finish(owner)
+    assert command.await_count == 2
+    assert owner.pending_intent.error is None

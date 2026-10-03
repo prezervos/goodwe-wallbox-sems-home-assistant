@@ -21,7 +21,7 @@ class PendingIntent:
 
 
 class LatestIntent:
-    """Coalesce logical controls; never persist or replay uncertain commands.
+    """Coalesce logical controls; never persist or blindly replay uncertain commands.
 
     Args:
         owner: Native coordinator with the existing control policy and transport.
@@ -138,6 +138,18 @@ class LatestIntent:
                             self.pending["charging"] = request
                         _LOGGER.debug("Deferred operation superseded by newer intent")
                         continue
+                    control = getattr(self.owner, "control_fallback", None)
+                    if key == "charging" and request.value is True and control is not None:
+                        try:
+                            if await control.recover_start(exc, request, version):
+                                continue
+                        except RequestSuperseded:
+                            # Newer choices, especially Stop, own the next dispatch.
+                            if self.pending:
+                                continue
+                        except Exception:
+                            # Retain recovery failure without hiding a newer Stop.
+                            _LOGGER.exception("Verified TCP Start recovery failed")
                     _LOGGER.exception("Deferred wallbox %s operation failed", key)
                     # Any failed command may have reached the device. Preserve a
                     # newer explicit Stop, but never replay uncertain settings/Start.

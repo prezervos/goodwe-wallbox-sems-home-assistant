@@ -1,4 +1,4 @@
-"""Check cloud controls before releasing the latest charging intent."""
+"""Verify cloud control routing and reconcile uncertain Start before TCP recovery."""
 
 from __future__ import annotations
 
@@ -8,14 +8,17 @@ import time
 
 from .charge_mode_policy import RequestSuperseded
 from .cloud_observation import CloudAuthenticationError
+from .cloud_command import CloudCommandError
+from .write_confirmation import matches
 from .operation_budget import CURRENT_BUDGET, OperationBudget, async_execute
 
 _LOGGER = logging.getLogger(__name__)
 _PREFLIGHT_TIMEOUT = 20.0
+_START_RECONCILIATION = 15.0
 
 
 class ControlFallback:
-    """Use a read-only preflight, never retry an uncertain charging command.
+    """Verify the route; recover Start only after independent local state checks.
 
     Args:
         owner: Native coordinator owning the existing intent queue and write lock.
@@ -132,6 +135,80 @@ class ControlFallback:
         finally:
             self.preparing = False
             owner.async_update_listeners()
+
+    async def recover_start(self, error, request, version):
+        """Reconcile an uncertain cloud Start before a single verified TCP attempt.
+
+        Args:
+            error: Original service failure, possibly wrapped for HA translation.
+            request: The still-current deferred charging request.
+            version: Latest-intent generation captured before cloud dispatch.
+
+        Returns:
+            True if charging was observed or a verified local attempt completed.
+            False if this failure is ineligible for automatic transport recovery.
+        """
+        cause = error
+        while cause is not None and not isinstance(cause, CloudCommandError):
+            cause = cause.__cause__
+        owner = self.owner
+        fallback = owner.automatic_fallback
+        if (not isinstance(cause, CloudCommandError) or cause.action != "start"
+                or not cause.cloud_command_uncertain or cause.code not in ("R0305", "C0001")
+                or owner.local or not fallback.enabled or fallback.paused or fallback.blocked):
+            return False
+        epoch = owner.routing_epoch
+        pending = owner.pending_intent
+
+        def check():
+            if (self.closed or owner._closed or owner.transitioning
+                    or owner.routing_epoch != epoch or pending.closed
+                    or pending.version != version or not fallback.enabled
+                    or fallback.paused or fallback.blocked
+                    or pending.batch_deadline is None
+                    or time.monotonic() >= pending.batch_deadline):
+                raise RequestSuperseded("Cloud Start recovery was superseded")
+
+        check()
+        # Reuse the existing readback scheduler instead of starting parallel HTTP
+        # polling. Observed charging cancels recovery even if its origin is unknown.
+        deadline = time.monotonic() + _START_RECONCILIATION
+        while time.monotonic() < deadline:
+            check()
+            values = (owner.data or {}).get(owner.serial, {})
+            if owner.last_update_success and matches("charging", True, values):
+                return True
+            await asyncio.sleep(0.2)
+        check()
+        if time.monotonic() < fallback.next_attempt:
+            return False
+
+        async def handover():
+            check()
+            fallback.next_attempt = time.monotonic() + fallback.RETRY_DELAY
+            await owner._set_local(True)
+            await owner.connection_intent.async_automatic(True)
+
+        _LOGGER.warning("Cloud Start was not confirmed; verifying native TCP before recovery")
+        await owner.charge_mode_policy.async_setting_write(handover)
+        epoch = owner.routing_epoch
+        check()
+        await owner.async_refresh()
+        check()
+        if not owner.local or not owner.last_update_success or not owner.transport.available:
+            raise ConnectionError("TCP Start recovery could not verify the device")
+        fallback.reason = "cloud_control_unavailable"
+        fallback.trial_deadline = None
+        fallback.next_attempt = time.monotonic() + fallback.return_delay
+        status = await owner.transport.async_command("status")
+        check()
+        if status.charging:
+            return True
+        # Zero power alone cannot establish idle or a safe new charging session.
+        if not status.stopped or status.fault_code != 0 or status.connection != 2:
+            raise ConnectionError("TCP Start recovery requires confirmed idle, connected, fault-free state")
+        await request.operation()
+        return True
 
     async def close(self):
         """Cancel preflight before disposing pending intent or restoring routing."""
