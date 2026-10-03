@@ -2,7 +2,7 @@
 
 ## Fixes
 
-- Recover an uncertain cloud Start (`R0305` or `C0001`) when automatic native TCP fallback is enabled: reuse cloud readback for 15 seconds, then verify fresh TCP telemetry before considering a local Start.
+- Recover an uncertain cloud Start (`R0305`, `C0001` or an explicitly uncertain transport error) when automatic native TCP fallback is enabled: reuse cloud readback for 15 seconds, then verify fresh TCP telemetry before considering a local Start.
 - Never send a second Start if charging is already observed. A local Start requires confirmed idle, connected, fault-free state; unknown state or failed verification leaves the command failed.
 - Preserve a newer Stop or setting choice during reconciliation and handover, the bounded request lifetime, manual TCP selection and authentication/configuration exclusions. A failed local Start is not retried.
 - Keep the Charging switch on during supervised native Starting, while measured power and charging activity remain separate. Retain the existing 45-second ramp-up guard and protective Stop.
@@ -13,7 +13,7 @@
 
 This beta targets combined cloud/native HCA control with automatic fallback enabled. Modbus and cloud-only configurations do not acquire a new transport. Existing entity IDs and names remain unchanged. No new persistent notifications or extra parallel cloud polling are introduced.
 
-Regression tests cover route verification, delayed cloud confirmation, translated errors, newer Stop at each recovery stage, unknown/faulted/disconnected status, handover/read failure, expiry, unload, manual override and single local dispatch. Validation passed: 1,774 unit tests and all 17 real Home Assistant smoke scenarios using isolated simulated/loopback I/O. The changed delayed-confirmation regression was also rerun successfully. Live cloud failure cannot be deterministically reproduced; this beta needs field validation of that path.
+Regression tests cover route verification, delayed cloud confirmation, translated errors, newer Stop at each recovery stage, unknown/faulted/disconnected status, handover/read failure, expiry, unload, manual override and single local dispatch. Validation passed: 1,784 unit tests and all 17 real Home Assistant smoke scenarios using isolated simulated/loopback I/O. The changed delayed-confirmation regression was also rerun successfully. Live cloud failure cannot be deterministically reproduced; this beta needs field validation of that path.
 
 ---
 

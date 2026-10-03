@@ -154,7 +154,7 @@ class ControlFallback:
         owner = self.owner
         fallback = owner.automatic_fallback
         if (not isinstance(cause, CloudCommandError) or cause.action != "start"
-                or not cause.cloud_command_uncertain or cause.code not in ("R0305", "C0001")
+                or not cause.cloud_command_uncertain or cause.code not in ("R0305", "C0001", "transport_error")
                 or owner.local or not fallback.enabled or fallback.paused or fallback.blocked):
             return False
         epoch = owner.routing_epoch

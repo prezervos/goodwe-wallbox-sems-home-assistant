@@ -253,8 +253,9 @@ async def test_expired_intent_cannot_trigger_late_handover():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("code", ["R0305", "C0001", "transport_error"])
 @pytest.mark.parametrize("outcome", ["idle", "charging", "unknown", "fault", "disconnected"])
-async def test_uncertain_start_recovers_only_after_independent_tcp_observation(outcome):
+async def test_uncertain_start_recovers_only_after_independent_tcp_observation(outcome, code):
     command_module = importlib.import_module(PACKAGE + ".cloud_command")
     owner = subject({"sn": "test"})
     state = owner.transport.async_command.return_value
@@ -264,7 +265,7 @@ async def test_uncertain_start_recovers_only_after_independent_tcp_observation(o
     state.connection = 0 if outcome == "disconnected" else 2
     async def operation():
         if not owner.local:
-            raise command_module.CloudCommandError("start", "R0305", uncertain=True)
+            raise command_module.CloudCommandError("start", code, uncertain=True)
     command = AsyncMock(side_effect=operation)
     assert owner.control_fallback.submit(True, command)
     await finish(owner)

@@ -542,7 +542,7 @@ See [validation and known limitations](docs/VALIDATION.md) for measured limitati
 ### Recovery after an uncertain cloud Start
 
 With automatic native TCP fallback enabled, a cloud Start returning GoodWe
-`R0305` or `C0001` is reconciled for 15 seconds using the existing readback
+`R0305`, `C0001`, or an explicitly uncertain transport error is reconciled for 15 seconds using the existing readback
 scheduler. Observed charging keeps the cloud route. Otherwise the integration
 switches to TCP, requests fresh device status, and sends one local Start only
 when the wallbox is independently confirmed idle, connected and fault-free.
