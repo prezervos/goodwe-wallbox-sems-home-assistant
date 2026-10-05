@@ -551,3 +551,7 @@ handover, authentication/configuration errors, disabled fallback or a newer
 user choice prevent the recovery Start. A newer Stop takes priority, including
 during handover. The existing bounded intent lifetime still applies; reload
 never replays a pending Start. A failed local attempt is not retried.
+
+See [cloud command troubleshooting](docs/CLOUD_COMMAND_TROUBLESHOOTING.md) for
+R0305 uncertainty, compound-setting readback guards, endpoint investigation and
+the separate HCA G2 Modbus/PV limitations.

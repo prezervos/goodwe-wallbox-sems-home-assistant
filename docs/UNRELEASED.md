@@ -1,5 +1,26 @@
 # Development backlog
 
+## 3.0.6b2: uncertain cloud settings and verified idle recovery (#28)
+
+- Send mode/power settings once when GoodWe returns `R0305` or another uncertain
+  acknowledgement. Remove the former initial-plus-three-retries loop. A failed
+  acknowledgement does not prove non-delivery; retain matching readback before
+  allowing a later compound edit. Renew once only after a definite `C0602`
+  authentication rejection.
+- Correct original-HCA native Start recovery to require the verified idle tuple:
+  state `0`, connection `1`, zero power/currents and no fault. Do not apply the
+  SEMS+/Modbus connection-code mapping to the native Socket A protocol. Unknown
+  connection codes, ended states, faults and disconnection cannot authorize Start.
+- Exercise the recovery policy using actual `NativeStatus` predicates rather
+  than manually supplied charging/stopped booleans. Preserve newer Stop,
+  no blind cloud replay, one local attempt and the existing reconciliation budget.
+- Investigate documented v3/v4 alternatives on the development HA. No alternative
+  endpoint is enabled based on a successful read or a transient settings echo.
+  Evidence and remaining device/backend limits: [cloud command troubleshooting](CLOUD_COMMAND_TROUBLESHOOTING.md).
+
+These repairs are packaged in beta 3.0.6b2. The observed production installation
+still runs 3.0.6b1; publishing does not deploy the beta.
+
 ## 3.0.6b1: verified cloud Start recovery and TCP Start display
 
 - Keep the Charging switch on while a native Fast Start is supervised in the

@@ -1,3 +1,26 @@
+# 3.0.6b2 — Cloud setting safety and verified TCP recovery
+
+## Fixes
+
+- Correct native TCP recovery after an uncertain cloud Start: original-HCA idle cable telemetry uses state `0` / connection `1`. The previous beta incorrectly required connection `2`, which could block recovery for a connected car.
+- Require fresh idle state, zero measured power/currents and no fault before a recovery Start. Unknown connection codes and ended states cannot authorize it. Preserve newer Stop, bounded reconciliation and one local attempt.
+- Remove automatic mode/power-setting replay after `R0305`. The old loop could send a setting four times despite an uncertain acknowledgement. Keep readback protection for compound settings; permit one session renewal only after a definite `C0602` authentication rejection.
+- Strengthen recovery regressions using the actual `NativeStatus` charging/stopped predicates and additional unverified-state cases.
+
+## Validation
+
+All **1,788 unit tests** and Ruff F checks passed on HP840. A real development-HA test reproduced cloud Start `R0305`, then recovered through native TCP and measured **4.2 kW**. Test Stop and restored production telemetry confirmed **0 kW**. The observed end-to-end recovery took about **120 seconds**; this is not a guaranteed latency.
+
+## Scope and known limitations
+
+This beta includes the previous 3.0.6b1 supervised Starting display and verified recovery behavior. Recovery requires the configured original-HCA native TCP path and automatic fallback enabled; cloud-only and HCA G2 Modbus configurations do not gain that transport.
+
+The GoodWe cloud failure itself is **not resolved**. Documented v3/v4 alternatives did not establish working Start/Stop in our tests; no speculative endpoint fallback is added. HCA G2 FW6383 PV charging stopping when Modbus is enabled, even with HA disconnected (#28), remains unresolved and needs firmware-specific GoodWe evidence. The verified original-HCA recovery must not be interpreted as a fix for that G2 behavior.
+
+Entity identities and translations are unchanged. Install the beta through HACS and restart Home Assistant. The tested production installation has not been updated automatically by publishing this beta.
+
+---
+
 # 3.0.6b1 — Verified cloud Start recovery
 
 ## Fixes

@@ -15,7 +15,7 @@ api_module = importlib.import_module(PACKAGE + ".sems_api")
 
 
 @pytest.mark.parametrize("cancel_caller", [False, True])
-async def test_stop_suppresses_retries_but_drains_the_transmitted_write(monkeypatch, cancel_caller):
+async def test_stop_drains_the_transmitted_uncertain_setting_without_replay(monkeypatch, cancel_caller):
     entered = threading.Event()
     release = threading.Event()
     calls = []
@@ -58,7 +58,7 @@ async def test_stop_suppresses_retries_but_drains_the_transmitted_write(monkeypa
         assert not stopping.done()
         release.set()
         outcomes = await asyncio.wait_for(asyncio.gather(pending, stopping, return_exceptions=True), 1)
-        expected = asyncio.CancelledError if cancel_caller else importlib.import_module(PACKAGE + ".charge_mode_policy").RequestSuperseded
+        expected = asyncio.CancelledError if cancel_caller else api_module.CloudSettingError
         assert isinstance(outcomes[0], expected), outcomes[0]
         assert outcomes[1] is None
         assert calls == ["http", "stop"]

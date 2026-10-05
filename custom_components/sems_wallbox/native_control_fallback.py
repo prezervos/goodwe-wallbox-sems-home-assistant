@@ -204,8 +204,12 @@ class ControlFallback:
         check()
         if status.charging:
             return True
-        # Zero power alone cannot establish idle or a safe new charging session.
-        if not status.stopped or status.fault_code != 0 or status.connection != 2:
+        # Owner-confirmed original HCA cable cycles identify idle state 0 with
+        # connection 1 as connected (see observed_state.vehicle_state). Code 2
+        # is not a verified native idle connection flag; do not reuse Modbus or
+        # SEMS+ mappings here. Zero power alone cannot authorize a new Start.
+        if (not status.stopped or status.fault_code != 0
+                or status.state != 0 or status.connection != 1):
             raise ConnectionError("TCP Start recovery requires confirmed idle, connected, fault-free state")
         await request.operation()
         return True

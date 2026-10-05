@@ -27,7 +27,7 @@ from .cloud_command import CloudCommandError, CloudSettingError, SettingOutcome
 from .cloud_http import SEMS_USER_AGENT
 from .cloud_rate_limit import CloudRateLimitedError, CloudRequestGate
 from .cloud_observation import CloudAuthenticationError
-from .operation_budget import BudgetCancelled, request_timeout, retry_delay, serialized_request
+from .operation_budget import BudgetCancelled, request_timeout, serialized_request
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -61,8 +61,6 @@ _PATH_CENTRALIZED_PAGE = "sems-plant/api/web/device/centralized/page"
 
 _RequestTimeout = 30   # seconds for status reads
 _SetModeTimeout = 90   # seconds for EU gateway set-mode (device can take 60-90s to respond)
-_SetModeR0305Retries = 3   # retry count on R0305 (remote_control_fail -- transient)
-_SetModeR0305Delay = 2.0   # seconds between R0305 retries
 
 
 def _response_json(response):
@@ -517,7 +515,7 @@ class SemsApi:
         self._pending_mode_edits.pop(serial, None)
 
     def _track_mode_setting(self, serial, candidate, send):
-        """Track one logical write, including internal token/response retries.
+        """Track one logical write, including a definitely rejected token renewal.
 
         The caller holds the API lock. Track only explicitly sent fields, so
         optional unsupported energy/SOC settings do not block a mode-only write.
@@ -657,7 +655,6 @@ class SemsApi:
             maxTokenRetries,
         )
         dispatch = SimpleNamespace(unconfirmed=False)
-        uncertain_delivery = False
 
         def send_mode(*args, **kwargs):
             # The gate may expire/throttle before transport. Only this boundary
@@ -709,77 +706,47 @@ class SemsApi:
             )
             request_started = time.monotonic()
             try:
-                set_success = False
-                for attempt in range(1, _SetModeR0305Retries + 2):
-                    timeout = request_timeout(_SetModeTimeout)
-                    resp = self._request_gate.request(send_mode,
-                        _eu_set_mode_url,
-                        headers=headers,
-                        json=payload,
-                        timeout=timeout,
+                timeout = request_timeout(_SetModeTimeout)
+                resp = self._request_gate.request(send_mode,
+                    _eu_set_mode_url,
+                    headers=headers,
+                    json=payload,
+                    timeout=timeout,
+                )
+                _LOGGER.debug(
+                    "SEMS gen2 set-mode: HTTP %s body=%s",
+                    resp.status_code, resp.text,
+                )
+                rj = _response_json(resp)
+                code = str(rj.get("code") or "")
+                if _command_succeeded(rj):
+                    _LOGGER.info(
+                        "SEMS gen2 set-mode succeeded (sn=%s, mode=%s, power=%s, single dispatch)",
+                        wallboxSn, mode, chargePower,
                     )
+                    return SettingOutcome.ACKNOWLEDGED
+                if code == "C0602":
+                    # Authentication rejection proves this write was not applied.
+                    # Allow one renewal; never replay an uncertain device response.
+                    dispatch.unconfirmed = False
+                if code == "C0602" and maxTokenRetries > 0:
                     _LOGGER.debug(
-                        "SEMS gen2 set-mode (attempt %d): HTTP %s body=%s",
-                        attempt, resp.status_code, resp.text,
+                        "SEMS gen2 set-mode C0602 (session expired), renewing web token and retrying"
                     )
-                    rj = _response_json(resp)
-                    code = str(rj.get("code") or "")
-                    if _command_succeeded(rj):
-                        _LOGGER.info(
-                            "SEMS gen2 set-mode succeeded (sn=%s, mode=%s, power=%s, attempt=%d)",
-                            wallboxSn, mode, chargePower, attempt,
-                        )
-                        set_success = True
-                        break
-                    if code == "C0602":
-                        # This attempt was rejected before application. A retry
-                        # has its own dispatch state; older R0305 uncertainty
-                        # remains separate and must survive token recovery.
-                        dispatch.unconfirmed = False
-                    if code == "C0602" and maxTokenRetries > 0:
-                        _LOGGER.debug(
-                            "SEMS gen2 set-mode C0602 (session expired), renewing web token and retrying"
-                        )
-                        self._invalidate_rejected_session()
-                        outcome = self._send_charge_mode_gen2(
-                            wallboxSn, mode, chargePower=chargePower,
-                            ensure_minimum_charging_power=ensure_minimum_charging_power,
-                            renewToken=True, maxTokenRetries=maxTokenRetries - 1,
-                            max_energy=max_energy, min_energy=min_energy,
-                            soc_target=soc_target, finish_time=finish_time,
-                        )
-                        if uncertain_delivery and outcome is not SettingOutcome.ACKNOWLEDGED:
-                            raise CloudSettingError("delivery_unconfirmed")
-                        return outcome
-                    if code in ("R0305", "C0001"):
-                        uncertain_delivery = True
-                    if code == "R0305":
-                        # Transient "remote_control_fail" -- retry after short delay
-                        if attempt <= _SetModeR0305Retries:
-                            _LOGGER.debug(
-                                "SEMS gen2 set-mode R0305 (remote_control_fail), "
-                                "retrying in %.1fs (attempt %d/%d)",
-                                _SetModeR0305Delay, attempt, _SetModeR0305Retries,
-                            )
-                            retry_delay(_SetModeR0305Delay)
-                            continue
-                        _LOGGER.warning(
-                            "SEMS gen2 set-mode R0305 persisted after %d attempts (sn=%s)",
-                            _SetModeR0305Retries, wallboxSn,
-                        )
-                    else:
-                        _LOGGER.warning(
-                            "SEMS gen2 set-mode non-success code=%s body=%s",
-                            code, resp.text[:300],
-                        )
-                    break
-
-                if not set_success:
-                    if uncertain_delivery or code not in ("A0201", "C0602"):
-                        raise CloudSettingError(code or "invalid_response")
+                    self._invalidate_rejected_session()
+                    return self._send_charge_mode_gen2(
+                        wallboxSn, mode, chargePower=chargePower,
+                        ensure_minimum_charging_power=ensure_minimum_charging_power,
+                        renewToken=True, maxTokenRetries=maxTokenRetries - 1,
+                        max_energy=max_energy, min_energy=min_energy,
+                        soc_target=soc_target, finish_time=finish_time,
+                    )
+                _LOGGER.warning(
+                    "SEMS gen2 set-mode non-success code=%s; no command replayed", code,
+                )
+                if code in ("A0201", "C0602"):
                     return SettingOutcome.REJECTED
-
-                return SettingOutcome.ACKNOWLEDGED
+                raise CloudSettingError(code or "invalid_response")
             except requests.exceptions.ConnectionError as error:
                 raise CloudSettingError("transport_error") from error
             except requests.exceptions.Timeout as error:
@@ -789,23 +756,17 @@ class SemsApi:
                     time.monotonic() - request_started, wallboxSn,
                 )
                 raise TimeoutError("Cloud setting response timed out; outcome unknown") from error
-        except OutOfRetries as error:
-            if uncertain_delivery:
-                raise CloudSettingError("delivery_unconfirmed") from error
-            raise
-        except CloudSettingError:
+        except (OutOfRetries, CloudSettingError):
             raise
         except BudgetCancelled as error:
             # Preserve policy Stop/supersession semantics while retaining the
-            # separate settings fence if a prior attempt may have reached it.
+            # separate settings fence if the write entered transport.
             error.cloud_setting_uncertain = (
-                uncertain_delivery or dispatch.unconfirmed
+                dispatch.unconfirmed
                 or getattr(error, "cloud_setting_uncertain", False)
             )
             raise
         except (CloudAuthenticationError, CloudRateLimitedError, TimeoutError) as error:
-            if uncertain_delivery:
-                raise CloudSettingError("delivery_unconfirmed") from error
             if isinstance(error, TimeoutError):
                 error.cloud_setting_uncertain = (
                     dispatch.unconfirmed or getattr(error, "cloud_setting_uncertain", False)
@@ -814,7 +775,7 @@ class SemsApi:
         except Exception as exc:
             # Unexpected failure after transport entry cannot prove non-delivery.
             _LOGGER.error("Unable to execute gen2 SetChargeMode command. %s", exc)
-            if uncertain_delivery or dispatch.unconfirmed:
+            if dispatch.unconfirmed:
                 raise CloudSettingError("invalid_response") from exc
             return SettingOutcome.NOT_SENT
 

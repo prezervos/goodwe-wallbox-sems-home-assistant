@@ -2,6 +2,7 @@
 
 import asyncio
 import importlib
+from dataclasses import replace
 from pathlib import Path
 import sys
 import threading
@@ -16,6 +17,7 @@ package.__path__ = [str(Path(__file__).parents[1] / "custom_components/sems_wall
 sys.modules[PACKAGE] = package
 module = importlib.import_module(PACKAGE + ".native_control_fallback")
 intent = importlib.import_module(PACKAGE + ".native_intent")
+protocol = importlib.import_module(PACKAGE + ".native_protocol")
 
 
 @pytest.fixture(autouse=True)
@@ -44,8 +46,8 @@ def subject(reply=None):
         charge_mode_policy=types.SimpleNamespace(invalidate=Mock(),
             async_setting_write=AsyncMock(side_effect=locked), timeout=1),
         transport=types.SimpleNamespace(available=True, async_command=AsyncMock(
-            return_value=types.SimpleNamespace(charging=False, stopped=True,
-                fault_code=0, connection=2))),
+            return_value=protocol.NativeStatus("test", 0, 0, 4.2, 0,
+                (0, 0, 0), (230, 230, 230), 0, 1, 0))),
         connection_intent=types.SimpleNamespace(async_automatic=AsyncMock()),
         async_refresh=AsyncMock(), async_update_listeners=Mock(),
         entry=types.SimpleNamespace(async_start_reauth=Mock()),
@@ -254,15 +256,18 @@ async def test_expired_intent_cannot_trigger_late_handover():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("code", ["R0305", "C0001", "transport_error"])
-@pytest.mark.parametrize("outcome", ["idle", "charging", "unknown", "fault", "disconnected"])
+@pytest.mark.parametrize("outcome", ["idle", "charging", "unknown", "fault", "disconnected", "unverified_connection", "ended"])
 async def test_uncertain_start_recovers_only_after_independent_tcp_observation(outcome, code):
     command_module = importlib.import_module(PACKAGE + ".cloud_command")
     owner = subject({"sn": "test"})
-    state = owner.transport.async_command.return_value
-    state.charging = outcome == "charging"
-    state.stopped = outcome in ("idle", "fault", "disconnected")
-    state.fault_code = int(outcome == "fault")
-    state.connection = 0 if outcome == "disconnected" else 2
+    owner.transport.async_command.return_value = replace(
+        owner.transport.async_command.return_value,
+        state=2 if outcome == "charging" else 5 if outcome == "unknown" else 3 if outcome == "ended" else 0,
+        power_kw=4.1 if outcome == "charging" else 0,
+        currents_a=(6, 6, 6) if outcome == "charging" else (0, 0, 0),
+        fault_code=int(outcome == "fault"),
+        connection=0 if outcome == "disconnected" else 2 if outcome == "unverified_connection" else 1,
+    )
     async def operation():
         if not owner.local:
             raise command_module.CloudCommandError("start", code, uncertain=True)
