@@ -18,8 +18,8 @@
   endpoint is enabled based on a successful read or a transient settings echo.
   Evidence and remaining device/backend limits: [cloud command troubleshooting](CLOUD_COMMAND_TROUBLESHOOTING.md).
 
-These repairs are packaged in beta 3.0.6b2. The observed production installation
-still runs 3.0.6b1; publishing does not deploy the beta.
+These repairs are included in stable 3.0.6. Publishing a release does not deploy
+it to production. Beta sections below retain the development history.
 
 ## 3.0.6b1: verified cloud Start recovery and TCP Start display
 
@@ -34,7 +34,7 @@ still runs 3.0.6b1; publishing does not deploy the beta.
 - Entity identities, measured telemetry and PV waiting behavior are unchanged.
 
 
-Release 3.0.5 packages the fixes summarized in [RELEASE_NOTES.md](RELEASE_NOTES.md).
+Release 3.0.6 packages the fixes summarized in [RELEASE_NOTES.md](RELEASE_NOTES.md).
 The sections below retain the development/validation history, including statements
 that a change had not yet been released at the time of its experiment. They are
 not claims that every historical investigation remains open. Remaining hardware

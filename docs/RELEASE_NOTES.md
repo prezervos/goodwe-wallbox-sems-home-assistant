@@ -1,3 +1,33 @@
+# 3.0.6 — Reliable cloud controls and verified TCP recovery
+
+## Fixes
+
+- Keep the Charging switch on during supervised native Starting while actual power and charging activity remain independently measured.
+- Recover an uncertain cloud Start (`R0305`, `C0001` or an uncertain transport failure) through the configured original-HCA native TCP path when automatic fallback is enabled. Reconcile cloud telemetry first, then permit one local Start only after fresh idle, connected, fault-free telemetry with zero measured power/currents. Already observed charging prevents a second Start; newer Stop/settings, expiry, opt-out and failed verification fence recovery. A failed local Start is not retried.
+- Correct the original-HCA idle connection mapping used by recovery: state `0` / connection `1`. Unknown connection codes and ended states cannot authorize Start.
+- Remove automatic mode/power-setting replay after uncertain `R0305` responses. Preserve readback protection for compound edits; renew the session once only after a definite `C0602` authentication rejection.
+- Allow Home Assistant to manage compatible shared `pymodbus` upgrades (`>=3.13.1`) instead of requiring an exact version.
+
+## Validation
+
+The beta passed all **1,788 unit tests**, Ruff F checks, Python 3.12/3.13 CI, all **17 isolated Home Assistant smoke scenarios**, HACS and hassfest validation.
+
+A physical development-HA test on October 5 reproduced cloud Start `R0305`, recovered via native TCP and measured **4.2 kW**, then confirmed Stop at **0 kW**. Observed recovery took about 120 seconds; this is not a guaranteed latency.
+
+On October 9, an isolated development-HA recheck successfully changed PV to Fast, started charging at **4.3 kW** and stopped it at **0 kW** using cloud commands without native fallback. An earlier Stop shortly after handover still returned `C0001`; these results do not establish that intermittent GoodWe failures are permanently resolved.
+
+## Compatibility and known limitations
+
+- Update through HACS and restart Home Assistant. Minimum Home Assistant remains **2026.9.2**. Existing entity identities, translations and normal polling options are unchanged; no new persistent notifications are introduced.
+- Recovery requires a configured original-HCA native TCP path and automatic fallback enabled. Cloud-only and HCA G2 Modbus configurations do not gain that transport.
+- HCA G2 FW6383 charging at 0 A in **all modes**, including Fast, with Modbus enabled even without HA connected remains unresolved (#28). Disabling Modbus reportedly restores charging. Original-HCA Socket A recovery is not a fix for that separate G2 behavior.
+- No speculative v3/v4 command fallback or external EMS setpoint workaround is added. See [cloud command troubleshooting](https://github.com/prezervos/goodwe-wallbox-sems-home-assistant/blob/master/docs/CLOUD_COMMAND_TROUBLESHOOTING.md).
+- Publishing this release does not automatically deploy it to the tested production installation.
+
+Thanks to @jochenrudolph for the detailed G2 reports in #28 and to the existing contributors listed in the README.
+
+---
+
 # 3.0.6b2 — Cloud setting safety and verified TCP recovery
 
 ## Fixes

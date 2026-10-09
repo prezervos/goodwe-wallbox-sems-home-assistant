@@ -79,8 +79,9 @@ also cannot control the charger using the official SEMS+ web UI. This is evidenc
 of a device/account/backend problem outside this integration; it does not prove
 which component is responsible or that every R0305 has the same cause.
 
-On FW6383, the reporter observes PV charging drop to zero with Modbus enabled,
-even when HA is entirely disconnected; disabling Modbus restores PV charging.
+On FW6383, the reporter clarified that all modes, including Fast, remain at 0 A
+with Modbus enabled, even when HA is entirely disconnected. Disabling Modbus
+restores charging. See the [correction](https://github.com/prezervos/goodwe-wallbox-sems-home-assistant/issues/28#issuecomment-5992125484).
 The integration cannot repair this by changing polling when no client is present.
 Do not automatically write EMS dispatch, grid limits or fabricated PV setpoints.
 GoodWe firmware-specific Modbus/EMS documentation and a hardware retest remain
@@ -90,3 +91,12 @@ The [evcc implementation](https://github.com/evcc-io/evcc/blob/master/charger/go
 forces Fast during setup and then manages power itself. That is a different
 ownership policy, not evidence that device-managed PV works with Modbus enabled.
 No code from that separately licensed implementation is copied into this project.
+
+## Cloud control recheck, 2026-10-09
+
+With production paused, the development HA runtime and current API client accepted
+PV and Fast changes, Start and Stop without native fallback. Independent v3
+readback confirmed both modes, 4.3 kW charging and subsequent zero power. SEMS+
+detail lagged and did not independently establish actual charging. An initial
+Stop after handover returned C0001; intermittent failures remain possible.
+Production was restored to manual TCP, Fast, 4.2 kW and zero power.
