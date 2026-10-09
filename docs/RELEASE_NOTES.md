@@ -1,3 +1,75 @@
+# 3.0.6 — Reliable cloud controls and verified TCP recovery
+
+## Fixes
+
+- Keep the Charging switch on during supervised native Starting while actual power and charging activity remain independently measured.
+- Recover an uncertain cloud Start (`R0305`, `C0001` or an uncertain transport failure) through the configured original-HCA native TCP path when automatic fallback is enabled. Reconcile cloud telemetry first, then permit one local Start only after fresh idle, connected, fault-free telemetry with zero measured power/currents. Already observed charging prevents a second Start; newer Stop/settings, expiry, opt-out and failed verification fence recovery. A failed local Start is not retried.
+- Correct the original-HCA idle connection mapping used by recovery: state `0` / connection `1`. Unknown connection codes and ended states cannot authorize Start.
+- Remove automatic mode/power-setting replay after uncertain `R0305` responses. Preserve readback protection for compound edits; renew the session once only after a definite `C0602` authentication rejection.
+- Allow Home Assistant to manage compatible shared `pymodbus` upgrades (`>=3.13.1`) instead of requiring an exact version.
+
+## Validation
+
+The beta passed all **1,788 unit tests**, Ruff F checks, Python 3.12/3.13 CI, all **17 isolated Home Assistant smoke scenarios**, HACS and hassfest validation.
+
+A physical development-HA test on October 5 reproduced cloud Start `R0305`, recovered via native TCP and measured **4.2 kW**, then confirmed Stop at **0 kW**. Observed recovery took about 120 seconds; this is not a guaranteed latency.
+
+On October 9, an isolated development-HA recheck successfully changed PV to Fast, started charging at **4.3 kW** and stopped it at **0 kW** using cloud commands without native fallback. An earlier Stop shortly after handover still returned `C0001`; these results do not establish that intermittent GoodWe failures are permanently resolved.
+
+## Compatibility and known limitations
+
+- Update through HACS and restart Home Assistant. Minimum Home Assistant remains **2026.9.2**. Existing entity identities, translations and normal polling options are unchanged; no new persistent notifications are introduced.
+- Recovery requires a configured original-HCA native TCP path and automatic fallback enabled. Cloud-only and HCA G2 Modbus configurations do not gain that transport.
+- HCA G2 FW6383 charging at 0 A in **all modes**, including Fast, with Modbus enabled even without HA connected remains unresolved (#28). Disabling Modbus reportedly restores charging. Original-HCA Socket A recovery is not a fix for that separate G2 behavior.
+- No speculative v3/v4 command fallback or external EMS setpoint workaround is added. See [cloud command troubleshooting](https://github.com/prezervos/goodwe-wallbox-sems-home-assistant/blob/master/docs/CLOUD_COMMAND_TROUBLESHOOTING.md).
+- Publishing this release does not automatically deploy it to the tested production installation.
+
+Thanks to @jochenrudolph for the detailed G2 reports in #28 and to the existing contributors listed in the README.
+
+---
+
+# 3.0.6b2 — Cloud setting safety and verified TCP recovery
+
+## Fixes
+
+- Correct native TCP recovery after an uncertain cloud Start: original-HCA idle cable telemetry uses state `0` / connection `1`. The previous beta incorrectly required connection `2`, which could block recovery for a connected car.
+- Require fresh idle state, zero measured power/currents and no fault before a recovery Start. Unknown connection codes and ended states cannot authorize it. Preserve newer Stop, bounded reconciliation and one local attempt.
+- Remove automatic mode/power-setting replay after `R0305`. The old loop could send a setting four times despite an uncertain acknowledgement. Keep readback protection for compound settings; permit one session renewal only after a definite `C0602` authentication rejection.
+- Strengthen recovery regressions using the actual `NativeStatus` charging/stopped predicates and additional unverified-state cases.
+
+## Validation
+
+All **1,788 unit tests** and Ruff F checks passed on HP840. A real development-HA test reproduced cloud Start `R0305`, then recovered through native TCP and measured **4.2 kW**. Test Stop and restored production telemetry confirmed **0 kW**. The observed end-to-end recovery took about **120 seconds**; this is not a guaranteed latency.
+
+## Scope and known limitations
+
+This beta includes the previous 3.0.6b1 supervised Starting display and verified recovery behavior. Recovery requires the configured original-HCA native TCP path and automatic fallback enabled; cloud-only and HCA G2 Modbus configurations do not gain that transport.
+
+The GoodWe cloud failure itself is **not resolved**. Documented v3/v4 alternatives did not establish working Start/Stop in our tests; no speculative endpoint fallback is added. HCA G2 FW6383 PV charging stopping when Modbus is enabled, even with HA disconnected (#28), remains unresolved and needs firmware-specific GoodWe evidence. The verified original-HCA recovery must not be interpreted as a fix for that G2 behavior.
+
+Entity identities and translations are unchanged. Install the beta through HACS and restart Home Assistant. The tested production installation has not been updated automatically by publishing this beta.
+
+---
+
+# 3.0.6b1 — Verified cloud Start recovery
+
+## Fixes
+
+- Recover an uncertain cloud Start (`R0305`, `C0001` or an explicitly uncertain transport error) when automatic native TCP fallback is enabled: reuse cloud readback for 15 seconds, then verify fresh TCP telemetry before considering a local Start.
+- Never send a second Start if charging is already observed. A local Start requires confirmed idle, connected, fault-free state; unknown state or failed verification leaves the command failed.
+- Preserve a newer Stop or setting choice during reconciliation and handover, the bounded request lifetime, manual TCP selection and authentication/configuration exclusions. A failed local Start is not retried.
+- Keep the Charging switch on during supervised native Starting, while measured power and charging activity remain separate. Retain the existing 45-second ramp-up guard and protective Stop.
+
+- Follow the current Home Assistant shared-dependency requirement: allow `pymodbus>=3.13.1` instead of an exact pin, avoiding conflicts with HA-managed upgrades. Validation used 3.13.1.
+
+## Testing and scope
+
+This beta targets combined cloud/native HCA control with automatic fallback enabled. Modbus and cloud-only configurations do not acquire a new transport. Existing entity IDs and names remain unchanged. No new persistent notifications or extra parallel cloud polling are introduced.
+
+Regression tests cover route verification, delayed cloud confirmation, translated errors, newer Stop at each recovery stage, unknown/faulted/disconnected status, handover/read failure, expiry, unload, manual override and single local dispatch. Validation passed: 1,784 unit tests and all 17 real Home Assistant smoke scenarios using isolated simulated/loopback I/O. The changed delayed-confirmation regression was also rerun successfully. Live cloud failure cannot be deterministically reproduced; this beta needs field validation of that path.
+
+---
+
 # 3.0.5 — Device capabilities and clearer cloud diagnostics
 
 ## Cloud controls matched to device capabilities

@@ -31,7 +31,6 @@ def cloud(monkeypatch):
     api.get_data_gen2 = Mock(side_effect=lambda serial: dict(state))
     post = Mock(return_value=reply())
     monkeypatch.setattr(module.requests, "post", post)
-    monkeypatch.setattr(module, "retry_delay", lambda _: None)
     yield api, state, post
     api.close()
 
@@ -77,6 +76,7 @@ def test_uncertain_delivery_fences_following_compound_writes_but_not_stop(cloud,
     with pytest.raises((module.CloudSettingError, TimeoutError)):
         api.edit_mode_parameter("TEST", 0, "max_energy", 10)
     calls = post.call_count
+    assert calls == 1  # An uncertain acknowledgement must never replay a write.
     post.side_effect = None
     post.return_value = reply()
     for write in (lambda: api.edit_mode_parameter("TEST", 0, "soc_target", 80),
@@ -216,23 +216,23 @@ def test_mode_only_confirmation_does_not_require_unsupported_energy_targets(clou
     assert post.call_count == 2
 
 
-def test_uncertain_first_attempt_survives_failed_token_renewal(cloud):
+def test_uncertain_first_attempt_never_replays_or_renews_token(cloud):
     api, _, post = cloud
     post.side_effect = [reply("R0305", False), reply("C0602", False)]
-    api._ensure_web_token.side_effect = [True, False]
+    api._invalidate_rejected_session = Mock()
     with pytest.raises(module.CloudSettingError):
         api.edit_mode_parameter("TEST", 0, "max_energy", 10)
     assert api._pending_mode_edits["TEST"]["max_energy"] == 10
-    assert post.call_count == 2
+    assert post.call_count == 1
+    api._invalidate_rejected_session.assert_not_called()
 
 
-@pytest.mark.parametrize("uncertain_first", [False, True])
 @pytest.mark.parametrize("interrupt", ["cancel", "timeout"])
-async def test_rejected_token_attempt_closes_delivery_risk_before_interrupted_retry(cloud, uncertain_first, interrupt):
+async def test_rejected_token_attempt_closes_delivery_risk_before_interrupted_retry(cloud, interrupt):
     api, _, post = cloud
     budget_module = importlib.import_module(module.__package__ + ".operation_budget")
     budget = budget_module.OperationBudget(60)
-    post.side_effect = ([reply("R0305", False)] if uncertain_first else []) + [reply("C0602", False)]
+    post.side_effect = [reply("C0602", False)]
     def interrupt_renewal():
         if interrupt == "cancel":
             budget.cancelled.set()
@@ -241,14 +241,13 @@ async def test_rejected_token_attempt_closes_delivery_risk_before_interrupted_re
     api._invalidate_rejected_session = interrupt_renewal
     token = budget_module.CURRENT_BUDGET.set(budget)
     try:
-        expected = (budget_module.BudgetCancelled if interrupt == "cancel" else
-                    module.CloudSettingError if uncertain_first else TimeoutError)
+        expected = budget_module.BudgetCancelled if interrupt == "cancel" else TimeoutError
         with pytest.raises(expected):
             api.edit_mode_parameter("TEST", 0, "max_energy", 10)
     finally:
         budget_module.CURRENT_BUDGET.reset(token)
-    assert bool(api._pending_mode_edits) is uncertain_first
-    assert post.call_count == (2 if uncertain_first else 1)
+    assert not api._pending_mode_edits
+    assert post.call_count == 1
 
 
 def test_token_retry_transport_timeout_retains_its_own_delivery_risk(cloud):

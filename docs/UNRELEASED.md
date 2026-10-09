@@ -1,6 +1,40 @@
 # Development backlog
 
-Release 3.0.5 packages the fixes summarized in [RELEASE_NOTES.md](RELEASE_NOTES.md).
+## 3.0.6b2: uncertain cloud settings and verified idle recovery (#28)
+
+- Send mode/power settings once when GoodWe returns `R0305` or another uncertain
+  acknowledgement. Remove the former initial-plus-three-retries loop. A failed
+  acknowledgement does not prove non-delivery; retain matching readback before
+  allowing a later compound edit. Renew once only after a definite `C0602`
+  authentication rejection.
+- Correct original-HCA native Start recovery to require the verified idle tuple:
+  state `0`, connection `1`, zero power/currents and no fault. Do not apply the
+  SEMS+/Modbus connection-code mapping to the native Socket A protocol. Unknown
+  connection codes, ended states, faults and disconnection cannot authorize Start.
+- Exercise the recovery policy using actual `NativeStatus` predicates rather
+  than manually supplied charging/stopped booleans. Preserve newer Stop,
+  no blind cloud replay, one local attempt and the existing reconciliation budget.
+- Investigate documented v3/v4 alternatives on the development HA. No alternative
+  endpoint is enabled based on a successful read or a transient settings echo.
+  Evidence and remaining device/backend limits: [cloud command troubleshooting](CLOUD_COMMAND_TROUBLESHOOTING.md).
+
+These repairs are included in stable 3.0.6. Publishing a release does not deploy
+it to production. Beta sections below retain the development history.
+
+## 3.0.6b1: verified cloud Start recovery and TCP Start display
+
+- Keep the Charging switch on while a native Fast Start is supervised in the
+  bounded `starting` phase. The wallbox status displays Starting; measured power
+  and charging activity remain independent and are not synthesized.
+- Retain the existing 45-second observation deadline and protective Stop on
+  failed ramp-up, explicit Stop handling, and invalidation on disconnect.
+- After an uncertain cloud Start (`R0305`/`C0001` or uncertain transport failure), reconcile for 15 seconds,
+  then allow one native attempt only after fresh idle, connected and fault-free
+  telemetry. Preserve newer Stop, expiry, opt-out and no-retry-on-local-failure.
+- Entity identities, measured telemetry and PV waiting behavior are unchanged.
+
+
+Release 3.0.6 packages the fixes summarized in [RELEASE_NOTES.md](RELEASE_NOTES.md).
 The sections below retain the development/validation history, including statements
 that a change had not yet been released at the time of its experiment. They are
 not claims that every historical investigation remains open. Remaining hardware
