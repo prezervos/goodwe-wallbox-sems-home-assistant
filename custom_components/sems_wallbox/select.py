@@ -192,23 +192,39 @@ class InverterOperationModeEntity(CoordinatorEntity, SelectEntity):
         charge_power = None
         if mode == 0:
             data = self.coordinator.data.get(self.sn, {}) or {}
-            raw = data.get("set_charge_power")
+            # Prefer the saved HA limit, as the verified policy path does.
+            raw = getattr(
+                getattr(self.coordinator, "charge_mode_policy", None), "desired_power", None
+            )
+            if raw is None:
+                raw = data.get("set_charge_power")
             try:
                 cp = float(raw) if raw is not None else None
             except (TypeError, ValueError):
                 cp = None
 
-            # Clamp to valid range; fall back to min if unknown/invalid
+            # Same bounds as the power number. Like the policy path, never invent a
+            # limit: SEMS+ detail on HCA G2 reports only the rated maximum.
             _min = 4.2
             _max = 11.0
             try:
                 _min = float(data.get("min_charge_power") or _min)
-                _max = float(data.get("max_charge_power") or _max)
+                _max = float(
+                    data.get("hw_max_charge_power") or data.get("max_charge_power")
+                    or data.get("rated_max_charge_power") or _max
+                )
             except (TypeError, ValueError):
                 pass
 
             if cp is None or not (_min <= cp <= _max):
-                cp = _min
+                raise HomeAssistantError(
+                    translation_domain=DOMAIN,
+                    translation_key="invalid_power",
+                    translation_placeholders={
+                        "minimum": f"{_min:g}",
+                        "maximum": f"{_max:g}",
+                    },
+                )
             charge_power = cp
 
         # Only this entity presents the pending mode. Shared coordinator data

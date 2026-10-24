@@ -5,7 +5,7 @@ import os
 import types
 import importlib.util
 import time
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 import pytest
 from homeassistant.exceptions import HomeAssistantError
 
@@ -66,6 +66,7 @@ sys.modules[f"{_pkg_name}.select"] = _select_mod
 _spec.loader.exec_module(_select_mod)
 
 InverterOperationModeEntity = _select_mod.InverterOperationModeEntity
+_policy_mod = importlib.import_module(f"{_pkg_name}.charge_mode_policy")
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -136,7 +137,7 @@ class TestModeMapping:
 class TestSelectOption:
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
-        ("requested", "expected"), [(6.0, 6.0), (None, 4.2), (1.0, 4.2)]
+        ("requested", "expected"), [(6.0, 6.0), (11.0, 11.0)]
     )
     async def test_switch_to_fast_sends_valid_power_without_fabricating_report(
         self, requested, expected
@@ -151,6 +152,47 @@ class TestSelectOption:
             SAMPLE_SN, 0, expected
         )
         assert entity.coordinator.data[SAMPLE_SN]["set_charge_power"] == requested
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("requested", "maximum"), [(None, 11.0), (1.0, 11.0), (12.0, 11.0)]
+    )
+    async def test_switch_to_fast_refuses_unusable_power_without_sending(
+        self, requested, maximum
+    ):
+        """Like the verified policy path, the legacy path does not invent a limit."""
+        entity = _make_entity(
+            chargeMode=1, set_charge_power=requested,
+            min_charge_power=4.2, max_charge_power=maximum,
+        )
+        with pytest.raises(HomeAssistantError):
+            await entity.async_select_option("fast")
+        entity.api.set_charge_mode_gen2.assert_not_called()
+        assert entity._attr_current_option == "pv_priority"
+
+    @pytest.mark.asyncio
+    async def test_switch_to_fast_uses_rated_maximum_when_range_is_missing(self):
+        """SEMS+ detail on HCA G2 reports only ratedMaxiChargePower (22 kW)."""
+        entity = _make_entity(
+            chargeMode=1, set_charge_power=12.0,
+            min_charge_power=None, max_charge_power=None,
+        )
+        entity.coordinator.data[SAMPLE_SN]["rated_max_charge_power"] = 22
+        await entity.async_select_option("fast")
+        entity.api.set_charge_mode_gen2.assert_called_once_with(SAMPLE_SN, 0, 12.0)
+
+    @pytest.mark.asyncio
+    async def test_fast_without_v3_telemetry_uses_saved_power_on_existing_path(self):
+        """Disabled restore mode falls back when v3 has no device telemetry."""
+        entity = _make_entity(chargeMode=1, set_charge_power=12.0, max_charge_power=22.0)
+        policy = MagicMock(enabled=False, desired_power=12.2)
+        policy.async_select_mode = AsyncMock(
+            side_effect=_policy_mod.TelemetryUnavailableBeforeWrite("no device telemetry")
+        )
+        entity.coordinator.charge_mode_policy = policy
+        await entity.async_select_option("fast")
+        policy.async_select_mode.assert_awaited_once_with(0)
+        entity.api.set_charge_mode_gen2.assert_called_once_with(SAMPLE_SN, 0, 12.2)
 
 
     @pytest.mark.asyncio
