@@ -24,6 +24,14 @@ class CloudAuthenticationError(ConnectionError):
     """Credentials were rejected; transport switching cannot repair the account."""
 
 
+class TelemetryUnavailable(ConnectionError):
+    """v3 identifies the charger but reports no device telemetry (seen on HCA G2)."""
+
+
+# Device-reported fields; all empty together with lastUpdate means v3 has no report.
+_DEVICE_REPORT_FIELDS = ("status", "workstate", "model")
+
+
 class CloudObservationReader:
     """Supply report freshness that the SEMS Plus configuration endpoint lacks."""
 
@@ -85,6 +93,10 @@ class CloudObservationReader:
                     and data.get("sn") == serial
                 ):
                     if not data.get("lastUpdate"):
+                        if not any(data.get(key) for key in _DEVICE_REPORT_FIELDS):
+                            raise TelemetryUnavailable(
+                                "SEMS v3 has no device telemetry for this charger"
+                            )
                         raise ConnectionError(
                             "SEMS status has no device report timestamp"
                         )

@@ -62,6 +62,31 @@ def test_missing_identity_or_timestamp_is_not_fabricated(data):
         client.read("TEST")
 
 
+# HCA G2 (GW22K-HCA-20), 2026-10-24: v3 matched the serial but returned no device
+# telemetry, for the plant owner and for a shared SEMS+ account alike.
+V3_SKELETON = {
+    "sn": "TEST", "name": None, "status": None, "workstate": None, "model": None,
+    "fireware": None, "last_fireware": None, "lastUpdate": None, "chargeEnergy": "0",
+    "power": "0", "current": "0", "time": "0", "startStatus": False, "chargeMode": 0,
+    "set_charge_power": None, "max_charge_power": 22.0, "min_charge_power": 4.2,
+}
+
+
+def test_v3_skeleton_without_device_telemetry_is_reported_as_unavailable():
+    client, _ = reader({"code": "0", "data": V3_SKELETON})
+    with pytest.raises(module.TelemetryUnavailable):
+        client.read("TEST")
+
+
+def test_missing_timestamp_with_device_state_is_not_reported_as_unavailable():
+    client, _ = reader(
+        {"code": 0, "data": {"sn": "TEST", "status": "available", "lastUpdate": None}}
+    )
+    with pytest.raises(ConnectionError) as error:
+        client.read("TEST")
+    assert not isinstance(error.value, module.TelemetryUnavailable)
+
+
 @pytest.mark.parametrize("failure", [
     {"msg": "Authorization has expired", "data": None},
     *({"code": code, "msg": "localized message", "data": None}

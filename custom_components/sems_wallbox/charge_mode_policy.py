@@ -9,6 +9,7 @@ from dataclasses import dataclass, replace
 from functools import wraps
 
 from .cloud_command import CloudCommandError
+from .cloud_observation import TelemetryUnavailable
 from .cloud_rate_limit import CloudRateLimitedError
 from .operation_budget import BudgetCancelled, CURRENT_BUDGET, OperationBudget
 
@@ -22,6 +23,10 @@ class ModeVerificationError(RuntimeError):
 
 class RequestSuperseded(ModeVerificationError):
     """Preparation was superseded before any Start could be delivered."""
+
+
+class TelemetryUnavailableBeforeWrite(TelemetryUnavailable):
+    """The pre-write read found no v3 telemetry; nothing was written."""
 
 
 @dataclass(frozen=True)
@@ -161,7 +166,10 @@ class ChargeModePolicy:
     async def _verify_inner(self, target, version, *, allow_active=False):
         self._check(version)
         deadline = time.monotonic() + self.timeout
-        before = await self.adapter.read()
+        try:
+            before = await self.adapter.read()
+        except TelemetryUnavailable as error:
+            raise TelemetryUnavailableBeforeWrite(str(error)) from error
         self._check(version)
         if time.monotonic() >= deadline:
             raise ModeVerificationError("Mode read exceeded verification deadline")
@@ -421,7 +429,15 @@ async def async_apply_policy(coordinator, operation, *args):
             if operation == "select_mode":
                 await policy.async_remember_mode(*args)
             return False
-        await getattr(policy, "async_" + operation)(*args)
+        try:
+            await getattr(policy, "async_" + operation)(*args)
+        except TelemetryUnavailableBeforeWrite:
+            if policy.enabled:
+                raise
+            # Without restore mode, staged Fast needs v3 telemetry only for its
+            # extra verification. Nothing was written, so the select applies Fast
+            # through SEMS+ like the PV modes and confirms it by readback.
+            return False
     except (ModeVerificationError, CloudRateLimitedError, CloudCommandError) as err:
         raise operation_error(err) from err
     coordinator.schedule_delayed_refresh(1.0)

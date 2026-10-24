@@ -1,5 +1,27 @@
 # Development backlog
 
+## Unreleased: Fast on HCA G2 without v3 telemetry
+
+- On a GW22K-HCA-20 (HCA G2, cloud-only), v3 `GetCurrentChargeinfo` returns code `0`
+  and the matching serial, but `lastUpdate`, `status`, `workstate`, `model`,
+  firmware and `set_charge_power` are all null and `chargeMode` is `0` while SEMS+
+  reports PV priority. Owner and shared SEMS+ accounts return the same skeleton.
+  SEMS+ `ev-charger/detail` reports live state but no report timestamp.
+- Such a skeleton now raises `TelemetryUnavailable` (a `ConnectionError`) instead of
+  the generic missing-timestamp error. A missing timestamp with device state keeps
+  the existing error.
+- With restore mode disabled, staged Fast with a saved limit falls back to the
+  existing SEMS+ select path when the policy's pre-write read finds no v3 telemetry.
+  Nothing has been written at that point; telemetry lost after a write still fails
+  without replay. With restore mode enabled the error is unchanged.
+- The existing Fast path uses the saved HA limit when present and the power
+  number's bounds (`hw_max`/`max`/`rated_max_charge_power`). Before, a 22 kW unit
+  without `max_charge_power` was capped at 11 kW and a 12 kW limit was replaced
+  with 4.2 kW. An unknown or out-of-range limit now raises `invalid_power` and
+  sends nothing, matching the policy path's "does not invent a power limit".
+- Not covered: Stop confirmation fallback, cloud minimum power and restore mode
+  still depend on v3 telemetry and remain unavailable on such units.
+
 ## 3.0.6b2: uncertain cloud settings and verified idle recovery (#28)
 
 - Send mode/power settings once when GoodWe returns `R0305` or another uncertain

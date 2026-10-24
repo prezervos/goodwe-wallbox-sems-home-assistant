@@ -288,6 +288,63 @@ async def test_disabled_policy_keeps_existing_path():
     assert coordinator.charge_mode_policy.adapter.calls == []
 
 
+observation_module = importlib.import_module(PACKAGE + ".cloud_observation")
+
+
+class NoTelemetryAdapter(Adapter):
+    """HCA G2: v3 matches the serial but carries no device telemetry."""
+
+    async def read(self):
+        self.calls.append("read")
+        raise observation_module.TelemetryUnavailable("SEMS v3 has no device telemetry")
+
+
+def coordinator_for(policy):
+    return types.SimpleNamespace(
+        charge_mode_policy=policy, schedule_delayed_refresh=MagicMock()
+    )
+
+
+async def test_disabled_policy_fast_without_v3_telemetry_uses_existing_path():
+    adapter = NoTelemetryAdapter(Observation(1))
+    policy = Policy(adapter, Store(), enabled=False, timeout=0.2, interval=0,
+                    initial_mode=1)
+    policy.desired_power = 12.2
+    coordinator = coordinator_for(policy)
+    assert await policy_module.async_apply_policy(coordinator, "select_mode", 0) is False
+    assert adapter.calls == ["read"]
+    assert policy.desired_mode == 0
+
+
+class TelemetryLostAfterWriteAdapter(Adapter):
+    """The pre-write read succeeds; telemetry disappears during confirmation."""
+
+    async def read(self):
+        self.calls.append("read")
+        if self.calls.count("read") > 1:
+            raise observation_module.TelemetryUnavailable("SEMS v3 has no device telemetry")
+        return self.observations[0]
+
+
+async def test_telemetry_lost_after_write_does_not_replay_fast():
+    adapter = TelemetryLostAfterWriteAdapter(Observation(1, power=12.2))
+    policy = Policy(adapter, Store(), enabled=False, timeout=0.2, interval=0,
+                    initial_mode=1)
+    policy.desired_power = 12.2
+    with pytest.raises(ConnectionError):
+        await policy_module.async_apply_policy(coordinator_for(policy), "select_mode", 0)
+    assert [call for call in adapter.calls if call != "read"] == [("mode", 0, 12.2)]
+
+
+async def test_enabled_policy_does_not_bypass_missing_v3_telemetry():
+    adapter = NoTelemetryAdapter(Observation(1))
+    policy = make_policy(adapter, initial_mode=1)
+    policy.desired_power = 12.2
+    with pytest.raises(ConnectionError):
+        await policy_module.async_apply_policy(coordinator_for(policy), "select_mode", 0)
+    assert set(adapter.calls) == {"read"}
+
+
 async def test_cloud_last_charge_blocks_start_even_when_detail_says_idle():
     adapter, client = transport(
         dict(
