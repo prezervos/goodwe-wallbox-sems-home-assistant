@@ -99,7 +99,10 @@ def modern_status_observation(serial, equipment, session, settings):
     if settings is not None and settings.get("sn") != serial:
         raise ConnectionError("Mismatched modern cloud configuration")
     result = dict(settings or {})
-    for key in ("power", "current", "status", "workstate", "startStatus", "lastUpdate"):
+    # Configuration supplies defaults for legacy counters, not live session data.
+    # Keep them out so the entity getters use independent session observations.
+    for key in ("power", "current", "status", "workstate", "startStatus", "lastUpdate",
+                "chargeEnergy", "time"):
         result.pop(key, None)
     result.update(sn=serial, lastUpdate=equipment["updateTime"],
                   observation_source="semsplus_equipment", power=None, current=None,

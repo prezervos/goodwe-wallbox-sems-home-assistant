@@ -6,7 +6,8 @@
   device report time. Validate SEMS+ equipment identity/type, report time and
   station/session agreement; keep the existing stale/future/handover fences.
 - Keep independent active-session measurements when the SEMS+ detail request fails.
-  Missing configuration and measurements stay unknown; no old settings or HTTP
+  Session energy/duration use independent observations rather than configuration
+  zero defaults. Missing configuration and measurements stay unknown; no old settings or HTTP
   receipt timestamps are promoted to fresh device data.
 - Retry read-only detail `B0001` within the existing shared session and operation
   budget. Ordinary polling and commands with usable automatic native TCP fallback
@@ -30,8 +31,8 @@
 Development checks include API retry/route composition, actual 2/5/10-second
 backoff timing, interruption/deadline tests, background-task isolation and real
 Home Assistant cloud/native setup, reload, unload and telemetry freshness checks.
-All **1,903 unit tests** and Ruff F checks passed on HP840. Final GitHub CI
-results are recorded in the beta pull request.
+Validation covers the complete unit suite, Ruff F checks and actual Home
+Assistant smoke scenarios. Final results are recorded in the beta pull request.
 
 On the physically tested original GW11 HCA, development HA completed three
 Start/Stop cycles and repeated power increases/decreases. Stable actual load
