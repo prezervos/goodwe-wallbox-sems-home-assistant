@@ -211,7 +211,9 @@ async def test_configuration_failure_cannot_fall_back_to_v3_allocation(settings)
     hass = SimpleNamespace(
         async_add_executor_job=AsyncMock(side_effect=lambda fn, *args: fn(*args))
     )
-    with pytest.raises(adapter_module.ModeVerificationError, match="configuration"):
+    commands = importlib.import_module(PACKAGE + ".cloud_command")
+    expected = commands.CloudConfigurationUnavailable if settings is None else adapter_module.ModeVerificationError
+    with pytest.raises(expected, match="configuration"):
         await adapter_module.ModeTransportAdapter(hass, "TEST", client).read()
 
 
@@ -354,3 +356,62 @@ def test_bad_http_response_does_not_invalidate_shared_credentials_or_retry(failu
         client.read("TEST")
     session.post.assert_called_once()
     client._token_rejected.assert_not_called()
+
+
+@pytest.mark.parametrize("status,power,expected", [
+    (6, 4.2, True), (6, 0, True), (6, "4.2", True), (8, 4.2, False),
+    (6, None, False), (6, True, False), (6, -1, False),
+    (6, float("nan"), False), (6, float("inf"), False), (True, 1, False),
+    ("6", 4.2, False), (None, 4.2, False),
+])
+def test_partial_cloud_observation_requires_active_measured_session(status, power, expected):
+    active_session_available = importlib.import_module(PACKAGE + ".cloud_data").active_session_available
+
+    assert active_session_available({
+        "last_charge_work_status": status, "last_charge_power": power,
+    }) is expected
+
+
+@pytest.mark.parametrize("station,session,power,accepted", [
+    ("6", 6, 4.2, True), ("6", 6, 0, True), ("8", 8, None, True),
+    ("6", 8, None, False), ("8", 6, 4.2, False), ("6", 6, None, False),
+    ("6", 6, True, False), ("6", 6, -1, False),
+])
+def test_modern_observation_preserves_device_time_and_measured_power(station, session, power, accepted):
+    data_module = importlib.import_module(PACKAGE + ".cloud_data")
+    rows = [{"code": key, "data": value} for key, value in {
+        "sn": "TEST", "deviceType": "ev_charger", "workStu": station,
+        "updateTime": "2026-10-29 11:57:26",
+    }.items()]
+    equipment = data_module.equipment_report("TEST", rows)
+    last = {"last_charge_work_status": session, "last_charge_power": power}
+    settings = {"sn": "TEST", "chargeMode": 0, "power": 11, "lastUpdate": "not-a-report"}
+    if not accepted:
+        with pytest.raises(ConnectionError):
+            data_module.modern_status_observation("TEST", equipment, last, settings)
+        return
+    result = data_module.modern_status_observation("TEST", equipment, last, settings)
+    assert result["lastUpdate"] == "2026-10-29 11:57:26"
+    assert result["power"] == (float(power) if station == "6" else None)
+    assert settings["power"] == 11
+    assert result["observation_source"] == "semsplus_equipment"
+
+
+@pytest.mark.parametrize("field,value", [
+    ("sn", "WRONG"), ("deviceType", "inverter"), ("updateTime", None),
+    ("updateTime", "2026-10-29"), ("updateTime", "invalid"),
+    ("workStu", "999"), ("workStu", True), ("workStu", 6.0),
+])
+def test_modern_equipment_report_rejects_unverified_fields(field, value):
+    data_module = importlib.import_module(PACKAGE + ".cloud_data")
+    values = {"sn": "TEST", "deviceType": "ev_charger", "workStu": "8",
+              "updateTime": "2026-10-29 11:57:26"}
+    values[field] = value
+    with pytest.raises(ConnectionError):
+        data_module.equipment_report("TEST", [{"code": k, "data": v} for k, v in values.items()])
+
+
+def test_modern_equipment_duplicate_identity_is_rejected():
+    data_module = importlib.import_module(PACKAGE + ".cloud_data")
+    with pytest.raises(ConnectionError, match="Duplicate"):
+        data_module.equipment_report("TEST", [{"code": "sn", "data": "TEST"}, {"code": "sn", "data": "WRONG"}])

@@ -1,5 +1,27 @@
 # Development and validation
 
+## SEMS compatibility regression checks (3.0.7b1)
+
+- `tests/test_sems_api.py` and `tests/test_native_control_fallback.py`: actual detail
+  retry code composed with route selection; success on retry keeps cloud, exhausted
+  retry permits a single verified local dispatch. Authentication/identity failures
+  stay distinct; possible configuration writes are not replayed.
+- `tests/test_operation_budget.py`: 3/4-attempt command policy, fourth-read success,
+  Stop/caller cancellation/client close/deadline interruption, and background tasks
+  retaining their ordinary three attempts. `test_write_confirmation.py` loads the
+  component as a package so real retry-policy dependencies are exercised.
+- `tests/test_cloud_observation.py`, `tests/test_fast_power_preparation.py` and
+  `scripts/ha_cloud_lifecycle_smoke.py`: equipment report-time validation, independent
+  current-session data, unknown-versus-zero handling and unchanged freshness fences.
+- Native configuration/entity tests verify the implemented minimum-power/Auto start
+  writers after route recovery; unsupported cloud-only controls must remain errors.
+
+Use isolated simulated responses for deterministic retries and actual development
+HA for physical power/Start/Stop checks. Do not equate a successful read, an ACK,
+MQTT connectivity or a configured ceiling with measured charging. Never commit
+credentials, household addresses, raw diagnostics or temporary fault-injection code.
+
+
 Use an isolated Home Assistant instance. The component package is
 `custom_components/sems_wallbox`; install or bind that directory into the test
 instance's `custom_components` directory. Do not run two HA processes against one

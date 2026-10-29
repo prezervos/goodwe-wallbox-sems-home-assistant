@@ -1,5 +1,6 @@
 """Exercise staged Fast limits through cloud/Modbus entities and real policy."""
 
+import asyncio
 import importlib
 from datetime import datetime, timedelta, timezone
 from itertools import count
@@ -132,3 +133,73 @@ async def test_latest_staged_request_wins_without_device_io(rig):
     assert calls == []
     await policy_module.async_apply_policy(entity.coordinator, "select_mode", 0)
     assert calls == [("mode", 0), ("power", 5.0)]
+
+
+async def test_modern_explicit_idle_can_prepare_without_inventing_zero_power():
+    entity = _make_entity(chargeMode=0, set_charge_power=4.2)
+    client = MagicMock()
+    client.supports_timestamped_observation = True
+    state = {"sn": SAMPLE_SN, "observation_source": "semsplus_equipment",
+             "_cloud_session_idle": True, "last_charge_work_status": 8,
+             "status": "standby", "power": None, "chargeMode": 0,
+             "lastUpdate": "2026-10-29T11:57:26Z"}
+    client.fetch_status_observation.return_value = state
+    client.get_data_gen2.return_value = {"sn": SAMPLE_SN, "_reported_charge_mode": 0,
+                                        "set_charge_power": 4.2}
+    adapter = adapter_module.ModeTransportAdapter(entity.hass, SAMPLE_SN, client)
+    observation = await adapter.read()
+    assert observation.active is False
+    assert observation.report_marker.startswith("equipment:")
+    assert state["power"] is None
+    client.change_status_gen2.assert_not_called()
+
+
+@pytest.mark.parametrize("advances,source", [(True, "semsplus_equipment"), (False, "semsplus_equipment"), (True, None)])
+async def test_modern_idle_stop_confirmation_requires_advancing_same_source(advances, source):
+    entity = _make_entity(chargeMode=0, set_charge_power=4.2)
+    client = MagicMock()
+    first = {"sn": SAMPLE_SN, "lastUpdate": "2026-10-29T11:57:26Z",
+             "status": "standby", "power": None, "observation_source": "semsplus_equipment",
+             "_cloud_session_idle": True, "last_charge_work_status": 8}
+    second = dict(first, lastUpdate="2026-10-29T11:57:56Z" if advances else first["lastUpdate"],
+                  observation_source=source)
+    reports = iter([first])
+    client.fetch_status_observation.side_effect = lambda sn: next(reports, second)
+    adapter = adapter_module.ModeTransportAdapter(entity.hass, SAMPLE_SN, client)
+    assert await adapter._confirm_stopped(timeout=0.2, interval=0.001) is (advances and source == "semsplus_equipment")
+    client.change_status_gen2.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stage", ["preparation", "readback", "identity", "malformed_mode"])
+async def test_modern_configuration_failure_proves_no_write_only_before_dispatch(stage):
+    from types import SimpleNamespace
+    commands = importlib.import_module(adapter_module.__package__ + ".cloud_command")
+    serial = "TEST"
+    def observation(sn):
+        return next(replies)
+    valid = {"sn": serial, "_reported_charge_mode": 0, "set_charge_power": 4.2,
+             "status": "standby", "power": 0, "lastUpdate": "2026-10-29T10:00:00Z"}
+    unavailable = {"sn": serial, "_cloud_detail_available": False}
+    if stage == "identity":
+        unavailable = {"sn": "OTHER", "_cloud_detail_available": False}
+    elif stage == "malformed_mode":
+        unavailable = dict(valid, _reported_charge_mode="wrong")
+    replies = iter([valid, unavailable] if stage == "readback" else [unavailable])
+    client = SimpleNamespace(supports_timestamped_observation=True,
+        fetch_status_observation=observation,
+        get_data_gen2=lambda sn: dict(valid),
+        set_charge_mode_gen2=lambda *args: True)
+    hass = SimpleNamespace(async_add_executor_job=asyncio.to_thread)
+    adapter = adapter_module.ModeTransportAdapter(hass, serial, client)
+    adapter.write_mode = AsyncMock(return_value=True)
+    adapter.start = AsyncMock(return_value=True)
+    store = SimpleNamespace(async_save=AsyncMock())
+    policy = policy_module.ChargeModePolicy(adapter, store, initial_mode=1, timeout=1)
+    expected = commands.CloudPreparationUnavailable if stage == "preparation" else (
+        commands.CloudConfigurationUnavailable if stage == "readback" else policy_module.ModeVerificationError
+    )
+    with pytest.raises(expected):
+        await policy.async_start()
+    assert adapter.write_mode.await_count == (1 if stage == "readback" else 0)
+    adapter.start.assert_not_awaited()

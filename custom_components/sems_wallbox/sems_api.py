@@ -1,9 +1,11 @@
-"""SEMS+ configuration and controls, with separate SEMS v3 telemetry.
+"""Shared SEMS+ controls and independently timestamped cloud observations.
 
 SEMS+ gateway paths are not a uniform "v4" API: individual services use different
 path versions. The legacy gen2 method names refer to charger support, not API v2.
-Use SEMS+ for configured limits and commands; v3 provides timestamped measured
-telemetry. A v3 reported allocation may differ from the SEMS+ configured ceiling,
+Use SEMS+ for configured limits and commands. Legacy v3 supplies timestamped
+measurements where available; otherwise validated SEMS+ equipment report time
+and current-session measurements remain separate sources. A v3 reported
+allocation may differ from the SEMS+ configured ceiling,
 and SEMS+ chargePower is not a measurement of current consumption.
 """
 
@@ -23,11 +25,12 @@ from urllib.parse import urlsplit
 import requests
 from homeassistant import exceptions
 
-from .cloud_command import CloudCommandError, CloudSettingError, SettingOutcome
+from .cloud_command import CloudCommandError, CloudIdentityError, CloudSettingError, SettingOutcome
 from .cloud_http import SEMS_USER_AGENT
 from .cloud_rate_limit import CloudRateLimitedError, CloudRequestGate
-from .cloud_observation import CloudAuthenticationError
-from .operation_budget import BudgetCancelled, request_timeout, serialized_request
+from .cloud_observation import CloudAuthenticationError, IncompleteCloudReport
+from .cloud_data import equipment_report, modern_status_observation
+from .operation_budget import BudgetCancelled, cloud_detail_retry_delays, request_timeout, serialized_request
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -123,6 +126,8 @@ class SemsApi:
         self._password = password
         self._web_request_lock = threading.RLock()
         self._closed = False
+        self._detail_retry_cancel = threading.Event()
+        self._legacy_status_retry_at = 0.0
         self._control_item_ranges = {}
         self._pending_mode_edits = {}
         self._web_login_retry_at = 0.0
@@ -169,6 +174,7 @@ class SemsApi:
 
     def close(self) -> None:
         """Close owned HTTP resources after any in-flight web/telemetry request."""
+        self._detail_retry_cancel.set()
         with self._web_request_lock:
             if self._closed:
                 return
@@ -324,7 +330,7 @@ class SemsApi:
         for position, endpoint in enumerate(_LOGIN_ORDER):
             try:
                 return self._login_attempt(endpoint, deadline)
-            except (CloudAuthenticationError, CloudRateLimitedError, BudgetCancelled, TimeoutError):
+            except (CloudAuthenticationError, CloudIdentityError, CloudRateLimitedError, BudgetCancelled, TimeoutError):
                 raise
             except (_LoginFallbackEligible, requests.ConnectionError, requests.Timeout):
                 if position + 1 < len(_LOGIN_ORDER):
@@ -468,7 +474,7 @@ class SemsApi:
                     "Set plant_id manually in integration options.",
                     len(stations),
                 )
-        except (CloudAuthenticationError, CloudRateLimitedError, BudgetCancelled, TimeoutError):
+        except (CloudAuthenticationError, CloudIdentityError, CloudRateLimitedError, BudgetCancelled, TimeoutError):
             raise
         except Exception as exc:  # noqa: BLE001
             _LOGGER.debug("SEMS plantId auto-detect failed: %s", exc)
@@ -850,15 +856,57 @@ class SemsApi:
 
     @_serialized_web_request
     def fetch_status_observation(self, wallbox_sn):
-        """Read independent timestamped telemetry; never infer freshness from HTTP time."""
-        return self._observation_reader.read(wallbox_sn)
+        """Read timestamped telemetry, using modern sources for incomplete v3 data."""
+        if time.monotonic() >= self._legacy_status_retry_at:
+            try:
+                return self._observation_reader.read(wallbox_sn)
+            except IncompleteCloudReport:
+                # Do not probe the incomplete legacy response on every normal poll.
+                self._legacy_status_retry_at = time.monotonic() + 300
+                _LOGGER.debug("Legacy report lacks a timestamp; using SEMS+ device information")
+        plant = self._ensure_plant_id()
+        url = self._eu_url(f"sems-plant/api/equipments/{wallbox_sn}/information")
+        for attempt in range(2):
+            response = self._request_gate.request(
+                requests.get, url, retry_read=True, headers=self._build_web_headers(),
+                params={"deviceType": "EV_CHARGER", "pwId": plant},
+                timeout=request_timeout(_RequestTimeout), allow_redirects=False,
+            )
+            body = _response_json(response)
+            if str(body.get("code")) == "C0602" and attempt == 0:
+                self._invalidate_rejected_session()
+                if not self._ensure_web_token(renew=True):
+                    raise ConnectionError("Modern cloud session unavailable")
+                continue
+            if str(body.get("code")) != "00000":
+                raise ConnectionError("Modern cloud equipment report unavailable")
+            info = equipment_report(wallbox_sn, body.get("data"))
+            if int(info["workStu"]) == 0:
+                return modern_status_observation(wallbox_sn, info, None, None)
+            session = self.fetch_last_charge(wallbox_sn)
+            settings = self.get_data_gen2(wallbox_sn)
+            return modern_status_observation(wallbox_sn, info, session, settings)
+        raise ConnectionError("Modern cloud session rejected after renewal")
+
+    def _wait_detail_retry(self, seconds):
+        """Wait within the operation budget, interruptibly on close or cancellation."""
+        deadline = time.monotonic() + request_timeout(seconds)
+        while True:
+            request_timeout(_RequestTimeout)
+            if self._detail_retry_cancel.is_set():
+                raise BudgetCancelled("SEMS client closed before detail retry")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            self._detail_retry_cancel.wait(min(0.1, remaining))
 
     @_serialized_web_request
     def get_data_gen2(self, wallbox_sn: str) -> dict | None:
         """Fetch device status from EU gateway ev-charger/detail (Gen2 / HCA series).
 
-        Returns None on any failure -- the coordinator will mark the update as
-        failed and retry on the next poll interval. An explicitly reported serial
+        Return None for unavailable configuration, including exhausted B0001
+        retries. Authentication and identity failures raise typed errors so they
+        cannot become automatic TCP recovery. An explicitly reported serial
         must match the requested device. Older responses without an sn field
         retain the request-scoped identity; absence is not independent identity
         evidence.
@@ -868,7 +916,6 @@ class SemsApi:
             return None
 
         plant_id = self._ensure_plant_id()
-        headers = self._build_web_headers()
         payload: dict = {"sn": wallbox_sn}
         if plant_id:
             payload["plantId"] = plant_id
@@ -880,39 +927,52 @@ class SemsApi:
             _LOGGER.debug(
                 "SEMS gen2 getData: POST %s payload=%s", _eu_detail_url, payload
             )
-            resp = self._request_gate.request(requests.post,
-                _eu_detail_url, retry_read=True, headers=headers, json=payload, timeout=request_timeout(_RequestTimeout)
-            )
-            rj = _response_json(resp)
-            if _LOGGER.isEnabledFor(logging.DEBUG):
-                _LOGGER.debug(
-                    "SEMS gen2 getData: POST %s -> HTTP %s\n%s",
-                    _eu_detail_url, resp.status_code,
-                    json.dumps(rj, indent=2, ensure_ascii=False),
-                )
-            code = str(rj.get("code") or "")
-            raw = rj.get("data")
-
-            if code == "C0602":
-                _LOGGER.debug("SEMS gen2 getData: C0602, renewing web token")
-                self._invalidate_rejected_session()
-                if not self._ensure_web_token(renew=True):
-                    _LOGGER.error("SEMS gen2 getData: could not renew web token")
-                    return None
+            renewed = False
+            business_retries = 0
+            delays = cloud_detail_retry_delays()
+            attempts = len(delays) + 1
+            for attempt in range(attempts):
+                if self._detail_retry_cancel.is_set():
+                    raise BudgetCancelled("SEMS client closed before detail read")
                 headers = self._build_web_headers()
-                resp = self._request_gate.request(requests.post,
-                    _eu_detail_url, retry_read=True, headers=headers, json=payload, timeout=request_timeout(_RequestTimeout)
+                resp = self._request_gate.request(
+                    requests.post, _eu_detail_url, retry_read=True,
+                    headers=headers, json=payload,
+                    timeout=request_timeout(_RequestTimeout),
                 )
                 rj = _response_json(resp)
                 if _LOGGER.isEnabledFor(logging.DEBUG):
                     _LOGGER.debug(
-                        "SEMS gen2 getData (retry): POST %s -> HTTP %s\n%s",
+                        "SEMS gen2 getData: POST %s -> HTTP %s\n%s",
                         _eu_detail_url, resp.status_code,
                         json.dumps(rj, indent=2, ensure_ascii=False),
                     )
                 code = str(rj.get("code") or "")
                 raw = rj.get("data")
+                if attempt == attempts - 1:
+                    break
+                if code == "B0001":
+                    delay = delays[business_retries]
+                    business_retries += 1
+                    _LOGGER.debug(
+                        "SEMS detail B0001; read retry %s in %ss",
+                        business_retries, delay,
+                    )
+                    self._wait_detail_retry(delay)
+                    continue
+                if code == "C0602" and not renewed:
+                    _LOGGER.debug("SEMS gen2 getData: C0602, renewing web token")
+                    self._invalidate_rejected_session()
+                    if not self._ensure_web_token(renew=True):
+                        # False means temporary login unavailability; rejected
+                        # credentials raise CloudAuthenticationError themselves.
+                        return None
+                    renewed = True
+                    continue
+                break
 
+            if code == "C0602":
+                raise CloudAuthenticationError("Cloud configuration authentication was rejected")
             if code not in ("00000", "0") or not raw:
                 _LOGGER.warning(
                     "SEMS gen2 getData: unexpected code=%s, no data returned", code
@@ -922,8 +982,7 @@ class SemsApi:
             if (not isinstance(raw, dict) or (
                     "sn" in raw and (not isinstance(raw["sn"], str)
                                      or raw["sn"] != wallbox_sn))):
-                _LOGGER.warning("SEMS gen2 getData: invalid or mismatched response identity")
-                return None
+                raise CloudIdentityError("Missing or mismatched cloud configuration identity")
 
             # Map EU gateway fields -> internal dict format.
             # Field names are inferred; all raw keys are logged above so we can
@@ -989,7 +1048,7 @@ class SemsApi:
                 result["vehConnStu"] = raw["vehConnStu"]
             return result
 
-        except (CloudAuthenticationError, CloudRateLimitedError, BudgetCancelled, TimeoutError):
+        except (CloudAuthenticationError, CloudIdentityError, CloudRateLimitedError, BudgetCancelled, TimeoutError):
             raise
         except Exception as exc:  # noqa: BLE001
             _LOGGER.warning("SEMS gen2 getData failed: %s", exc)
@@ -1003,7 +1062,7 @@ class SemsApi:
           set_config_gen2(sn, chargedNow=1)       # enable Plug & Charge
           set_config_gen2(sn, chargedNow=0)         # disable Plug & Charge
           set_config_gen2(sn, dynamicLoad=1)        # enable Dynamic Load Control
-          set_config_gen2(sn, phaseSwitch=1)        # switch to single-phase
+          set_config_gen2(sn, phaseSwitch=1)        # enable automatic phase switching
           set_config_gen2(sn, currentLimit=16)      # import current limit (A)
 
         The current SEMS+ frontend sends chargedNow as 0/1. Do not copy legacy
@@ -1051,7 +1110,7 @@ class SemsApi:
         except requests.exceptions.Timeout:
             _LOGGER.warning("SEMS gen2 set_config timed out (sn=%s)", wallbox_sn)
             return False
-        except (CloudAuthenticationError, CloudRateLimitedError, BudgetCancelled, TimeoutError):
+        except (CloudAuthenticationError, CloudIdentityError, CloudRateLimitedError, BudgetCancelled, TimeoutError):
             raise
         except Exception as exc:  # noqa: BLE001
             _LOGGER.error("SEMS gen2 set_config failed: %s", exc)
@@ -1114,7 +1173,7 @@ class SemsApi:
                 # proof of device rejection; reconcile by reading, never replay.
                 error = CloudCommandError(
                     action, code, rj.get("translationCode"),
-                    uncertain=code in {"C0001", "R0305"})
+                    uncertain=code in {"C0001", "R0305", "B0001"})
                 _LOGGER.warning("SEMS gen2 %sCharge: %s", action, error)
                 raise error
             return ok
@@ -1175,13 +1234,17 @@ class SemsApi:
                 _LOGGER.debug("fetch_last_charge: non-success code=%s", code)
                 return None
             log = (rj.get("data") or {}).get("chargeLog") or {}
+            if (not isinstance(log, dict) or (
+                    "chargePileSN" in log and log["chargePileSN"] != wallbox_sn)):
+                _LOGGER.warning("Current-session response has invalid device identity")
+                return None
             return {
                 "last_charge_work_status": log.get("workStu"),
                 "last_charge_power": log.get("pevChar"),
                 "last_charge_duration_minutes": log.get("chargeTimeLength"),
                 "last_charge_energy": log.get("currentChargeQuantity"),
             }
-        except (CloudAuthenticationError, CloudRateLimitedError, BudgetCancelled, TimeoutError):
+        except (CloudAuthenticationError, CloudIdentityError, CloudRateLimitedError, BudgetCancelled, TimeoutError):
             raise
         except Exception as exc:  # noqa: BLE001
             _LOGGER.warning("fetch_last_charge failed: %s", exc)
@@ -1218,7 +1281,7 @@ class SemsApi:
                 return {}
             self._control_item_ranges[wallbox_sn] = info.get("controlItemRanges")
             return info
-        except (CloudAuthenticationError, CloudRateLimitedError, BudgetCancelled, TimeoutError):
+        except (CloudAuthenticationError, CloudIdentityError, CloudRateLimitedError, BudgetCancelled, TimeoutError):
             raise
         except Exception as exc:  # noqa: BLE001
             _LOGGER.debug("SEMS fetch_device_info failed: %s", exc)
@@ -1270,7 +1333,7 @@ class SemsApi:
                 if sid:
                     result.append({"id": sid, "name": name, **r})
             return result
-        except (CloudAuthenticationError, CloudRateLimitedError, BudgetCancelled, TimeoutError):
+        except (CloudAuthenticationError, CloudIdentityError, CloudRateLimitedError, BudgetCancelled, TimeoutError):
             raise
         except Exception as exc:  # noqa: BLE001
             _LOGGER.error("SEMS fetch_stations failed: %s", exc)
@@ -1333,7 +1396,7 @@ class SemsApi:
                 or []
             )
             return records if isinstance(records, list) else []
-        except (CloudAuthenticationError, CloudRateLimitedError, BudgetCancelled, TimeoutError):
+        except (CloudAuthenticationError, CloudIdentityError, CloudRateLimitedError, BudgetCancelled, TimeoutError):
             raise
         except Exception as exc:  # noqa: BLE001
             _LOGGER.error("SEMS fetch_ev_chargers failed: %s", exc)

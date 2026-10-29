@@ -183,3 +183,13 @@ def test_declared_enum_options_have_translations():
             else:
                 entity_domain = domain
             assert set(attrs["_attr_options"]) <= entities[entity_domain][key]["state"].keys(), cls.name
+
+
+@pytest.mark.parametrize("language,qualifier", [
+    ("en", "Automatic"), ("cs", "Automatické"),
+    ("de", "Automatische"), ("es", "automático"),
+])
+def test_phase_switch_labels_describe_automatic_operation(language, qualifier):
+    switches = catalog(f"translations/{language}.json")["entity"]["switch"]
+    assert switches["phase_switch"] == switches["modbus_phase_switch"]
+    assert qualifier in switches["phase_switch"]["name"]

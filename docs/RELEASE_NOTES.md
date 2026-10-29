@@ -1,3 +1,76 @@
+# 3.0.7b1 — SEMS compatibility and bounded cloud recovery
+
+## Fixes and behavior
+
+- Recover timestamped cloud observations when legacy v3 data no longer contains a
+  device report time. Validate SEMS+ equipment identity/type, report time and
+  station/session agreement; keep the existing stale/future/handover fences.
+- Keep independent active-session measurements when the SEMS+ detail request fails.
+  Missing configuration and measurements stay unknown; no old settings or HTTP
+  receipt timestamps are promoted to fresh device data.
+- Retry read-only detail `B0001` within the existing shared session and operation
+  budget. Ordinary polling and commands with usable automatic native TCP fallback
+  allow three attempts (2/5-second backoff). Commands without that recovery route
+  allow four attempts (2/5/10-second backoff). Background tasks do not inherit the
+  extra attempt; Stop, cancellation, client shutdown and deadlines remain effective.
+- Extend opted-in native control preflight to power/mode and verified original-HCA
+  minimum-power/Auto start operations. Recover configuration loss before any write;
+  do not replay uncertain configuration writes after missing readback. Preserve
+  the latest choice per control and prioritize Stop.
+- Reconcile uncertain charging acknowledgements, including `B0001`. Verify real TCP
+  state before any local Start/Stop; an already stopped charger needs no repeated
+  Stop. Authentication rejection, invalid identity and invalid input cannot trigger
+  transport takeover.
+- Correct automatic phase-switching descriptions and EN/CS/DE/ES labels. Register
+  10023 and cloud `phaseSwitch` enable automatic switching; they do not force one
+  phase. Entity IDs, protocol values and device-specific ranges are preserved.
+
+## Validation
+
+Development checks include API retry/route composition, actual 2/5/10-second
+backoff timing, interruption/deadline tests, background-task isolation and real
+Home Assistant cloud/native setup, reload, unload and telemetry freshness checks.
+All **1,903 unit tests** and Ruff F checks passed on HP840. Final GitHub CI
+results are recorded in the beta pull request.
+
+On the physically tested original GW11 HCA, development HA completed three
+Start/Stop cycles and repeated power increases/decreases. Stable actual load
+changed approximately 4.1 ↔ 5.5 kW for requested 4.2 ↔ 6 kW. Every Stop confirmed
+0 kW; no duplicate control Start or 11 kW jump occurred. Requested 5 kW repeatedly
+produced about 4.1 kW, consistent with the owner's long-standing observations.
+Requested ceilings are not assumed equal to measured consumption.
+
+A full development-HA fault-injection check retained the real retry implementation
+and actual device telemetry: three `B0001` responses preceded one TCP takeover and
+one Start. In that run TCP became usable after about 36 seconds, and charging was
+observed after about 57 seconds, including handover and EV ramp-up. These are
+observations, not guaranteed latency. Successful second/third/fourth read attempts
+were tested with controlled responses; live cloud control is not certified by them.
+
+## Compatibility and known limitations
+
+- This is a beta for testing the recent SEMS compatibility changes, especially #30.
+  It does not repair the GoodWe backend or guarantee cloud Start/Stop availability.
+- Native Socket A TCP on supported original-HCA models has been more reliable in
+  our local tests and is recommended where compatible local control is available.
+  Configure it explicitly; automatic fallback remains opt-in. Manual TCP stays
+  selected across restart/reload, subject to the existing reconnect behavior.
+- HCA G2 Modbus TCP is different. The #28 report describes external current-setpoint
+  and heartbeat requirements; exact verified EMS registers are still missing.
+  This beta does not implement that heartbeat or certify G2 Modbus/PV operation.
+- Minimum HA remains 2026.9.2. Existing entity identities, custom names, normal
+  polling options and saved charging preferences are preserved. No new persistent
+  notifications are introduced.
+- Enable beta versions in HACS, select **3.0.7b1**, update and restart HA. Check
+  telemetry and, when safe with a connected car, Start/Stop and power changes.
+  If the issue persists, provide model/firmware, transport, redacted debug logs
+  and downloaded integration diagnostics. Remove credentials/tokens before sharing.
+
+Thanks to the reporters in #30 and the earlier device/firmware investigations in
+#28 and #21. Publishing this beta does not deploy it to an existing HA installation.
+
+---
+
 # 3.0.6 — Reliable cloud controls and verified TCP recovery
 
 ## Fixes

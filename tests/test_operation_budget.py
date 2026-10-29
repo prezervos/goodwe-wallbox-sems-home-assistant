@@ -216,3 +216,119 @@ def test_cloud_command_error_text_and_log_preserve_outcome(caplog, uncertain, wr
     assert expected in caplog.text
     assert "Wallbox operation failed" not in caplog.text
     assert "acknowledgement failed" not in str(result)
+
+
+@pytest.mark.parametrize("fallback", [None, "disabled", "enabled", "paused", "blocked"])
+async def test_command_retry_scope_does_not_leak_into_background_polling(fallback):
+    confirmation = importlib.import_module(PACKAGE + ".write_confirmation")
+    route = None if fallback is None else SimpleNamespace(
+        enabled=fallback != "disabled", paused=fallback == "paused", blocked=fallback == "blocked")
+    owner = SimpleNamespace(automatic_fallback=route)
+    entity = SimpleNamespace(coordinator=owner)
+    hass = SimpleNamespace(async_add_executor_job=asyncio.to_thread)
+    expected = (2.0, 5.0) if fallback == "enabled" else (2.0, 5.0, 10.0)
+
+    @confirmation.confirm_write("chargeMode")
+    async def command(entity):
+        direct = await budget_module.async_execute(hass, budget_module.cloud_detail_retry_delays)
+        background = await asyncio.create_task(budget_module.async_execute(
+            hass, budget_module.cloud_detail_retry_delays))
+        assert direct == expected
+        assert background == (2.0, 5.0)
+
+    await command(entity)
+    assert budget_module.cloud_detail_retry_delays() == (2.0, 5.0)
+
+
+@pytest.mark.parametrize("enabled,failures,attempts,accepted", [
+    (True, 3, 3, False), (False, 3, 4, True), (False, 4, 4, False),
+])
+async def test_entity_command_selects_bounded_detail_retry_policy(
+    monkeypatch, enabled, failures, attempts, accepted
+):
+    confirmation = importlib.import_module(PACKAGE + ".write_confirmation")
+    api = api_module.SemsApi(None, "simulation", "simulation")
+    api._ensure_web_token = lambda **kwargs: True
+    api._ensure_plant_id = lambda: "PLANT"
+    api._build_web_headers = lambda: {}
+    responses = []
+    for index in range(attempts):
+        payload = {"code": "B0001"} if index < failures else {
+            "code": "00000", "data": {"sn": "TEST", "chargeMode": 0}}
+        responses.append(Mock(status_code=200, json=Mock(return_value=payload)))
+    post = Mock(side_effect=responses)
+    waits = Mock()
+    monkeypatch.setattr(api_module.requests, "post", post)
+    monkeypatch.setattr(api, "_wait_detail_retry", waits)
+    entity = SimpleNamespace(coordinator=SimpleNamespace(automatic_fallback=SimpleNamespace(
+        enabled=enabled, paused=False, blocked=False)))
+    hass = SimpleNamespace(async_add_executor_job=asyncio.to_thread)
+
+    @confirmation.confirm_write("chargeMode")
+    async def command(entity):
+        return await budget_module.async_execute(hass, api.get_data_gen2, "TEST")
+
+    try:
+        result = await command(entity)
+        assert (result is not None) is accepted
+        assert post.call_count == attempts
+        assert [call.args[0] for call in waits.call_args_list] == (
+            [2.0, 5.0] if enabled else [2.0, 5.0, 10.0])
+        assert all(call.args[0].endswith("/detail") for call in post.call_args_list)
+    finally:
+        api.close()
+
+
+@pytest.mark.parametrize("interrupt", ["stop", "cancel", "close", "deadline"])
+async def test_extra_ten_second_read_backoff_is_interruptible(monkeypatch, interrupt):
+    confirmation = importlib.import_module(PACKAGE + ".write_confirmation")
+    modes = importlib.import_module(PACKAGE + ".charge_mode_policy")
+    api = api_module.SemsApi(None, "simulation", "simulation")
+    api._ensure_web_token = lambda **kwargs: True
+    api._ensure_plant_id = lambda: "PLANT"
+    api._build_web_headers = lambda: {}
+    post = Mock(return_value=Mock(status_code=200, json=Mock(return_value={"code": "B0001"})))
+    monkeypatch.setattr(api_module.requests, "post", post)
+    loop = asyncio.get_running_loop()
+    waiting = asyncio.Event()
+    original_wait = api._wait_detail_retry
+
+    def wait(seconds):
+        if seconds == 10:
+            loop.call_soon_threadsafe(waiting.set)
+            original_wait(seconds)
+
+    monkeypatch.setattr(api, "_wait_detail_retry", wait)
+    hass = SimpleNamespace(async_add_executor_job=asyncio.to_thread)
+    policy = Policy(SimpleNamespace(stop=AsyncMock(return_value=True)), Store(),
+                    enabled=True, timeout=0.15 if interrupt == "deadline" else 3)
+    entity = SimpleNamespace(coordinator=SimpleNamespace())
+
+    @confirmation.confirm_write("chargeMode")
+    async def command(entity):
+        async def read():
+            return await budget_module.async_execute(hass, api.get_data_gen2, "TEST")
+        if interrupt in ("stop", "deadline"):
+            return await policy.async_setting_write(read)
+        return await read()
+
+    task = asyncio.create_task(command(entity))
+    try:
+        await asyncio.wait_for(waiting.wait(), 1)
+        if interrupt == "stop":
+            await asyncio.wait_for(policy.async_stop(), 1)
+        elif interrupt == "cancel":
+            task.cancel()
+        elif interrupt == "close":
+            await asyncio.wait_for(asyncio.to_thread(api.close), 1)
+        result = (await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), 1))[0]
+        expected = {"stop": modes.RequestSuperseded, "cancel": asyncio.CancelledError,
+                    "close": budget_module.BudgetCancelled, "deadline": modes.ModeVerificationError}
+        assert isinstance(result, expected[interrupt]), result
+        assert post.call_count == 3  # Fourth read and any write were prevented.
+        assert budget_module.cloud_detail_retry_delays() == (2.0, 5.0)
+    finally:
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        api.close()

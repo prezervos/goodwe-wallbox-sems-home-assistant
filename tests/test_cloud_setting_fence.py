@@ -266,7 +266,7 @@ def test_foreign_detail_cannot_confirm_pending_write_through_real_mapper(cloud):
     api.get_data_gen2 = MethodType(module.SemsApi.get_data_gen2, api)
     post.return_value = reply(data={"sn": "OTHER", "chargeMode": 0, "maxEnergy": 10,
                                    "soc": 0, "chargePowerSetted": 11})
-    with pytest.raises(ModeError):
+    with pytest.raises(module.CloudIdentityError):
         api.set_charge_mode_gen2("TEST", 1)
     assert api._pending_mode_edits["TEST"]["max_energy"] == 10
     assert post.call_count == 2

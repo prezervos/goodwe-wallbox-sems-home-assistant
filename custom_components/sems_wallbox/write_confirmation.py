@@ -9,6 +9,8 @@ import time
 
 from homeassistant.core import callback
 
+from .operation_budget import control_read_operation
+
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -311,6 +313,7 @@ def confirm_write(field, *, value=None):
 
     def decorate(function):
         @wraps(function)
+        @control_read_operation
         async def wrapped(entity, *args, **kwargs):
             owner = entity.coordinator
             monitor = getattr(owner, "write_confirmation", None)

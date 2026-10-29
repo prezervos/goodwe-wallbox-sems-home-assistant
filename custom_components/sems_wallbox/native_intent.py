@@ -59,7 +59,7 @@ class LatestIntent:
         """Remember the latest value and return whether execution was deferred.
 
         Args:
-            key: Logical control: charging, mode or power.
+            key: Logical charging, mode, power, minimum-power or Auto start control.
             value: Already validated requested setting.
             operation: Existing async control operation; no transport-specific bypass.
             force: Defer while the caller verifies cloud control availability.
@@ -71,7 +71,7 @@ class LatestIntent:
             raise ConnectionError("Integration is shutting down")
         if not (force or self.blackout or self.pending or self.executing is not None):
             return False
-        if key not in ("charging", "mode", "power"):
+        if key not in ("charging", "mode", "power", "minimum_power", "auto_start"):
             raise ValueError("Unknown deferred control")
         existing = self.pending.get(key)
         if existing is not None and existing.value == value:
@@ -100,7 +100,7 @@ class LatestIntent:
     def _next(self):
         if "charging" in self.pending and self.pending["charging"].value is False:
             return "charging"
-        order = ("mode", "power", "charging") if self.owner.local else ("power", "mode", "charging")
+        order = (("mode", "power") if self.owner.local else ("power", "mode")) + ("minimum_power", "auto_start", "charging")
         return next(key for key in order if key in self.pending)
 
     async def _run(self):
@@ -139,9 +139,9 @@ class LatestIntent:
                         _LOGGER.debug("Deferred operation superseded by newer intent")
                         continue
                     control = getattr(self.owner, "control_fallback", None)
-                    if key == "charging" and request.value is True and control is not None:
+                    if control is not None:
                         try:
-                            if await control.recover_start(exc, request, version):
+                            if await control.recover_control(exc, request, version, key=key):
                                 continue
                         except RequestSuperseded:
                             # Newer choices, especially Stop, own the next dispatch.
@@ -149,7 +149,7 @@ class LatestIntent:
                                 continue
                         except Exception:
                             # Retain recovery failure without hiding a newer Stop.
-                            _LOGGER.exception("Verified TCP Start recovery failed")
+                            _LOGGER.exception("Verified TCP control recovery failed")
                     _LOGGER.exception("Deferred wallbox %s operation failed", key)
                     # Any failed command may have reached the device. Preserve a
                     # newer explicit Stop, but never replay uncertain settings/Start.
