@@ -16,6 +16,9 @@
 - Native configuration/entity tests verify the implemented minimum-power/Auto start
   writers after route recovery; unsupported cloud-only controls must remain errors.
 
+Real-HA setting checks wait for pending/executing intents to finish and assert
+no deferred error; blocking service acceptance alone is not device completion.
+
 Use isolated simulated responses for deterministic retries and actual development
 HA for physical power/Start/Stop checks. Do not equate a successful read, an ACK,
 MQTT connectivity or a configured ceiling with measured charging. Never commit
