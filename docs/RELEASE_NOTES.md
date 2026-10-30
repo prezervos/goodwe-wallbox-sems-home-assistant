@@ -1,3 +1,46 @@
+# 3.0.7b2 — Cloud Stop telemetry recovery
+
+## Fixes
+
+- Avoid transient cloud telemetry outages after Stop when SEMS+ briefly reports
+  unsupported equipment state `workStu=10` before standby (`8`), or equipment and
+  session reports have not yet settled. Retry the complete observation at most
+  twice, after 2 and 5 seconds, within the existing cancellation/deadline scope.
+- Retry **reads only**: never replay Start, Stop or settings, invent a zero-power
+  measurement, or assign an undocumented meaning to state 10. Persistent state
+  errors still fail; identity, timestamp, authentication and HTTP failures do not
+  enter this state-specific retry path.
+- Includes the 3.0.7b1 SEMS telemetry compatibility, independent session counters,
+  bounded B0001 reads and opt-in native TCP control recovery improvements.
+
+## Validation
+
+On our GW11 HCA and account, development Home Assistant cloud-only tests passed:
+three Start/Stop cycles, a five-minute measured charging session, PV priority /
+PV and battery / Fast changes, and configured 4.2 / 5 / 6 kW limits. Measured load
+was approximately 4.2–4.3 / 4.3 / 5.6 kW; configured limits are ceilings, not exact
+delivery targets. Automatic TCP fallback was disabled throughout these tests.
+
+Two additional physical cycles with this fix captured `10 → 8` after both Stops.
+Actual 2/5-second read backoffs recovered without unavailable coordinator samples
+or integration ERROR logs. Software checks cover recovery, exhaustion, unrelated
+failures, cancellation and deadlines.
+
+## Please test
+
+Enable beta versions in HACS, install **3.0.7b2**, then restart Home Assistant.
+When safe, check cloud telemetry, Start/Stop, mode and power changes. If a failure
+persists, attach integration diagnostics and a debug log covering one attempt,
+with HA version, charger model/firmware and transport. Remove secrets before sharing.
+
+These results validate our tested account/model, not every installation; issue
+#30 remains open. Native Socket A TCP remains an alternative for compatible
+original-HCA chargers. HCA G2 Modbus is a separate protocol with unresolved
+current-setpoint/heartbeat limitations. No production installation is updated by
+publishing this beta. Latest stable remains 3.0.6.
+
+---
+
 # 3.0.7b1 — SEMS compatibility and bounded cloud recovery
 
 ## Fixes and behavior

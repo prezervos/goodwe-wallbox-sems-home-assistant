@@ -1094,3 +1094,122 @@ def test_detail_temporary_token_renewal_failure_is_not_a_credential_rejection():
     post.assert_called_once()
     api._ensure_web_token.assert_called_with(renew=True)
     api.close()
+
+
+def _modern_retry_api(states, sessions):
+    """Build independently sequenced equipment and session reports."""
+    api = _make_api()
+    api._legacy_status_retry_at = float("inf")
+    api._ensure_plant_id = MagicMock(return_value="PLANT")
+    api._build_web_headers = MagicMock(return_value={})
+    api._ensure_web_token = MagicMock(return_value=True)
+    api.fetch_last_charge = MagicMock(side_effect=sessions)
+    api.get_data_gen2 = MagicMock(return_value={"sn": "TEST", "chargeMode": 0})
+    api._wait_detail_retry = MagicMock()
+    replies = []
+    for index, state in enumerate(states):
+        reply = _data_response([
+            {"code": "sn", "data": "TEST"},
+            {"code": "deviceType", "data": "ev_charger"},
+            {"code": "workStu", "data": state},
+            {"code": "updateTime", "data": f"2026-10-30 09:00:0{index}"},
+        ])
+        reply.json.return_value["code"] = "00000"
+        replies.append(reply)
+    return api, replies
+
+
+@pytest.mark.parametrize("states,sessions", [
+    (["10", "8"], [{"last_charge_work_status": 8}]),
+    ([None, "8"], [{"last_charge_work_status": 8}]),
+    (["8", "8"], [{"last_charge_work_status": 6, "last_charge_power": 4.2},
+                      {"last_charge_work_status": 8}]),
+    (["10", "10", "8"], [{"last_charge_work_status": 8}]),
+])
+def test_cloud_stop_transition_rereads_without_inventing_idle(states, sessions):
+    api, replies = _modern_retry_api(states, sessions)
+    with patch.object(sems_api_module.requests, "get", side_effect=replies) as get:
+        result = api.fetch_status_observation("TEST")
+    assert get.call_count == len(states)
+    assert [call.args[0] for call in api._wait_detail_retry.call_args_list] == [2, 5][:len(states)-1]
+    assert result["status"] == "standby"
+    assert result["power"] is None
+    assert result["_cloud_session_idle"] is True
+    assert result["lastUpdate"].endswith(str(len(states)-1))
+    api._ensure_web_token.assert_not_called()
+    api.close()
+
+
+@pytest.mark.parametrize("state,session", [
+    ("10", {"last_charge_work_status": 8}),
+    ("8", {"last_charge_work_status": 6, "last_charge_power": 4.2}),
+])
+def test_persistent_cloud_transition_remains_an_error_after_bounded_reads(state, session):
+    api, replies = _modern_retry_api([state]*3, [session]*3)
+    with patch.object(sems_api_module.requests, "get", side_effect=replies) as get:
+        with pytest.raises(ConnectionError):
+            api.fetch_status_observation("TEST")
+    assert get.call_count == 3
+    assert [call.args[0] for call in api._wait_detail_retry.call_args_list] == [2, 5]
+    api.close()
+
+
+@pytest.mark.parametrize("failure", ["identity", "timestamp", "authentication", "http"])
+def test_cloud_transition_retry_does_not_hide_unrelated_failures(failure):
+    api, replies = _modern_retry_api(["8"], [{"last_charge_work_status": 8}])
+    reply = replies[0]
+    if failure in ("identity", "timestamp"):
+        key = "sn" if failure == "identity" else "updateTime"
+        next(row for row in reply.json.return_value["data"] if row["code"] == key)["data"] = "invalid"
+    elif failure == "authentication":
+        reply.status_code = 403
+    else:
+        reply.raise_for_status.side_effect = sems_api_module.requests.HTTPError("server unavailable")
+    with patch.object(sems_api_module.requests, "get", return_value=reply) as get:
+        with pytest.raises((ConnectionError, sems_api_module.requests.HTTPError)):
+            api.fetch_status_observation("TEST")
+    get.assert_called_once()
+    api._wait_detail_retry.assert_not_called()
+    api.close()
+
+
+def test_cloud_transition_cancellation_prevents_another_read():
+    api, replies = _modern_retry_api(["10"], [])
+    api._wait_detail_retry.side_effect = sems_api_module.BudgetCancelled("cancelled fixture")
+    with patch.object(sems_api_module.requests, "get", side_effect=replies) as get:
+        with pytest.raises(sems_api_module.BudgetCancelled):
+            api.fetch_status_observation("TEST")
+    get.assert_called_once()
+    api.close()
+
+
+@pytest.mark.parametrize("interruption", ["deadline", "closed"])
+def test_cloud_transition_real_wait_obeys_deadline_and_close(interruption):
+    from types import SimpleNamespace
+
+    budget_module = importlib.import_module(sems_api_module.__package__ + ".operation_budget")
+    api, replies = _modern_retry_api(["10"], [])
+    api._wait_detail_retry = SemsApi._wait_detail_retry.__get__(api)
+    tokens = []
+    if interruption == "deadline":
+        budget = SimpleNamespace(remaining=MagicMock(side_effect=[2.0, TimeoutError("budget exhausted")]))
+        expected = TimeoutError
+    else:
+        api._detail_retry_cancel.set()
+        expected = sems_api_module.BudgetCancelled
+
+    def reply_before_wait(*args, **kwargs):
+        # Exhaust the existing budget during backoff, after the first HTTP reply.
+        if interruption == "deadline":
+            tokens.append(budget_module.CURRENT_BUDGET.set(budget))
+        return replies[0]
+
+    try:
+        with patch.object(api._request_gate, "request", side_effect=reply_before_wait) as request:
+            with pytest.raises(expected):
+                api.fetch_status_observation("TEST")
+        request.assert_called_once()
+    finally:
+        for token in reversed(tokens):
+            budget_module.CURRENT_BUDGET.reset(token)
+        api.close()

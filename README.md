@@ -9,7 +9,7 @@ Home Assistant custom integration for the **GoodWe Wallbox**.
 
 Stable release: [latest stable](https://github.com/prezervos/goodwe-wallbox-sems-home-assistant/releases/latest).
 
-**3.0.7b1 (beta)** addresses cloud data changes after the SEMS update, adds bounded
+**3.0.7b2 (beta)** also handles transient cloud state after Stop. It addresses cloud data changes after the SEMS update, adds bounded
 `B0001` read recovery and improves opted-in native TCP control fallback. Beta
 availability does not mean GoodWe's cloud command backend is fixed. See
 [release notes](docs/RELEASE_NOTES.md) for validation and known limitations.

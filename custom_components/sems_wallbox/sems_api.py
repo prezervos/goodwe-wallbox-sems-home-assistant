@@ -29,7 +29,7 @@ from .cloud_command import CloudCommandError, CloudIdentityError, CloudSettingEr
 from .cloud_http import SEMS_USER_AGENT
 from .cloud_rate_limit import CloudRateLimitedError, CloudRequestGate
 from .cloud_observation import CloudAuthenticationError, IncompleteCloudReport
-from .cloud_data import equipment_report, modern_status_observation
+from .cloud_data import TransientCloudReport, equipment_report, modern_status_observation
 from .operation_budget import BudgetCancelled, cloud_detail_retry_delays, request_timeout, serialized_request
 
 _LOGGER = logging.getLogger(__name__)
@@ -864,6 +864,31 @@ class SemsApi:
                 # Do not probe the incomplete legacy response on every normal poll.
                 self._legacy_status_retry_at = time.monotonic() + 300
                 _LOGGER.debug("Legacy report lacks a timestamp; using SEMS+ device information")
+        # Equipment and session endpoints may settle at different times after
+        # Stop. Retry reads only; never infer idle or replay the original command.
+        for delay in (2.0, 5.0, None):
+            try:
+                return self._fetch_modern_status_observation(wallbox_sn)
+            except TransientCloudReport:
+                if delay is None:
+                    raise
+                _LOGGER.debug("Cloud state is not yet coherent; rereading in %ss", delay)
+                self._wait_detail_retry(delay)
+        raise ConnectionError("Modern cloud observation unavailable")
+
+    def _fetch_modern_status_observation(self, wallbox_sn):
+        """Read one independently validated equipment/session observation.
+
+        Args:
+            wallbox_sn: Expected charger serial number.
+
+        Returns:
+            Timestamped telemetry without invented idle measurements.
+
+        Raises:
+            TransientCloudReport: State is unsupported or the sources disagree.
+            ConnectionError: Identity, authentication or report validation fails.
+        """
         plant = self._ensure_plant_id()
         url = self._eu_url(f"sems-plant/api/equipments/{wallbox_sn}/information")
         for attempt in range(2):

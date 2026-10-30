@@ -32,9 +32,22 @@ the charger was already idle. Production ownership, automation enablement, Fast
 and the original 4.2 kW request were restored. No production code was deployed.
 Raw private logs and fault-injection helpers are not included in the repository.
 
-Live cloud-only charging-limit validation under the current backend failure still
-needs independent evidence. Original-HCA Socket A results do not validate HCA G2
-Modbus current-setpoint/heartbeat behavior or every other original-HCA model.
+On October 30, cloud-only development-HA checks on GW11 HCA confirmed three
+Start/Stop cycles and a five-minute measured charging session, with automatic
+TCP fallback disabled. Configured 4.2/5/6 kW limits yielded approximately
+4.2–4.3/4.3/5.6 kW respectively; PV priority, PV and battery and Fast were read
+back with advancing equipment timestamps. This does not certify other accounts.
+
+Each initial Stop exposed a brief unverified modern equipment state before standby.
+A subsequent physical capture identified `workStu=10` followed by `8`. The fixed
+version used actual 2- and 5-second read backoffs and recovered without making
+the coordinator unavailable; it did not map `10` to an invented device state.
+The 3.0.7b2 fix retries only the independent observation, after 2 and 5 seconds;
+it preserves errors on persistent disagreement and never maps an unverified
+status to idle or replays a command. Regression tests cover recovery, exhaustion,
+identity/authentication/timestamp failures, cancellation and the existing budget.
+Original-HCA results do not validate HCA G2 Modbus current-setpoint/heartbeat
+behavior or every other original-HCA model.
 
 
 ## Reproducible software validation

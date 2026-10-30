@@ -4,6 +4,10 @@ import math
 from datetime import datetime
 
 
+class TransientCloudReport(ConnectionError):
+    """Equipment and session state cannot yet form a verified observation."""
+
+
 def active_session_available(values):
     """Check for an active session with usable measured power, not completed history.
 
@@ -76,7 +80,7 @@ def equipment_report(serial, rows):
         raise ConnectionError("Invalid SEMS+ device report timestamp") from error
     status = values.get("workStu")
     if type(status) not in (int, str) or status not in ("0", "6", "8", 0, 6, 8):
-        raise ConnectionError("Unverified SEMS+ station status")
+        raise TransientCloudReport("Unverified SEMS+ station status")
     return values
 
 
@@ -112,7 +116,7 @@ def modern_status_observation(serial, equipment, session, settings):
         return result
     work_status = session.get("last_charge_work_status") if isinstance(session, dict) else None
     if type(work_status) is not int or work_status != state:
-        raise ConnectionError("Modern cloud station and session reports disagree")
+        raise TransientCloudReport("Modern cloud station and session reports disagree")
     if state == 6 and not active_session_available(session):
         raise ConnectionError("Modern cloud session lacks valid measured power")
     result.update(session)

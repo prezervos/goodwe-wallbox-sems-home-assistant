@@ -1,5 +1,21 @@
 # Development backlog and validation history
 
+## 3.0.7b2 beta scope: cloud Stop transition reads
+
+- A physical Stop capture showed equipment `workStu=10` before `8` (standby).
+  Do not assign a semantic meaning to `10` without protocol evidence.
+- Modern equipment state can briefly be unsupported or disagree with the session
+  endpoint after Stop. Reread the complete observation at most twice, after 2 and
+  5 seconds, within the existing operation deadline/cancellation scope.
+- Retry only reads. Do not repeat Start/Stop/settings or invent an idle state,
+  measured zero, timestamp or interpretation of an unsupported status code.
+- Persistent inconsistencies still fail. Authentication, identity, timestamp and
+  HTTP failures do not enter this state-specific retry path.
+- October 30 cloud-only testing confirmed three physical Start/Stop cycles,
+  three mode selections and configured limits 4.2/5/6 kW for this account/model.
+  Reporter-specific #30 failures still need diagnostics; these results are not a
+  claim that the GoodWe backend works for every account.
+
 ## 3.0.7b1 beta scope
 
 Packaged for testing: modern timestamped cloud observations, independent active-
