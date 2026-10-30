@@ -7,10 +7,12 @@
 
 Home Assistant custom integration for the **GoodWe Wallbox**.
 
-**3.0.4** improves cloud and Modbus control feedback, reconciles uncertain cloud
-responses, and fixes state handling, concurrent settings and native endpoint
-cleanup after an independent audit. Entity identities and saved preferences are
-preserved. See [release notes](docs/RELEASE_NOTES.md) for validation and known limits.
+Stable release: [latest stable](https://github.com/prezervos/goodwe-wallbox-sems-home-assistant/releases/latest).
+
+**3.0.7b2 (beta)** also handles transient cloud state after Stop. It addresses cloud data changes after the SEMS update, adds bounded
+`B0001` read recovery and improves opted-in native TCP control fallback. Beta
+availability does not mean GoodWe's cloud command backend is fixed. See
+[release notes](docs/RELEASE_NOTES.md) for validation and known limitations.
 
 Supports cloud, local Modbus and optional native Socket A TCP connections:
 
@@ -312,6 +314,22 @@ do not treat unavailable measurements as zero.
 
 ## Changelog
 
+### 3.0.7b1 (beta)
+
+Modern cloud report-time fallback, independent active-session telemetry, bounded
+B0001 configuration-read retries and verified native control recovery. Correct
+automatic phase-switching labels; preserve entity identities and normal polling.
+See [release notes](docs/RELEASE_NOTES.md) for what to test and hardware limits.
+
+### 3.0.6
+
+Reliable cloud controls, uncertain-write readback and verified original-HCA native
+TCP recovery; supervised Starting display and compatible pymodbus upgrades.
+
+### 3.0.5
+
+Generation/capability-aware cloud entities and clearer uncertain-command diagnostics.
+
 ### 3.0.4
 
 Bounded control readback, reliable Start/Stop presentation, uncertain cloud-command
@@ -475,9 +493,10 @@ This requires a cloud account and defaults to off.
 Normal automatic takeover requires at least three failed observations and 90 seconds
 from the first detected failure. Frozen but successful cloud reports have a separate
 freshness timeout, so this is not a universal 90-second outage guarantee. A rejected
-login requests reauthentication rather than triggering takeover. An unsent Start/Stop
-can use the separately verified control-failure fallback when opted in; uncertain
-commands are not blindly replayed.
+login requests reauthentication rather than triggering takeover. Start/Stop, power, mode and supported local settings can use the separately
+verified control-failure fallback when opted in. A failed configuration read can
+trigger this path even while independent session telemetry remains available.
+Uncertain commands are not blindly replayed.
 
 After 30 minutes on automatic TCP, an idle wallbox can attempt cloud return if the
 preliminary reachability/session check passes. Fresh wallbox data must then arrive
@@ -499,7 +518,7 @@ this integration does not calculate solar surplus or implement a PV regulator.
 Physical validation covers GW11 HCA Start/Stop and power changes in all modes.
 GW7 HCA/ACA and GW22 HCA have model-range/protocol tests, not equivalent hardware
 coverage. Automatic fallback is opt-in and requires cloud credentials. Bluetooth, history
-import and decoded fault meanings are not implemented in this path. Auxiliary settings are exposed when device capabilities and reported values support them. Cloud-only settings become unavailable in TCP; verified native minimum-power control is the exception. The existing session-energy sensor also reads verified HCA TCP telemetry in kWh; it resets to zero after Stop, as reported by the device. Cloud and TCP use their own observations, never an estimated integral or lifetime-counter difference.
+import and decoded fault meanings are not implemented in this path. Auxiliary settings are exposed when device capabilities and reported values support them. Cloud-only settings become unavailable in TCP; verified original-HCA minimum-power and Auto start controls remain supported. The existing session-energy sensor also reads verified HCA TCP telemetry in kWh; it resets to zero after Stop, as reported by the device. Cloud and TCP use their own observations, never an estimated integral or lifetime-counter difference.
 
 See [native TCP behavior and architecture](docs/NATIVE_TCP.md) for configuration,
 recovery, supervision limits and protocol details, and [development validation](docs/DEVELOPMENT.md)
@@ -539,15 +558,15 @@ Delivery timing depends on GoodWe and is not guaranteed for every state change.
 See [validation and known limitations](docs/VALIDATION.md) for measured limitations.
 
 
-### Recovery after an uncertain cloud Start
+### Recovery after cloud control failures
 
 With automatic native TCP fallback enabled, a cloud Start returning GoodWe
-`R0305`, `C0001`, or an explicitly uncertain transport error is reconciled for 15 seconds using the existing readback
+`R0305`, `C0001`, `B0001`, or an explicitly uncertain transport error is reconciled for 15 seconds using the existing readback
 scheduler. Observed charging keeps the cloud route. Otherwise the integration
 switches to TCP, requests fresh device status, and sends one local Start only
 when the wallbox is independently confirmed idle, connected and fault-free.
 If it is already charging, no second Start is sent. Unknown state, a failed
-handover, authentication/configuration errors, disabled fallback or a newer
+handover, authentication/identity errors, invalid input, disabled fallback or a newer
 user choice prevent the recovery Start. A newer Stop takes priority, including
 during handover. The existing bounded intent lifetime still applies; reload
 never replays a pending Start. A failed local attempt is not retried.
@@ -555,3 +574,34 @@ never replays a pending Start. A failed local attempt is not retried.
 See [cloud command troubleshooting](docs/CLOUD_COMMAND_TROUBLESHOOTING.md) for
 R0305 uncertainty, compound-setting readback guards, endpoint investigation and
 the separate HCA G2 Modbus/PV limitations.
+
+A Stop with an uncertain acknowledgement first checks actual TCP state and is not
+resent if the device is already stopped. Configuration loss **before any write**
+can also recover through TCP. A readback failure after a possible configuration
+write does not authorize replay. Extended settings use TCP only where that writer
+has been verified; unsupported cloud-only features are not silently substituted.
+
+### Cloud telemetry and B0001 read retries
+
+If legacy v3 telemetry no longer includes a device timestamp, native-capable cloud
+entries can use validated SEMS+ equipment report time and independent session
+measurements. Cloud-only polling also keeps usable active-session measurements
+when configuration detail fails. Missing configuration, measurements and connection
+state remain unknown; successful HTTP receipt is not a new device timestamp.
+
+| Read context | Maximum attempts | B0001 backoff |
+| --- | --- | --- |
+| User command with usable automatic native TCP fallback | 3 | 2, 5 seconds |
+| User command without usable automatic TCP fallback | 4 | 2, 5, 10 seconds |
+| Ordinary polling / separately scheduled readback | 3 | 2, 5 seconds |
+
+The existing total deadline and cancellation can stop retries earlier. Only reads
+are retried; Start/Stop and setting writes are never blindly replayed. Background
+polling intervals remain unchanged. These paths share the existing cloud session.
+
+For a supported original HCA, native Socket A TCP is recommended when reliable
+local control is needed: it has been more reliable than the cloud in our physical
+tests and avoids GoodWe backend dependency. This is model-specific, not a claim
+that every charger or every cloud-only setting supports native TCP. HCA G2
+**Modbus TCP is a different path**; its external-controller/heartbeat requirements
+remain unresolved here. Do not enable G2 Modbus solely to apply this recommendation.

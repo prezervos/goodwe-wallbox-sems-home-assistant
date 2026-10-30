@@ -259,6 +259,29 @@ checks. Failed transitions back off five minutes. Takeover never sends Start or
 changes mode/power; the usual verified preparation applies to the next explicit
 Start. Manual requests and shutdown supersede queued automatic transitions.
 
+### Command preparation and uncertain outcomes
+
+B0001 configuration reads use bounded retry before route recovery. With usable
+automatic native fallback there are up to three attempts (2/5-second backoff).
+Without that route, user-command reads allow four attempts (2/5/10); ordinary
+polling/readback stays at three. Command scopes do not leak to background tasks.
+Existing deadlines, Stop supersession, cancellation and close can stop retry sooner.
+
+Power/mode and verified original-HCA minimum-power/Auto start requests use the
+same control preflight as Start/Stop. Configuration may fail while independent
+session telemetry is healthy; this is still a control-route failure. Only a typed
+preparation failure before any device write permits unsent intent to proceed over
+TCP. Preserve the latest choice per logical setting, with Stop first.
+
+After an uncertain Start acknowledgement, observe cloud activity for 15 seconds
+before independently checking TCP. An uncertain Stop goes directly to a TCP state
+check to conserve its remaining request deadline; no Stop is resent if real state
+already proves stopped. An unconfirmed configuration write is not replayed after
+readback failure. Wrong identity, rejected credentials, invalid values, manual
+selection, shutdown and stale/unknown local Start state remain fenced.
+
+### Returning to cloud
+
 After successful fallback, the first cloud-return trial is due after 30 minutes.
 Trials require confirmed idle local measurements and no pending Start/PV wait.
 The check repeats after acquiring the control lock. Socket A is exclusive: API

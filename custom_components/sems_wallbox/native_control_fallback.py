@@ -1,4 +1,4 @@
-"""Verify cloud control routing and reconcile uncertain Start before TCP recovery."""
+"""Verify cloud control routing without replaying uncertain configuration writes."""
 
 from __future__ import annotations
 
@@ -6,9 +6,9 @@ import asyncio
 import logging
 import time
 
-from .charge_mode_policy import RequestSuperseded
+from .charge_mode_policy import ModeVerificationError, RequestSuperseded
 from .cloud_observation import CloudAuthenticationError
-from .cloud_command import CloudCommandError
+from .cloud_command import CloudCommandError, CloudIdentityError, CloudPreparationUnavailable
 from .write_confirmation import matches
 from .operation_budget import CURRENT_BUDGET, OperationBudget, async_execute
 
@@ -18,7 +18,7 @@ _START_RECONCILIATION = 15.0
 
 
 class ControlFallback:
-    """Verify the route; recover Start only after independent local state checks.
+    """Verify control routing and recover only after independent local state checks.
 
     Args:
         owner: Native coordinator owning the existing intent queue and write lock.
@@ -31,8 +31,17 @@ class ControlFallback:
         self.closed = False
         self.error = None
 
-    def submit(self, value, operation):
-        """Defer an opted-in cloud charging request until its route is verified."""
+    def submit(self, value, operation, *, key="charging"):
+        """Verify the route for a control with an implemented TCP operation.
+
+        Args:
+            value: Validated latest user choice.
+            operation: Existing operation selecting its transport at execution time.
+            key: Supported logical control, coalesced by LatestIntent.
+
+        Returns:
+            Whether the request was retained for route verification.
+        """
         owner = self.owner
         fallback = owner.automatic_fallback
         if (self.closed or owner._closed or owner.local or owner.cloud is None
@@ -43,7 +52,7 @@ class ControlFallback:
         self.preparing = True
         self.error = None
         try:
-            owner.pending_intent.submit("charging", value, operation, force=True)
+            owner.pending_intent.submit(key, value, operation, force=True)
             self.task = owner.hass.async_create_background_task(
                 self._prepare(owner.routing_epoch), "GoodWe cloud control preflight"
             )
@@ -80,15 +89,19 @@ class ControlFallback:
                 finally:
                     budget.cancelled.set()
                     CURRENT_BUDGET.reset(token)
-                healthy = isinstance(data, dict) and data.get("sn") == owner.serial
+                healthy = data is not None
             except CloudAuthenticationError:
                 fallback.blocked = True
                 fallback.reason = "authentication_failed"
                 owner.entry.async_start_reauth(owner.hass)
                 raise
+            except CloudIdentityError:
+                raise
             except (OSError, ValueError, RuntimeError):
                 healthy = False
             self._check(epoch)
+            if healthy and (not isinstance(data, dict) or data.get("sn") != owner.serial):
+                raise ModeVerificationError("Missing or mismatched cloud configuration")
             if healthy:
                 return
             if time.monotonic() < fallback.next_attempt:
@@ -136,25 +149,33 @@ class ControlFallback:
             self.preparing = False
             owner.async_update_listeners()
 
-    async def recover_start(self, error, request, version):
-        """Reconcile an uncertain cloud Start before a single verified TCP attempt.
+    async def recover_control(self, error, request, version, *, key="charging"):
+        """Recover an unsent preparation, or reconcile an uncertain charging command.
 
         Args:
             error: Original service failure, possibly wrapped for HA translation.
-            request: The still-current deferred charging request.
+            request: The still-current deferred control request.
             version: Latest-intent generation captured before cloud dispatch.
+            key: Logical control with a verified native TCP implementation.
 
         Returns:
-            True if charging was observed or a verified local attempt completed.
+            True if the requested state was observed or a verified TCP operation completed.
             False if this failure is ineligible for automatic transport recovery.
         """
         cause = error
-        while cause is not None and not isinstance(cause, CloudCommandError):
+        while cause is not None and not isinstance(cause, (CloudCommandError, CloudPreparationUnavailable)):
             cause = cause.__cause__
         owner = self.owner
         fallback = owner.automatic_fallback
-        if (not isinstance(cause, CloudCommandError) or cause.action != "start"
-                or not cause.cloud_command_uncertain or cause.code not in ("R0305", "C0001", "transport_error")
+        unsent = isinstance(cause, CloudPreparationUnavailable)
+        action = "start" if request.value is True else "stop" if request.value is False else None
+        uncertain = (
+            key == "charging" and isinstance(cause, CloudCommandError)
+            and cause.cloud_command_uncertain and cause.action == action
+            and cause.code in ("R0305", "C0001", "transport_error", "B0001")
+        )
+        if (key not in ("charging", "mode", "power", "minimum_power", "auto_start")
+                or not (unsent or uncertain)
                 or owner.local or not fallback.enabled or fallback.paused or fallback.blocked):
             return False
         epoch = owner.routing_epoch
@@ -167,16 +188,17 @@ class ControlFallback:
                     or fallback.paused or fallback.blocked
                     or pending.batch_deadline is None
                     or time.monotonic() >= pending.batch_deadline):
-                raise RequestSuperseded("Cloud Start recovery was superseded")
+                raise RequestSuperseded("Cloud control recovery was superseded")
 
         check()
         # Reuse the existing readback scheduler instead of starting parallel HTTP
-        # polling. Observed charging cancels recovery even if its origin is unknown.
-        deadline = time.monotonic() + _START_RECONCILIATION
+        # polling. Stop proceeds directly to an independent TCP read so a long
+        # cloud observation wait cannot consume its remaining handover budget.
+        deadline = time.monotonic() + (0 if unsent or request.value is False else _START_RECONCILIATION)
         while time.monotonic() < deadline:
             check()
             values = (owner.data or {}).get(owner.serial, {})
-            if owner.last_update_success and matches("charging", True, values):
+            if owner.last_update_success and matches("charging", request.value, values):
                 return True
             await asyncio.sleep(0.2)
         check()
@@ -189,19 +211,28 @@ class ControlFallback:
             await owner._set_local(True)
             await owner.connection_intent.async_automatic(True)
 
-        _LOGGER.warning("Cloud Start was not confirmed; verifying native TCP before recovery")
+        _LOGGER.warning("Cloud control unavailable; verifying native TCP before recovery")
         await owner.charge_mode_policy.async_setting_write(handover)
         epoch = owner.routing_epoch
         check()
         await owner.async_refresh()
         check()
         if not owner.local or not owner.last_update_success or not owner.transport.available:
-            raise ConnectionError("TCP Start recovery could not verify the device")
+            raise ConnectionError("TCP control recovery could not verify the device")
         fallback.reason = "cloud_control_unavailable"
         fallback.trial_deadline = None
         fallback.next_attempt = time.monotonic() + fallback.return_delay
         status = await owner.transport.async_command("status")
         check()
+        if key != "charging":
+            # Only a typed preparation failure can reach this branch; no cloud
+            # setting write was attempted. The normal TCP operation revalidates it.
+            await request.operation()
+            return True
+        if request.value is False:
+            if not status.stopped:
+                await request.operation()
+            return True
         if status.charging:
             return True
         # Owner-confirmed original HCA cable cycles identify idle state 0 with

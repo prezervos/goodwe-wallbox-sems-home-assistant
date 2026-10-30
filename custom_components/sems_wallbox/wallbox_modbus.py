@@ -332,13 +332,19 @@ class WallboxModbusClient:
             raise ValueError("Household breaker current must be a whole number from 0 to 2000 A")
         return self._write(10026, int(amps))
 
-    def write_phase_switch(self, single_phase: bool) -> bool:
-        """Enable/disable single-phase mode. Reg 10023: 1=single-phase, 0=three-phase.
+    def write_phase_switch(self, enabled: bool) -> bool:
+        """Enable automatic single/three-phase switching, register 10023.
 
-        Only meaningful for three-phase (11/22 kW) wallboxes.
-        Enabling single-phase allows charging from 1.4 kW instead of the 4.2 kW minimum.
+        This enables firmware-managed phase selection; it does not select the
+        active phase count or change the model's configured power-limit range.
+
+        Args:
+            enabled: Whether automatic phase switching is enabled.
+
+        Returns:
+            Whether the register write was acknowledged.
         """
-        return self._write(10023, 1 if single_phase else 0)
+        return self._write(10023, 1 if enabled else 0)
 
     def write_max_charge_capacity(self, kwh: float) -> bool:
         """Set max charge capacity per session (energy limit) in kWh. Reg 10027, SF=10."""

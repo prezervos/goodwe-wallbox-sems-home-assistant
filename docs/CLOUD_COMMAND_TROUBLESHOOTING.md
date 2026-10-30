@@ -100,3 +100,87 @@ readback confirmed both modes, 4.3 kW charging and subsequent zero power. SEMS+
 detail lagged and did not independently establish actual charging. An initial
 Stop after handover returned C0001; intermittent failures remain possible.
 Production was restored to manual TCP, Fast, 4.2 kW and zero power.
+
+## Intermittent detail failures and partial session data (#30)
+
+The SEMS+ detail endpoint can return business code `B0001` with HTTP 200 even
+while current-session reads succeed. Detail reads retry at most twice after
+2 and 5 seconds, within the shared request gate and operation budget. Closing
+or cancelling the operation stops retrying. This does not replay writes or
+renew the token merely because a server-side execution error occurred.
+
+For cloud-only updates, an active `getLastCharge` session with usable measured
+power can supply partial telemetry after detail failure. Configuration editors
+remain unavailable, and old settings, cable state and device report timestamps
+are not carried into that observation. Explicit zero measured power remains
+zero; missing power remains unknown. Completed session history alone does not
+keep the integration available during a detail outage. A valid detail read
+restores configuration availability.
+
+This partial source does not replace the independent timestamped observations
+required by the combined native cloud/TCP route. It cannot prove a fresh device
+report for handover or command confirmation, and a successful MQTT connection
+alone does not establish telemetry coverage.
+
+## Modern device report timestamps (#30)
+
+When a matching legacy v3 report no longer supplies `lastUpdate`, the client
+uses the current SEMS+ `equipments/{sn}/information` endpoint. Identity/type,
+`workStu` and `updateTime` are validated. This is a server-supplied device report
+time, not the time at which HA receives the HTTP response. The incomplete v3
+source is re-probed after five minutes without a parallel login.
+
+Physical HP840 observation found the information timestamp frozen while Socket A
+was on TCP, then advancing every 30 seconds after cloud reconnection. Session
+state and `pevChar` come independently from `getLastCharge`; configuration comes
+from the detail endpoint when available. Contradictory station/session states
+are rejected. The source label keeps command readback from comparing report
+advances across legacy and modern sources.
+
+Measured active power remains measured; absent idle power stays unknown. A
+coherent explicit station/session idle state can support preparation and Stop
+confirmation without synthesizing zero watts, but Stop confirmation still needs
+a newer report. Existing stale/future/report-after-handover checks remain in
+force. This is separate from the session-only cloud coordinator fallback above.
+The timezone interpretation is the configured HA timezone, as for naive v3 times.
+
+A short development-runtime test observed standby, charging with 10.7 kW even
+while detail returned B0001, and a newer standby report after cloud Stop. This
+standalone API test does not establish power-limit control correctness. Native
+TCP cleanup must confirm the final zero load. No MQTT telemetry arrived in the
+earlier session test; MQTT is not claimed as a replacement source.
+
+## Configuration-read outages and TCP control fallback
+
+With native TCP and automatic fallback enabled, core controls verify cloud
+configuration before dispatch. Exhausted B0001 read retries may switch the route
+to TCP even when independent cloud telemetry is still healthy. If configuration
+fails after preflight, only a typed failure from preparation before any device
+write permits executing that request over TCP. Readback failure after a possible
+write does not authorize replay. Authentication rejection, invalid response identity
+and invalid user values do not authorize transport takeover.
+
+The same route verification applies to original-HCA minimum-power and Auto start
+switches with verified TCP implementations. Model, idle-state and schedule checks
+still apply. Other extended cloud settings remain cloud-only and report an error
+when unavailable. This is native Socket A fallback, not HCA G2 Modbus recovery.
+
+Only the latest choice for each supported control is retained during handover.
+Stop takes priority; reload, expiry and shutdown discard deferred requests. A
+B0001 returned by a charging command is not proof that it was never applied:
+read-only reconciliation and fresh TCP status precede any local attempt.
+
+### B0001 retry policy for command preparation
+
+| Read context | Maximum attempts | Backoff between B0001 attempts |
+| --- | --- | --- |
+| User command with usable automatic TCP fallback | 3 | 2, 5 seconds |
+| User command without usable automatic TCP fallback | 4 | 2, 5, 10 seconds |
+| Ordinary polling or separately scheduled readback | 3 | 2, 5 seconds |
+
+The extra attempt applies only to configuration reads inside the task executing
+an entity command. A paused/blocked TCP fallback is not a usable recovery route.
+Four attempts mean up to 17 seconds of backoff plus HTTP response time; the
+existing total operation deadline can end preparation earlier. A newer Stop,
+cancellation or client shutdown prevents further retries. Background tasks do not
+inherit this longer policy, and a failed write is never blindly repeated.

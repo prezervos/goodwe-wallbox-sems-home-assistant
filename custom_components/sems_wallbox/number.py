@@ -23,6 +23,7 @@ from .operation_budget import async_execute
 from .const import DOMAIN, CONN_TYPE_MODBUS
 from .charge_mode_policy import mode_setting_write, prepare_fast_power
 from .cloud_capabilities import control_support, remove_unsupported, unsupported_ids
+from .cloud_data import configuration_available
 from .coordinator import SemsUpdateCoordinator
 from .wallbox_modbus import BREAKER_CURRENT_MIN, BREAKER_CURRENT_MAX
 from .cloud_current_limit import (
@@ -226,7 +227,7 @@ class SemsNumber(CoordinatorEntity, NumberEntity):
     @property
     def available(self) -> bool:
         """Allow preparing a Fast limit while a supported PV mode is selected."""
-        if not self.coordinator.last_update_success:
+        if not configuration_available(self.coordinator, self.sn):
             return False
         data = self.coordinator.data.get(self.sn, {}) or {}
         return type(data.get("chargeMode")) is int and data["chargeMode"] in (0, 1, 2)
@@ -374,7 +375,7 @@ class SemsOutputPowerLimitNumber(CoordinatorEntity, NumberEntity):
 
     @property
     def available(self) -> bool:
-        return self.coordinator.last_update_success
+        return configuration_available(self.coordinator, self.sn)
 
     @property
     def native_max_value(self) -> float:
@@ -460,7 +461,7 @@ class SemsCurrentLimitNumber(CoordinatorEntity, NumberEntity):
 
     @property
     def available(self) -> bool:
-        return self.coordinator.last_update_success and current_writable(self.native_value, self.range_metadata)
+        return configuration_available(self.coordinator, self.sn) and current_writable(self.native_value, self.range_metadata)
 
     @property
     def native_value(self) -> float | None:
@@ -570,7 +571,7 @@ class _SemsModeParamNumber(CoordinatorEntity, NumberEntity):
 
     @property
     def available(self) -> bool:
-        if not self.coordinator.last_update_success:
+        if not configuration_available(self.coordinator, self.sn):
             return False
         data = self.coordinator.data.get(self.sn, {}) or {}
         return type(data.get("chargeMode")) is int and data["chargeMode"] in self._available_modes

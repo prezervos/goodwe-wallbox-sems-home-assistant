@@ -510,7 +510,7 @@
         "name": "Dynamisches Lastmanagement"
       },
       "phase_switch": {
-        "name": "Phasenumschaltung"
+        "name": "Automatische Phasenumschaltung"
       },
       "modbus_start_charging": {
         "name": "Laden"
@@ -528,7 +528,7 @@
         "name": "EMS-Minimalleistungsmodus"
       },
       "modbus_phase_switch": {
-        "name": "Phasenumschaltung"
+        "name": "Automatische Phasenumschaltung"
       },
       "native_connection": {
         "name": "Lokale TCP-Verbindung"

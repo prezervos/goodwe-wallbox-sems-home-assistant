@@ -1,4 +1,50 @@
-# Development backlog
+# Development backlog and validation history
+
+## 3.0.7b2 beta scope: cloud Stop transition reads
+
+- A physical Stop capture showed equipment `workStu=10` before `8` (standby).
+  Do not assign a semantic meaning to `10` without protocol evidence.
+- Modern equipment state can briefly be unsupported or disagree with the session
+  endpoint after Stop. Reread the complete observation at most twice, after 2 and
+  5 seconds, within the existing operation deadline/cancellation scope.
+- Retry only reads. Do not repeat Start/Stop/settings or invent an idle state,
+  measured zero, timestamp or interpretation of an unsupported status code.
+- Persistent inconsistencies still fail. Authentication, identity, timestamp and
+  HTTP failures do not enter this state-specific retry path.
+- October 30 cloud-only testing confirmed three physical Start/Stop cycles,
+  three mode selections and configured limits 4.2/5/6 kW for this account/model.
+  Reporter-specific #30 failures still need diagnostics; these results are not a
+  claim that the GoodWe backend works for every account.
+
+## 3.0.7b1 beta scope
+
+Packaged for testing: modern timestamped cloud observations, independent active-
+session telemetry, bounded B0001 detail retries, longer command reads without a
+usable automatic TCP route, safe pre-dispatch control recovery and corrected
+phase-switching labels. See [current release notes](RELEASE_NOTES.md) and
+[cloud troubleshooting](CLOUD_COMMAND_TROUBLESHOOTING.md) for behavior and limits.
+
+## Remaining validation and investigation
+
+- Obtain #30 reporter confirmation on the beta, with redacted diagnostics when
+  needed. A local test does not establish compatibility for every account/model.
+- Live GoodWe cloud commands remain intermittent. Verify cloud-only physical
+  charging limits independently when the backend provides consistent configuration;
+  native fallback validation is not proof of successful cloud-only operation.
+- HCA G2 Modbus/EMS setpoint and heartbeat support needs verified register details
+  and compatible hardware validation (#28/#16). Do not infer addresses or enable
+  an unverified heartbeat. Original-HCA Socket A is a separate transport.
+- Native hardware coverage remains model-specific; GW7/ACA/GW22 protocol/range
+  tests do not substitute for physical compatibility testing.
+- Keep the remaining historical hardware questions below as investigation evidence;
+  requested-versus-measured load differences confirmed by the owner are normal
+  for this installation, not a newly introduced integration defect.
+
+## Historical development and validation notes
+
+The sections below preserve earlier experiments, including their then-current
+"not released" status. Current release status and validation limits are stated
+above and in RELEASE_NOTES.md; historical statements are not pending release tasks.
 
 ## 3.0.6b2: uncertain cloud settings and verified idle recovery (#28)
 

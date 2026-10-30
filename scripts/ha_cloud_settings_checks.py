@@ -13,7 +13,7 @@ async def check_cloud_settings(hass, owner, cloud, entity, service, device):
         owner: Integration coordinator under test.
         cloud: In-memory cloud client; no remote I/O.
         entity: Resolve registered synthetic entity IDs by unique-ID suffix.
-        service: Invoke a real HA service with blocking completion.
+        service: Invoke a real HA service; acceptance can defer the device operation.
         device: Synthetic device shared with the loopback transport.
     """
     settings = owner.cloud_settings
@@ -23,6 +23,15 @@ async def check_cloud_settings(hass, owner, cloud, entity, service, device):
     async def settle():
         async with asyncio.timeout(5):
             await hass.async_block_till_done()
+
+    async def settle_controls():
+        # A blocking HA service acknowledges deferred intent, not device completion.
+        # Keep the old settings read held while verifying the real command finishes.
+        async with asyncio.timeout(5):
+            while (owner.control_fallback.preparing or owner.pending_intent.pending
+                   or owner.pending_intent.executing is not None):
+                await asyncio.sleep(0.01)
+        assert owner.pending_intent.error is None, owner.pending_intent.diagnostics()
 
     def reported():
         return hass.states.get(limit_id).state
@@ -50,6 +59,7 @@ async def check_cloud_settings(hass, owner, cloud, entity, service, device):
                 while not entered.is_set():
                     await asyncio.sleep(0.01)
             await service("number", "set_value", power_id, value=6)
+            await settle_controls()
             assert owner.charge_mode_policy.desired_power == 6
             assert device.limit == 60
             assert cloud.fetch_status_observation(owner.serial)["set_charge_power"] == 4.2
@@ -77,6 +87,7 @@ async def check_cloud_settings(hass, owner, cloud, entity, service, device):
         await settle()
         assert float(reported()) == 6
         await service("number", "set_value", power_id, value=4.2)
+        await settle_controls()
         await settle()
         assert float(reported()) == 4.2
         assert device.state == 0 and device.power == 0

@@ -510,7 +510,7 @@
         "name": "Gestión de carga dinámica"
       },
       "phase_switch": {
-        "name": "Cambio de fase"
+        "name": "Cambio automático de fases"
       },
       "modbus_start_charging": {
         "name": "Cargando"
@@ -528,7 +528,7 @@
         "name": "Modo de potencia minima EMS"
       },
       "modbus_phase_switch": {
-        "name": "Cambio de fase"
+        "name": "Cambio automático de fases"
       },
       "native_connection": {
         "name": "Conexión TCP local"

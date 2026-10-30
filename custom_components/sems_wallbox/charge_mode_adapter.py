@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 
 from .charge_mode_policy import ModeObservation, ModeVerificationError
 from .observed_state import charging_active
+from .cloud_command import CloudConfigurationUnavailable
 
 
 def _number(value):
@@ -46,6 +47,26 @@ def _marker(value):
         return None
 
 
+def _modern_idle_report(data):
+    """Recognize coherent explicit idle evidence without a synthetic power value."""
+    return (
+        data.get("observation_source") == "semsplus_equipment"
+        and data.get("_cloud_session_idle") is True
+        and type(data.get("last_charge_work_status")) is int
+        and data["last_charge_work_status"] == 8
+        and data.get("status") == "standby"
+        and data.get("power") is None
+    )
+
+
+def _observation_marker(data):
+    """Do not compare advancing timestamps from different cloud report sources."""
+    marker = _marker(data.get("lastUpdate"))
+    if marker is not None and data.get("observation_source") == "semsplus_equipment":
+        return "equipment:" + marker.split(":", 1)[1]
+    return marker
+
+
 class ModeTransportAdapter:
     """Read transport data directly, bypassing optimistic HA entity state."""
 
@@ -69,6 +90,8 @@ class ModeTransportAdapter:
             data = await async_execute(self.hass, reader, self.serial)
         if not isinstance(data, dict) or data.get("sn") != self.serial:
             raise ModeVerificationError("Missing or mismatched device identity")
+        if not self.modbus and data.get("_cloud_detail_available") is False:
+            raise CloudConfigurationUnavailable("Cloud configuration is temporarily unavailable")
         mode = (
             data.get("chargeMode")
             if self.modbus
@@ -79,7 +102,7 @@ class ModeTransportAdapter:
         status = str(data.get("status", "")).lower()
         if "offline" in status:
             raise ModeVerificationError("Wallbox is offline")
-        marker = None if self.modbus else _marker(data.get("lastUpdate"))
+        marker = None if self.modbus else _observation_marker(data)
         if not self.modbus and marker is None:
             raise ModeVerificationError(
                 "Cloud report has no usable freshness timestamp"
@@ -105,9 +128,12 @@ class ModeTransportAdapter:
             # SEMS v3 returns startStatus=True even for verified Waiting/0 kW.
             # It is not a charging observation on this endpoint.
             measured_power = _number(data.get("power"))
-            if measured_power is None or measured_power < 0:
+            modern_idle = _modern_idle_report(data)
+            if not modern_idle and (measured_power is None or measured_power < 0):
                 raise ModeVerificationError("Cloud report has no valid measured power")
-            active = measured_power > 0 or status not in (
+            # A coherent station/session idle report is explicit state evidence,
+            # not an invented zero measurement. Active reports still require power.
+            active = False if modern_idle else measured_power > 0 or status not in (
                 "waiting",
                 "standby",
                 "available",
@@ -134,6 +160,8 @@ class ModeTransportAdapter:
             settings = await async_execute(self.hass,
                 self.client.get_data_gen2, self.serial
             )
+            if settings is None:
+                raise CloudConfigurationUnavailable("Cloud configuration is temporarily unavailable")
             if not isinstance(settings, dict) or settings.get("sn") != self.serial:
                 raise ModeVerificationError("Missing or mismatched cloud configuration")
             settings_mode = settings.get("_reported_charge_mode")
@@ -233,7 +261,7 @@ class ModeTransportAdapter:
             interval: Seconds between read-only observations.
 
         Returns:
-            True only for a newer idle report with zero measured power.
+            True for advancing explicit idle state, with zero power when measured.
 
         Raises:
             ConnectionError: The independent observation could not be read.
@@ -247,7 +275,7 @@ class ModeTransportAdapter:
                     )
                     if not isinstance(data, dict) or data.get("sn") != self.serial:
                         return False
-                    marker = _marker(data.get("lastUpdate"))
+                    marker = _observation_marker(data)
                     if marker is None:
                         return False
                     if baseline is None:
@@ -258,8 +286,11 @@ class ModeTransportAdapter:
                         marker.split(":", 1)[0] == baseline.split(":", 1)[0]
                         and marker > baseline
                         and charging_active(data, local=False) is False
-                        and not isinstance(data.get("power"), bool)
-                        and _number(data.get("power")) == 0
+                        and (
+                            (not isinstance(data.get("power"), bool)
+                             and _number(data.get("power")) == 0)
+                            or _modern_idle_report(data)
+                        )
                     ):
                         return True
                     await asyncio.sleep(interval)
