@@ -26,6 +26,8 @@ from homeassistant.components.switch import SwitchEntity
 from homeassistant.const import EntityCategory
 
 from .charge_mode_policy import ModeVerificationError
+from .cloud_command import CloudPreparationUnavailable
+from .cloud_observation import CloudAuthenticationError
 from .native_entities import NativeEntity
 from .cloud_capabilities import control_support
 from .write_confirmation import confirm_write
@@ -170,6 +172,8 @@ class CloudSettings:
         self._closed = False
         self._observed_mode = None
         self._revision = 0
+        self._read_unavailable = False
+        self._read_error = None
 
     async def discover_capabilities(self):
         """Fill missing legacy metadata using the existing cloud session.
@@ -279,6 +283,8 @@ class CloudSettings:
             revision = self._revision
             read_started = time.monotonic()
             self.next_refresh = time.monotonic() + 300
+            self._read_unavailable = False
+            self._read_error = None
             try:
                 data = await async_execute(self.owner.hass,
                     self.owner.cloud.get_data_gen2, self.owner.serial
@@ -296,6 +302,7 @@ class CloudSettings:
                         and info.get("sn", self.owner.serial) == self.owner.serial else False
                     )
             except (OSError, ValueError, RuntimeError) as error:
+                self._read_error = error
                 _LOGGER.debug("Cloud settings read failed: %s", error)
                 data = None
             if (not self.cloud_ready or epoch != self.owner.routing_epoch
@@ -303,6 +310,7 @@ class CloudSettings:
                 self.valid = False
                 self.next_refresh = 0
                 return
+            self._read_unavailable = data is None and self._read_error is None
             self.valid = isinstance(data, dict) and data.get("sn") == self.owner.serial
             self.values = dict(data) if self.valid else {}
             monitor = getattr(self.owner, "write_confirmation", None)
@@ -331,6 +339,10 @@ class CloudSettings:
                 )
             epoch = self.owner.routing_epoch
             await self.refresh()
+            if isinstance(self._read_error, CloudAuthenticationError):
+                raise self._read_error
+            if not self.valid and self._read_unavailable:
+                raise CloudPreparationUnavailable("Cloud configuration is temporarily unavailable")
             if not self.valid or self.values.get(setting.field) is None:
                 raise ModeVerificationError(
                     "The wallbox did not report this setting; no write was sent"
@@ -568,6 +580,20 @@ class MinimumPowerSwitch(CloudSettingSwitch):
             await super().async_update()
 
     async def write(self, value):
+        if type(value) is not int or value not in (0, 170):
+            raise ValueError("Invalid minimum-power value")
+        owner = self.coordinator
+        control = getattr(owner, "control_fallback", None)
+        pending = getattr(owner, "pending_intent", None)
+        if self.native_supported:
+            operation = lambda: self._write_selected_transport(value)
+            if control is not None and control.submit(value, operation, key="minimum_power"):
+                return
+            if pending is not None and pending.submit("minimum_power", value, operation):
+                return
+        await self._write_selected_transport(value)
+
+    async def _write_selected_transport(self, value):
         owner = self.coordinator
         if not owner.local:
             return await super().write(value)
@@ -640,6 +666,20 @@ class AutoStartSwitch(CloudSettingSwitch):
             await super().async_update()
 
     async def write(self, value):
+        if type(value) is not int or value not in (0, 1):
+            raise ValueError("Invalid Auto start value")
+        owner = self.coordinator
+        control = getattr(owner, "control_fallback", None)
+        pending = getattr(owner, "pending_intent", None)
+        if self.native_supported:
+            operation = lambda: self._write_selected_transport(value)
+            if control is not None and control.submit(value, operation, key="auto_start"):
+                return
+            if pending is not None and pending.submit("auto_start", value, operation):
+                return
+        await self._write_selected_transport(value)
+
+    async def _write_selected_transport(self, value):
         owner = self.coordinator
         if not owner.local:
             if not self.cloud_supported:

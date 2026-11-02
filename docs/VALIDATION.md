@@ -1,5 +1,55 @@
 # Validation and known limitations
 
+## 3.0.7b1 SEMS compatibility and control recovery
+
+The beta uses real device information report times when legacy cloud telemetry
+lacks timestamps. Independent active-session measurements may remain usable when
+configuration fails. Unknown/offline/conflicting data do not become fresh merely
+because HTTP succeeded. Existing identity, stale/future and post-handover fences
+remain in force.
+
+Software checks cover B0001 retry timing and route selection together, no inherited
+extra retry in polling tasks, Stop/cancellation/deadline interruption, readback after
+uncertain commands, and setup/reload/unload of actual HA cloud/native entries.
+See the beta PR's test/HA/HACS/hassfest checks for final release validation.
+
+On October 29, three physical development-HA native Start/Stop cycles passed;
+repeated requested 4.2 ↔ 6 kW changes produced measured approximately 4.1 ↔ 5.5 kW.
+Each Stop confirmed zero power. Original-HCA phase currents corroborated the load
+changes. There was no duplicate adapter Start or 11 kW jump. A 5 kW ceiling
+repeatedly produced about 4.1 kW, which the owner confirms as normal historical
+behavior; a ceiling is not an exact power-delivery target.
+
+HTTP-boundary B0001 injection retained actual production retries (2.001 and 5.000
+seconds) and real device telemetry before one TCP takeover/Start. Usable TCP took
+about 36 seconds; measured charging appeared after about 57 seconds including EV
+ramp-up. Isolated controlled-response checks verified successful second/third
+reads without TCP takeover, and a fourth read after about 17 seconds without an
+available automatic TCP route. These are measured observations, not latency SLAs.
+
+An uncertain Stop test used real TCP state to finish without repeating Stop when
+the charger was already idle. Production ownership, automation enablement, Fast
+and the original 4.2 kW request were restored. No production code was deployed.
+Raw private logs and fault-injection helpers are not included in the repository.
+
+On October 30, cloud-only development-HA checks on GW11 HCA confirmed three
+Start/Stop cycles and a five-minute measured charging session, with automatic
+TCP fallback disabled. Configured 4.2/5/6 kW limits yielded approximately
+4.2–4.3/4.3/5.6 kW respectively; PV priority, PV and battery and Fast were read
+back with advancing equipment timestamps. This does not certify other accounts.
+
+Each initial Stop exposed a brief unverified modern equipment state before standby.
+A subsequent physical capture identified `workStu=10` followed by `8`. The fixed
+version used actual 2- and 5-second read backoffs and recovered without making
+the coordinator unavailable; it did not map `10` to an invented device state.
+The 3.0.7b2 fix retries only the independent observation, after 2 and 5 seconds;
+it preserves errors on persistent disagreement and never maps an unverified
+status to idle or replays a command. Regression tests cover recovery, exhaustion,
+identity/authentication/timestamp failures, cancellation and the existing budget.
+Original-HCA results do not validate HCA G2 Modbus current-setpoint/heartbeat
+behavior or every other original-HCA model.
+
+
 ## Reproducible software validation
 
 The published 3.0.0 release-preparation pass ran on Python 3.14.5, Home Assistant 2026.9.2,

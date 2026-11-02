@@ -25,6 +25,7 @@ from .const import (
     CAP_ENSURE_MIN_CHARGING_POWER,
 )
 from .charge_mode_policy import async_apply_policy, mode_setting_write
+from .cloud_data import configuration_available
 from .coordinator import SemsUpdateCoordinator
 from .ui_errors import operation_error
 
@@ -376,7 +377,7 @@ class _SemsConfigSwitch(CoordinatorEntity, SwitchEntity):
 
     @property
     def available(self) -> bool:
-        return self.coordinator.last_update_success
+        return configuration_available(self.coordinator, self.sn)
 
     @property
     def is_on(self) -> bool | None:
@@ -474,9 +475,9 @@ class SemsDynamicLoadSwitch(_SemsConfigSwitch):
 
 
 class SemsPhaseSwitchSwitch(_SemsConfigSwitch):
-    """Phase Switch (phaseSwitch: 1=single-phase, 0=three-phase).
+    """Enable firmware-managed automatic phase switching.
 
-    Note: the 'on' state means single-phase mode is forced.
+    The setting does not report or force the active number of phases.
     """
 
     _attr_translation_key = "phase_switch"
@@ -516,7 +517,7 @@ class SemsMinimumPowerSwitch(_SemsConfigSwitch):
         from .ui_errors import operation_error
 
         try:
-            if not self.coordinator.last_update_success:
+            if not configuration_available(self.coordinator, self.sn):
                 raise ValueError("Cloud configuration is unavailable")
             accepted = await async_execute(
                 self.hass, self.api.set_minimum_power_checked,

@@ -873,6 +873,7 @@ def test_set_mode_socket_timeout_is_uncertain_and_never_replayed(caplog):
 @pytest.mark.parametrize("action", ["start", "stop"])
 @pytest.mark.parametrize("code,category", [
     ("C0001", "error_calling_third_party_service"),
+    ("B0001", "internal_error"),
     ("R0305", "remote_control_fail"),
 ])
 def test_third_party_failure_preserves_uncertainty_and_category(action, code, category):
@@ -914,7 +915,8 @@ def test_detail_rejects_explicit_mismatched_or_malformed_identity(reported):
     reply = MagicMock(status_code=200)
     reply.json.return_value = {"code": "00000", "data": {"sn": reported, "chargeMode": 0}}
     with patch("requests.post", return_value=reply):
-        assert api.get_data_gen2("TEST") is None
+        with pytest.raises(sems_api_module.CloudIdentityError):
+            api.get_data_gen2("TEST")
     api.close()
 
 
@@ -928,3 +930,286 @@ def test_detail_retains_legacy_request_scope_when_serial_field_is_absent():
     with patch("requests.post", return_value=reply):
         assert api.get_data_gen2("TEST")["sn"] == "TEST"
     api.close()
+
+
+@pytest.mark.parametrize("codes,delays,accepted", [
+    (["00000"], [], True),
+    (["B0001", "00000"], [2.0], True),
+    (["B0001", "B0001", "00000"], [2.0, 5.0], True),
+    (["B0001", "B0001", "B0001"], [2.0, 5.0], False),
+    (["R0305"], [], False),
+    (["C0602", "B0001", "00000"], [2.0], True),
+    (["B0001", "C0602", "B0001"], [2.0], False),
+    (["C0602", "C0602"], [], False),
+])
+def test_detail_business_retries_are_bounded_without_login_for_b0001(codes, delays, accepted):
+    api = _make_api()
+    api._ensure_plant_id = MagicMock(return_value="PLANT")
+    api._ensure_web_token = MagicMock(return_value=True)
+    api._build_web_headers = MagicMock(return_value={})
+    api._invalidate_rejected_session = MagicMock()
+    responses = []
+    for code in codes:
+        response = MagicMock(status_code=200)
+        response.json.return_value = {"code": code, "data": {"sn": "TEST", "chargeMode": 0}}
+        responses.append(response)
+    with (patch.object(sems_api_module.requests, "post", side_effect=responses) as post,
+          patch.object(api, "_wait_detail_retry") as delay):
+        if codes[-1] == "C0602":
+            with pytest.raises(sems_api_module.CloudAuthenticationError):
+                api.get_data_gen2("TEST")
+            result = None
+        else:
+            result = api.get_data_gen2("TEST")
+    assert (result is not None) is accepted
+    assert post.call_count == len(codes)
+    assert [call.args[0] for call in delay.call_args_list] == delays
+    assert all(call.kwargs["json"] == {"sn": "TEST", "plantId": "PLANT"}
+               for call in post.call_args_list)
+    renewals = sum(call.kwargs.get("renew") is True
+                   for call in api._ensure_web_token.call_args_list)
+    assert renewals == int("C0602" in codes)
+    api.close()
+
+
+@pytest.mark.parametrize("cancelled", [False, True])
+async def test_detail_retry_honors_real_remaining_budget(cancelled):
+    import asyncio
+
+    budget_module = importlib.import_module(api_package.__name__ + ".operation_budget")
+    api = _make_api()
+    api._ensure_plant_id = MagicMock(return_value="PLANT")
+    api._ensure_web_token = MagicMock(return_value=True)
+    api._build_web_headers = MagicMock(return_value={})
+    response = MagicMock(status_code=200)
+    response.json.return_value = {"code": "B0001"}
+    budget = budget_module.OperationBudget(0.02)
+    def reply(*args, **kwargs):
+        if cancelled:
+            budget.cancelled.set()
+        return response
+    token = budget_module.CURRENT_BUDGET.set(budget)
+    try:
+        with patch.object(sems_api_module.requests, "post", side_effect=reply) as post:
+            with pytest.raises(budget_module.BudgetCancelled if cancelled else TimeoutError):
+                await asyncio.to_thread(api.get_data_gen2, "TEST")
+        assert post.call_count == 1
+    finally:
+        budget_module.CURRENT_BUDGET.reset(token)
+        api.close()
+
+
+async def test_close_interrupts_detail_backoff_before_another_request():
+    import asyncio
+    import threading
+
+    api = _make_api()
+    api._ensure_plant_id = MagicMock(return_value="PLANT")
+    api._ensure_web_token = MagicMock(return_value=True)
+    api._build_web_headers = MagicMock(return_value={})
+    response = MagicMock(status_code=200)
+    response.json.return_value = {"code": "B0001"}
+    waiting = threading.Event()
+    original = api._wait_detail_retry
+    def delay(seconds):
+        waiting.set()
+        original(seconds)
+    with (patch.object(sems_api_module.requests, "post", return_value=response) as post,
+          patch.object(api, "_wait_detail_retry", side_effect=delay)):
+        reader = asyncio.create_task(asyncio.to_thread(api.get_data_gen2, "TEST"))
+        assert await asyncio.to_thread(waiting.wait, 1)
+        await asyncio.wait_for(asyncio.to_thread(api.close), 1)
+        with pytest.raises(sems_api_module.BudgetCancelled):
+            await reader
+    assert post.call_count == 1
+    assert api._closed
+
+
+@pytest.mark.parametrize("reported,accepted", [("TEST", True), ("OTHER", False), (None, False)])
+def test_current_session_rejects_explicit_wrong_identity(reported, accepted):
+    api = _make_api()
+    api._ensure_plant_id = MagicMock(return_value="PLANT")
+    api._ensure_web_token = MagicMock(return_value=True)
+    api._build_web_headers = MagicMock(return_value={})
+    response = MagicMock(status_code=200)
+    response.json.return_value = {"code": "00000", "data": {"chargeLog": {
+        "chargePileSN": reported, "workStu": 6, "pevChar": 4.2,
+    }}}
+    with patch.object(sems_api_module.requests, "get", return_value=response):
+        assert (api.fetch_last_charge("TEST") is not None) is accepted
+    api.close()
+
+
+@pytest.mark.parametrize("state", ["0", "6", "8"])
+def test_incomplete_v3_uses_validated_modern_source_without_extra_login(state):
+    api = _make_api()
+    api._ensure_plant_id = MagicMock(return_value="PLANT")
+    api._build_web_headers = MagicMock(return_value={})
+    api._ensure_web_token = MagicMock(return_value=True)
+    api._observation_reader = MagicMock()
+    api._observation_reader.read.side_effect = sems_api_module.IncompleteCloudReport("no timestamp")
+    api.fetch_last_charge = MagicMock(return_value={
+        "last_charge_work_status": int(state), "last_charge_power": 4.2 if state == "6" else None,
+    })
+    api.get_data_gen2 = MagicMock(return_value={"sn": "TEST", "chargeMode": 0})
+    response = MagicMock(status_code=200)
+    response.json.return_value = {"code": "00000", "data": [
+        {"code": "sn", "data": "TEST"}, {"code": "deviceType", "data": "ev_charger"},
+        {"code": "workStu", "data": state}, {"code": "updateTime", "data": "2026-10-29 11:57:26"},
+    ]}
+    with patch.object(sems_api_module.requests, "get", return_value=response) as get:
+        first = api.fetch_status_observation("TEST")
+        second = api.fetch_status_observation("TEST")
+    assert first == second
+    assert first["lastUpdate"] == "2026-10-29 11:57:26"
+    assert first["power"] == (4.2 if state == "6" else None)
+    assert get.call_count == 2
+    api._observation_reader.read.assert_called_once_with("TEST")
+    api._ensure_web_token.assert_not_called()
+    assert api.fetch_last_charge.call_count == (0 if state == "0" else 2)
+    api.close()
+
+
+def test_wrong_legacy_identity_does_not_trigger_modern_fallback():
+    api = _make_api()
+    api._observation_reader = MagicMock()
+    api._observation_reader.read.side_effect = ConnectionError("mismatched device")
+    with patch.object(sems_api_module.requests, "get") as get:
+        with pytest.raises(ConnectionError, match="mismatched"):
+            api.fetch_status_observation("TEST")
+    get.assert_not_called()
+    api.close()
+
+
+def test_detail_temporary_token_renewal_failure_is_not_a_credential_rejection():
+    api = _make_api()
+    api._ensure_plant_id = MagicMock(return_value="PLANT")
+    api._ensure_web_token = MagicMock(side_effect=[True, False])
+    api._build_web_headers = MagicMock(return_value={})
+    api._invalidate_rejected_session = MagicMock()
+    response = MagicMock(status_code=200)
+    response.json.return_value = {"code": "C0602"}
+    with patch.object(sems_api_module.requests, "post", return_value=response) as post:
+        assert api.get_data_gen2("TEST") is None
+    post.assert_called_once()
+    api._ensure_web_token.assert_called_with(renew=True)
+    api.close()
+
+
+def _modern_retry_api(states, sessions):
+    """Build independently sequenced equipment and session reports."""
+    api = _make_api()
+    api._legacy_status_retry_at = float("inf")
+    api._ensure_plant_id = MagicMock(return_value="PLANT")
+    api._build_web_headers = MagicMock(return_value={})
+    api._ensure_web_token = MagicMock(return_value=True)
+    api.fetch_last_charge = MagicMock(side_effect=sessions)
+    api.get_data_gen2 = MagicMock(return_value={"sn": "TEST", "chargeMode": 0})
+    api._wait_detail_retry = MagicMock()
+    replies = []
+    for index, state in enumerate(states):
+        reply = _data_response([
+            {"code": "sn", "data": "TEST"},
+            {"code": "deviceType", "data": "ev_charger"},
+            {"code": "workStu", "data": state},
+            {"code": "updateTime", "data": f"2026-10-30 09:00:0{index}"},
+        ])
+        reply.json.return_value["code"] = "00000"
+        replies.append(reply)
+    return api, replies
+
+
+@pytest.mark.parametrize("states,sessions", [
+    (["10", "8"], [{"last_charge_work_status": 8}]),
+    ([None, "8"], [{"last_charge_work_status": 8}]),
+    (["8", "8"], [{"last_charge_work_status": 6, "last_charge_power": 4.2},
+                      {"last_charge_work_status": 8}]),
+    (["10", "10", "8"], [{"last_charge_work_status": 8}]),
+])
+def test_cloud_stop_transition_rereads_without_inventing_idle(states, sessions):
+    api, replies = _modern_retry_api(states, sessions)
+    with patch.object(sems_api_module.requests, "get", side_effect=replies) as get:
+        result = api.fetch_status_observation("TEST")
+    assert get.call_count == len(states)
+    assert [call.args[0] for call in api._wait_detail_retry.call_args_list] == [2, 5][:len(states)-1]
+    assert result["status"] == "standby"
+    assert result["power"] is None
+    assert result["_cloud_session_idle"] is True
+    assert result["lastUpdate"].endswith(str(len(states)-1))
+    api._ensure_web_token.assert_not_called()
+    api.close()
+
+
+@pytest.mark.parametrize("state,session", [
+    ("10", {"last_charge_work_status": 8}),
+    ("8", {"last_charge_work_status": 6, "last_charge_power": 4.2}),
+])
+def test_persistent_cloud_transition_remains_an_error_after_bounded_reads(state, session):
+    api, replies = _modern_retry_api([state]*3, [session]*3)
+    with patch.object(sems_api_module.requests, "get", side_effect=replies) as get:
+        with pytest.raises(ConnectionError):
+            api.fetch_status_observation("TEST")
+    assert get.call_count == 3
+    assert [call.args[0] for call in api._wait_detail_retry.call_args_list] == [2, 5]
+    api.close()
+
+
+@pytest.mark.parametrize("failure", ["identity", "timestamp", "authentication", "http"])
+def test_cloud_transition_retry_does_not_hide_unrelated_failures(failure):
+    api, replies = _modern_retry_api(["8"], [{"last_charge_work_status": 8}])
+    reply = replies[0]
+    if failure in ("identity", "timestamp"):
+        key = "sn" if failure == "identity" else "updateTime"
+        next(row for row in reply.json.return_value["data"] if row["code"] == key)["data"] = "invalid"
+    elif failure == "authentication":
+        reply.status_code = 403
+    else:
+        reply.raise_for_status.side_effect = sems_api_module.requests.HTTPError("server unavailable")
+    with patch.object(sems_api_module.requests, "get", return_value=reply) as get:
+        with pytest.raises((ConnectionError, sems_api_module.requests.HTTPError)):
+            api.fetch_status_observation("TEST")
+    get.assert_called_once()
+    api._wait_detail_retry.assert_not_called()
+    api.close()
+
+
+def test_cloud_transition_cancellation_prevents_another_read():
+    api, replies = _modern_retry_api(["10"], [])
+    api._wait_detail_retry.side_effect = sems_api_module.BudgetCancelled("cancelled fixture")
+    with patch.object(sems_api_module.requests, "get", side_effect=replies) as get:
+        with pytest.raises(sems_api_module.BudgetCancelled):
+            api.fetch_status_observation("TEST")
+    get.assert_called_once()
+    api.close()
+
+
+@pytest.mark.parametrize("interruption", ["deadline", "closed"])
+def test_cloud_transition_real_wait_obeys_deadline_and_close(interruption):
+    from types import SimpleNamespace
+
+    budget_module = importlib.import_module(sems_api_module.__package__ + ".operation_budget")
+    api, replies = _modern_retry_api(["10"], [])
+    api._wait_detail_retry = SemsApi._wait_detail_retry.__get__(api)
+    tokens = []
+    if interruption == "deadline":
+        budget = SimpleNamespace(remaining=MagicMock(side_effect=[2.0, TimeoutError("budget exhausted")]))
+        expected = TimeoutError
+    else:
+        api._detail_retry_cancel.set()
+        expected = sems_api_module.BudgetCancelled
+
+    def reply_before_wait(*args, **kwargs):
+        # Exhaust the existing budget during backoff, after the first HTTP reply.
+        if interruption == "deadline":
+            tokens.append(budget_module.CURRENT_BUDGET.set(budget))
+        return replies[0]
+
+    try:
+        with patch.object(api._request_gate, "request", side_effect=reply_before_wait) as request:
+            with pytest.raises(expected):
+                api.fetch_status_observation("TEST")
+        request.assert_called_once()
+    finally:
+        for token in reversed(tokens):
+            budget_module.CURRENT_BUDGET.reset(token)
+        api.close()

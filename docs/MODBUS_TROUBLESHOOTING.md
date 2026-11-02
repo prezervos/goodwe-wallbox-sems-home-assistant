@@ -1,5 +1,16 @@
 # Modbus setup and charging interruption checks
 
+## Automatic phase switching
+
+Register 10023 enables or disables firmware-managed single/three-phase switching:
+`1` enables the feature and `0` disables it. It does not force one or three
+phases, and the switch state does not identify the currently active phase count.
+The cloud `phaseSwitch` control uses the same enable/disable presentation.
+
+The model-specific maximum-power setting ranges remain unchanged: 1.4–7 kW for
+7 kW units and 4.2–11/22 kW for three-phase units. Enabling automatic phase
+switching does not change the power control's documented minimum to 1.4 kW.
+
 ## Household current limit
 
 Register 10026 is **Household Circuit Breaker Rated Current**, range **0–2000 A**

@@ -17,6 +17,7 @@ from .write_confirmation import WriteConfirmation, confirmation_read, readback_d
 from .const import CONF_STATION_ID, DEFAULT_SCAN_INTERVAL_IDLE, DEFAULT_SCAN_INTERVAL_CHARGING, CONF_SCAN_INTERVAL_CHARGING
 from .sems_api import SemsApi, OutOfRetries
 from .cloud_observation import CloudAuthenticationError
+from .cloud_data import active_session_available
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -124,15 +125,7 @@ class SemsUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 f"Error communicating with SEMS API: {err}"
             ) from err
 
-        if result is None:
-            if (push := getattr(self, "cloud_push", None)) is not None:
-                push.polling.failed()
-            raise UpdateFailed(
-                "No data received from SEMS API, token might be invalid. See debug logs."
-            )
-
-        sn = result.get("sn")
-        if sn != self._station_id:
+        if result is not None and result.get("sn") != self._station_id:
             if (push := getattr(self, "cloud_push", None)) is not None:
                 push.polling.failed()
             raise UpdateFailed("Missing or mismatched wallbox identity in SEMS API data")
@@ -148,13 +141,23 @@ class SemsUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # Optional history must not discard an otherwise valid device read.
             _LOGGER.debug("Optional charging history read failed", exc_info=True)
             last_charge = None
+        if result is None:
+            if not active_session_available(last_charge):
+                if (push := getattr(self, "cloud_push", None)) is not None:
+                    push.polling.failed()
+                raise UpdateFailed("Cloud configuration unavailable and no usable active session")
+            # Do not carry old settings, connection state or a device timestamp
+            # into an update supplied only by the independent session endpoint.
+            result = {"sn": self._station_id, "_cloud_detail_available": False}
+        else:
+            result = {**result, "_cloud_detail_available": True}
         if last_charge:
             result.update(last_charge)
 
-        data: dict[str, Any] = {sn: result}
+        data: dict[str, Any] = {self._station_id: result}
         _LOGGER.debug(
             "Coordinator fetched data for wallbox %s: %s",
-            sn,
+            self._station_id,
             result,
         )
 

@@ -67,15 +67,16 @@ async def finish(owner):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("key", ["charging", "power", "mode", "minimum_power", "auto_start"])
 @pytest.mark.parametrize("healthy", [True, False, "rate_limited"])
-async def test_route_is_verified_before_single_dispatch(healthy):
+async def test_route_is_verified_before_single_dispatch(healthy, key):
     owner = subject({"sn": "test"} if healthy is True else None)
     if healthy == "rate_limited":
         rate_limit = importlib.import_module(PACKAGE + ".cloud_rate_limit")
         owner.cloud.get_data_gen2.side_effect = rate_limit.CloudRateLimitedError(60)
         healthy = False
     operation = AsyncMock()
-    assert owner.control_fallback.submit(True, operation)
+    assert owner.control_fallback.submit(True, operation, key=key)
     operation.assert_not_awaited()
     await finish(owner)
     operation.assert_awaited_once()
@@ -281,7 +282,7 @@ async def test_uncertain_start_recovers_only_after_independent_tcp_observation(o
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("error", ["stop", "auth", "parameter", "timeout", "disabled"])
+@pytest.mark.parametrize("error", ["auth", "parameter", "timeout", "disabled"])
 async def test_ineligible_failures_never_switch_after_healthy_preflight(error):
     command_module = importlib.import_module(PACKAGE + ".cloud_command")
     owner = subject({"sn": "test"})
@@ -407,3 +408,142 @@ async def test_translated_error_preserves_recovery_and_confirmation(monkeypatch)
     await finish(owner)
     assert command.await_count == 2
     assert owner.pending_intent.error is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reply", [{"sn": "other"}, {}, [], False])
+async def test_invalid_identity_never_triggers_takeover(reply):
+    owner = subject(reply)
+    command = AsyncMock()
+    owner.control_fallback.submit(True, command)
+    await finish(owner)
+    owner._set_local.assert_not_awaited()
+    command.assert_not_awaited()
+    assert owner.pending_intent.error == "operation_failed"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("key,value", [
+    ("charging", True), ("charging", False), ("mode", 1), ("power", 5.0),
+    ("minimum_power", 170), ("auto_start", 1),
+])
+async def test_configuration_loss_after_preflight_recovers_only_unsent_operation(key, value):
+    owner = subject({"sn": "test"})
+    async def operation():
+        if not owner.local:
+            raise module.CloudPreparationUnavailable("B0001: detail unavailable before write")
+    command = AsyncMock(side_effect=operation)
+    # Ensure Stop has real work after the independent TCP read.
+    if key == "charging" and value is False:
+        owner.transport.async_command.return_value = replace(
+            owner.transport.async_command.return_value, state=2, power_kw=4.1,
+            currents_a=(6, 6, 6),
+        )
+    owner.control_fallback.submit(value, command, key=key)
+    await finish(owner)
+    owner._set_local.assert_awaited_once_with(True)
+    assert command.await_count == 2
+    assert owner.pending_intent.error is None
+    assert owner.pending_intent.executing is None
+
+
+@pytest.mark.asyncio
+async def test_newer_stop_discards_failed_unsent_start():
+    owner = subject({"sn": "test"})
+    stop = AsyncMock()
+    async def start():
+        owner.pending_intent.submit("charging", False, stop)
+        raise module.CloudPreparationUnavailable("Cloud configuration unavailable")
+    command = AsyncMock(side_effect=start)
+    owner.control_fallback.submit(True, command)
+    await finish(owner)
+    command.assert_awaited_once()
+    stop.assert_awaited_once()
+    owner._set_local.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["readback", "invalid_mode", "uncertain_setting"])
+async def test_configuration_recovery_never_replays_a_possible_write(failure):
+    owner = subject({"sn": "test"})
+    command_module = importlib.import_module(PACKAGE + ".cloud_command")
+    error = (
+        command_module.CloudConfigurationUnavailable("Readback unavailable after write")
+        if failure == "readback" else
+        command_module.CloudSettingError("B0001") if failure == "uncertain_setting" else
+        module.ModeVerificationError("Device did not report a valid charging mode")
+    )
+    command = AsyncMock(side_effect=error)
+    owner.control_fallback.submit(5.0, command, key="power")
+    await finish(owner)
+    owner._set_local.assert_not_awaited()
+    command.assert_awaited_once()
+    assert owner.pending_intent.error == "operation_failed"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("code", ["B0001", "C0001", "R0305", "transport_error"])
+@pytest.mark.parametrize("stopped", [True, False])
+async def test_uncertain_stop_checks_tcp_before_any_repeat(stopped, code):
+    owner = subject({"sn": "test"})
+    if not stopped:
+        owner.transport.async_command.return_value = replace(
+            owner.transport.async_command.return_value, state=2, power_kw=4.1,
+            currents_a=(6, 6, 6),
+        )
+    async def stop():
+        if not owner.local:
+            raise module.CloudCommandError("stop", code, uncertain=True)
+    command = AsyncMock(side_effect=stop)
+    owner.control_fallback.submit(False, command)
+    await finish(owner)
+    owner.transport.async_command.assert_awaited_once_with("status")
+    assert command.await_count == (1 if stopped else 2)
+    assert owner.pending_intent.error is None
+
+
+@pytest.mark.asyncio
+async def test_api_identity_rejection_cannot_become_missing_configuration():
+    owner = subject()
+    owner.cloud.get_data_gen2.side_effect = module.CloudIdentityError("Mismatched response identity")
+    command = AsyncMock()
+    owner.control_fallback.submit(True, command)
+    await finish(owner)
+    owner._set_local.assert_not_awaited()
+    command.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failures", [1, 2, 3])
+async def test_real_detail_retry_finishes_before_control_route_selection(failures, monkeypatch):
+    from tests.test_sems_api import _make_api, sems_api_module
+    api = _make_api()
+    api._ensure_web_token = Mock(return_value=True)
+    api._ensure_plant_id = Mock(return_value="PLANT")
+    api._build_web_headers = Mock(return_value={})
+    delays = Mock()
+    monkeypatch.setattr(api, "_wait_detail_retry", delays)
+    responses = []
+    for index in range(min(failures + 1, 3)):
+        payload = ({"code": "B0001", "data": None} if index < failures else
+                   {"code": "00000", "data": {"sn": "test", "chargeMode": 0}})
+        responses.append(Mock(status_code=200, json=Mock(return_value=payload)))
+    post = Mock(side_effect=responses)
+    monkeypatch.setattr(sems_api_module.requests, "post", post)
+    owner = subject()
+    owner.cloud = api
+    owner.hass.async_add_executor_job = asyncio.to_thread
+    operation = AsyncMock()
+    try:
+        assert owner.control_fallback.submit(True, operation)
+        await finish(owner)
+        assert post.call_count == min(failures + 1, 3)
+        assert [call.args[0] for call in delays.call_args_list] == (
+            [2.0] if failures == 1 else [2.0, 5.0])
+        assert owner.local is (failures == 3)
+        assert owner._set_local.await_count == int(failures == 3)
+        operation.assert_awaited_once()
+        assert owner.pending_intent.error is None
+    finally:
+        await owner.control_fallback.close()
+        api.close()

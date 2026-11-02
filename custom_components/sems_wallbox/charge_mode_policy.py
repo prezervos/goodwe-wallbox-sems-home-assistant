@@ -8,7 +8,7 @@ import time
 from dataclasses import dataclass, replace
 from functools import wraps
 
-from .cloud_command import CloudCommandError
+from .cloud_command import CloudCommandError, CloudConfigurationUnavailable, CloudPreparationUnavailable
 from .cloud_rate_limit import CloudRateLimitedError
 from .operation_budget import BudgetCancelled, CURRENT_BUDGET, OperationBudget
 
@@ -161,7 +161,10 @@ class ChargeModePolicy:
     async def _verify_inner(self, target, version, *, allow_active=False):
         self._check(version)
         deadline = time.monotonic() + self.timeout
-        before = await self.adapter.read()
+        try:
+            before = await self.adapter.read()
+        except CloudConfigurationUnavailable as error:
+            raise CloudPreparationUnavailable(str(error)) from error
         self._check(version)
         if time.monotonic() >= deadline:
             raise ModeVerificationError("Mode read exceeded verification deadline")
@@ -422,7 +425,7 @@ async def async_apply_policy(coordinator, operation, *args):
                 await policy.async_remember_mode(*args)
             return False
         await getattr(policy, "async_" + operation)(*args)
-    except (ModeVerificationError, CloudRateLimitedError, CloudCommandError) as err:
+    except (ModeVerificationError, CloudRateLimitedError, CloudCommandError, CloudConfigurationUnavailable, CloudPreparationUnavailable) as err:
         raise operation_error(err) from err
     coordinator.schedule_delayed_refresh(1.0)
     return True
@@ -451,7 +454,7 @@ def mode_setting_write(function=None, *, desired_mode=None, remember_power=False
                 if (remember_power or getattr(entity, "_remember_charge_power", False))
                 else None,
             )
-        except (ModeVerificationError, CloudRateLimitedError, CloudCommandError) as err:
+        except (ModeVerificationError, CloudRateLimitedError, CloudCommandError, CloudConfigurationUnavailable, CloudPreparationUnavailable) as err:
             raise operation_error(err) from err
 
     return wrapped

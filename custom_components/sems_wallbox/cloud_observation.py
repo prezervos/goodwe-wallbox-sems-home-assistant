@@ -20,6 +20,10 @@ from .operation_budget import request_timeout, serialized_request
 STATUS_URL = "https://www.semsportal.com/api/v3/EvCharger/GetCurrentChargeinfo"
 
 
+class IncompleteCloudReport(ConnectionError):
+    """The matching legacy device report no longer supplies a report timestamp."""
+
+
 class CloudAuthenticationError(ConnectionError):
     """Credentials were rejected; transport switching cannot repair the account."""
 
@@ -85,7 +89,7 @@ class CloudObservationReader:
                     and data.get("sn") == serial
                 ):
                     if not data.get("lastUpdate"):
-                        raise ConnectionError(
+                        raise IncompleteCloudReport(
                             "SEMS status has no device report timestamp"
                         )
                     return data

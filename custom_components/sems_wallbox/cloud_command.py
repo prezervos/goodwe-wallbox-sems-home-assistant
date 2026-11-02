@@ -6,6 +6,18 @@ from enum import Enum
 import re
 
 
+class CloudIdentityError(ValueError):
+    """The configuration response belongs to another device or has invalid identity."""
+
+
+class CloudConfigurationUnavailable(ConnectionError):
+    """A current cloud read could not supply configuration for the matching device."""
+
+
+class CloudPreparationUnavailable(ConnectionError):
+    """Configuration failed before this operation attempted any device write."""
+
+
 class CloudCommandError(RuntimeError):
     """A failed cloud acknowledgement with bounded, non-sensitive diagnostics.
 

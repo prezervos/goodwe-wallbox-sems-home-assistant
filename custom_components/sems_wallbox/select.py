@@ -20,6 +20,7 @@ from .operation_budget import async_execute
 from .const import DOMAIN, CONN_TYPE_MODBUS
 from .charge_mode_policy import ModeVerificationError, async_apply_policy, mode_setting_write
 from .cloud_command import CloudCommandError
+from .cloud_data import configuration_available
 from .coordinator import SemsUpdateCoordinator
 from .ui_errors import operation_error
 
@@ -110,6 +111,11 @@ class InverterOperationModeEntity(CoordinatorEntity, SelectEntity):
         if policy is None or not policy.enabled:
             return {}
         return {"preferred_mode": _MODE_TO_OPTION.get(policy.desired_mode)}
+
+    @property
+    def available(self) -> bool:
+        """Do not expose a configuration editor from session-only telemetry."""
+        return configuration_available(self.coordinator, self.sn)
 
     def __init__(
         self,
@@ -382,7 +388,7 @@ class SemsChargeDurationSelect(CoordinatorEntity, SelectEntity):
 
     @property
     def available(self) -> bool:
-        if not self.coordinator.last_update_success:
+        if not configuration_available(self.coordinator, self.sn):
             return False
         data = self.coordinator.data.get(self.sn, {}) or {}
         return type(data.get("chargeMode")) is int and data["chargeMode"] in (1, 2)

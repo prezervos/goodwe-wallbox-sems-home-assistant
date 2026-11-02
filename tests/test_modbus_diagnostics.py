@@ -165,3 +165,11 @@ async def test_switch_readback_confirms_integer_ems_without_weakening_boolean_dl
         write.assert_called_once_with(requested)
     finally:
         monitor.close()
+
+
+@pytest.mark.parametrize("enabled,raw", [(True, 1), (False, 0)])
+def test_automatic_phase_switching_preserves_register_enable_contract(enabled, raw):
+    client = module.WallboxModbusClient("private-host")
+    client._write = Mock(return_value=True)
+    assert client.write_phase_switch(enabled=enabled)
+    client._write.assert_called_once_with(10023, raw)

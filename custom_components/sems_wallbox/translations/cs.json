@@ -510,7 +510,7 @@
         "name": "Dynamická správa zátěže"
       },
       "phase_switch": {
-        "name": "Přepínání fází"
+        "name": "Automatické přepínání fází"
       },
       "modbus_start_charging": {
         "name": "Nabíjení"
@@ -528,7 +528,7 @@
         "name": "EMS minimální výkon"
       },
       "modbus_phase_switch": {
-        "name": "Přepínání fází"
+        "name": "Automatické přepínání fází"
       },
       "native_connection": {
         "name": "Místní TCP připojení"

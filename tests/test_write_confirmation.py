@@ -1,21 +1,18 @@
 """Readback scenarios use a deterministic clock and never contact a wallbox."""
 
 import asyncio
-import importlib.util
+import importlib
 from pathlib import Path
 import sys
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-_spec = importlib.util.spec_from_file_location(
-    "wallbox_write_confirmation_test",
-    Path(__file__).parents[1] / "custom_components/sems_wallbox/write_confirmation.py",
-)
-module = importlib.util.module_from_spec(_spec)
-sys.modules[_spec.name] = module
-_spec.loader.exec_module(module)
+package = ModuleType("wallbox_write_confirmation_test")
+package.__path__ = [str(Path(__file__).parents[1] / "custom_components/sems_wallbox")]
+sys.modules[package.__name__] = package
+module = importlib.import_module(package.__name__ + ".write_confirmation")
 
 
 class Clock:

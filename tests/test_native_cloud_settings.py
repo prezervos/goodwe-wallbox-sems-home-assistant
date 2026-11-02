@@ -681,3 +681,48 @@ async def test_initial_mode_does_not_discard_pending_configuration_read():
     finally:
         release.set()
         await settings.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field,value", [("ensure_minimum_charging_power", 170), ("plug_and_charge", 1)])
+async def test_verified_switch_uses_real_tcp_writer_after_configuration_outage(field, value):
+    from unittest.mock import AsyncMock
+    fallback_module = importlib.import_module(PACKAGE + ".native_control_fallback")
+    intent_module = importlib.import_module(PACKAGE + ".native_intent")
+    instance = owner()
+    instance.serial = "1234567890123456"
+    instance.entry.data["pile_generation"] = "1"
+    instance.cloud.get_data_gen2.return_value = None
+    instance.hass.async_create_background_task = lambda coro, name: asyncio.create_task(coro)
+    instance.charge_mode_policy.invalidate = Mock()
+    instance.charge_mode_policy.timeout = 1
+    instance.automatic_fallback = SimpleNamespace(enabled=True, paused=False, blocked=False,
+        next_attempt=0, RETRY_DELAY=300, return_delay=1800, reason=None)
+    instance.transport = SimpleNamespace(available=True, epoch=1,
+        latest=SimpleNamespace(minimum_power=False, state=0, mode=0, stopped=True),
+        session_guard=SimpleNamespace(phase="idle"), async_command=AsyncMock(),
+        async_set_auto_start=AsyncMock(return_value=SimpleNamespace(auto_start=True)))
+    instance.configuration_polling = SimpleNamespace(lock=asyncio.Lock(), available=True,
+        value=None, INTERVAL=300)
+    instance.connection_intent = SimpleNamespace(async_automatic=AsyncMock())
+    instance.async_refresh = AsyncMock()
+    async def handover(local):
+        instance.local = local
+        instance.routing_epoch += 1
+    instance._set_local = AsyncMock(side_effect=handover)
+    instance.pending_intent = intent_module.LatestIntent(instance)
+    instance.control_fallback = fallback_module.ControlFallback(instance)
+    descriptor = next(item for item in settings.SETTINGS if item.field == field)
+    entity_type = settings.MinimumPowerSwitch if field == "ensure_minimum_charging_power" else settings.AutoStartSwitch
+    entity = entity_type(instance, descriptor)
+    await entity.write(value)
+    await asyncio.wait_for(instance.control_fallback.task, 1)
+    await asyncio.wait_for(instance.pending_intent.task, 1)
+    instance._set_local.assert_awaited_once_with(True)
+    if field == "ensure_minimum_charging_power":
+        instance.transport.async_command.assert_awaited_once_with("minimum_power", minimum_power=True, timeout=15)
+    else:
+        instance.transport.async_set_auto_start.assert_awaited_once_with(True)
+    instance.cloud.set_config_gen2.assert_not_called()
+    instance.cloud.set_charge_mode_gen2.assert_not_called()
+    assert instance.pending_intent.error is None

@@ -75,3 +75,19 @@ def test_known_device_metadata_only(values, settings, identity, expected):
         "identifiers": {("sems_wallbox", "TEST")},
         "manufacturer": "GoodWe", "name": "GoodWe Wallbox TEST", **expected,
     }
+
+
+@pytest.mark.parametrize("energy,duration", [(0.4, 5), (0.0, 0), (None, None)])
+def test_modern_session_counters_cannot_use_configuration_defaults(energy, duration):
+    data_module = importlib.import_module(PACKAGE + ".cloud_data")
+    result = data_module.modern_status_observation(
+        "TEST", {"workStu": "6", "updateTime": "2026-10-29 11:57:26"},
+        {"last_charge_work_status": 6, "last_charge_power": 4.1,
+         "last_charge_energy": energy, "last_charge_duration_minutes": duration},
+        {"sn": "TEST", "chargeMode": 0, "chargeEnergy": "0", "time": "0"},
+    )
+    coordinator = owner(result)
+    energy_sensor = entities.SessionEnergySensor(coordinator, "energy", "chargeEnergy")
+    duration_sensor = entities.ValueSensor(coordinator, "duration", "charge_duration", "session_seconds", "min")
+    assert energy_sensor.native_value == energy
+    assert duration_sensor.native_value == duration

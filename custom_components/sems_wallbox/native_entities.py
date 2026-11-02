@@ -17,7 +17,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from .charge_mode_policy import ModeVerificationError
 from .native_power_limits import power_bounds, power_tenths
 from .observed_state import vehicle_state
-from .cloud_command import CloudCommandError
+from .cloud_command import CloudCommandError, CloudConfigurationUnavailable, CloudPreparationUnavailable
 from .ui_errors import operation_error
 from .write_confirmation import confirm_write
 
@@ -140,8 +140,8 @@ class ControlEntity(NativeEntity):
 
         operation = lambda: confirmed(self, value)
         control = getattr(self.coordinator, "control_fallback", None)
-        if key == "charging" and control is not None and control.submit(
-            value, lambda: self.invoke(operation)
+        if control is not None and control.submit(
+            value, lambda: self.invoke(operation), key=key
         ):
             return
         pending = getattr(self.coordinator, "pending_intent", None)
@@ -344,7 +344,9 @@ class ChargePowerNumber(ControlEntity, NumberEntity):
         }
 
     async def async_set_native_value(self, value):
-        if self.coordinator.local or (
+        fallback = getattr(self.coordinator, "automatic_fallback", None)
+        fallback_enabled = fallback is not None and fallback.enabled and not fallback.paused and not fallback.blocked
+        if fallback_enabled or self.coordinator.local or (
             getattr(self.coordinator, "pending_intent", None) is not None
             and self.coordinator.pending_intent.blackout
         ):
@@ -365,7 +367,10 @@ class ChargePowerNumber(ControlEntity, NumberEntity):
         async def write():
             policy = owner.charge_mode_policy
             version = policy._version
-            before = await policy.adapter.read()
+            try:
+                before = await policy.adapter.read()
+            except CloudConfigurationUnavailable as error:
+                raise CloudPreparationUnavailable(str(error)) from error
             policy._check(version)
             if owner.local:
                 await owner.transport.async_command(
