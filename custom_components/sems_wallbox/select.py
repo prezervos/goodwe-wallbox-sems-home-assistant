@@ -22,6 +22,7 @@ from .charge_mode_policy import ModeVerificationError, async_apply_policy, mode_
 from .cloud_command import CloudCommandError
 from .cloud_data import configuration_available
 from .coordinator import SemsUpdateCoordinator
+from .number import charge_power_bounds
 from .ui_errors import operation_error
 
 _LOGGER = logging.getLogger(__name__)
@@ -89,6 +90,7 @@ async def async_setup_entry(
                 OPERATION_MODE,
                 list(_MODE_TO_OPTION.values()),
                 _MODE_TO_OPTION.get(active_mode),
+                rated_power=caps.get("rated_power"),
             )
         )
         if control_support(caps, "finish_time") is not False:
@@ -125,12 +127,15 @@ class InverterOperationModeEntity(CoordinatorEntity, SelectEntity):
         description: SelectEntityDescription,
         supported_options: list[str],
         current_mode: str,
+        *,
+        rated_power: float | None = None,
     ) -> None:
         """Initialize the select entity."""
         super().__init__(coordinator)
         self.coordinator = coordinator
         self.api = api
         self.sn = sn
+        self._rated_power = rated_power
         self.entity_description = description
         self._attr_unique_id = f"{self.sn}-select-charge-mode"
         self._attr_options = supported_options
@@ -187,10 +192,6 @@ class InverterOperationModeEntity(CoordinatorEntity, SelectEntity):
             mode,
         )
 
-        # Optimistic UI update for select entity
-        self._attr_current_option = option
-        self.async_write_ha_state()
-
         # When switching TO Fast mode (0) the API requires charge_power in the
         # payload, otherwise it silently ignores the command.
         # For PV modes (1, 2) we must NOT send charge_power -- doing so causes
@@ -204,18 +205,25 @@ class InverterOperationModeEntity(CoordinatorEntity, SelectEntity):
             except (TypeError, ValueError):
                 cp = None
 
-            # Clamp to valid range; fall back to min if unknown/invalid
-            _min = 4.2
-            _max = 11.0
-            try:
-                _min = float(data.get("min_charge_power") or _min)
-                _max = float(data.get("max_charge_power") or _max)
-            except (TypeError, ValueError):
-                pass
+            # Same range as the power number (reported, else model limits; SEMS+
+            # detail on HCA G2 reports neither). Never send a substitute power;
+            # refuse before any optimistic state or cloud write.
+            _min, _max = charge_power_bounds(data, self._rated_power)
 
             if cp is None or not (_min <= cp <= _max):
-                cp = _min
+                raise HomeAssistantError(
+                    translation_domain=DOMAIN,
+                    translation_key="invalid_power",
+                    translation_placeholders={
+                        "minimum": f"{_min:g}",
+                        "maximum": f"{_max:g}",
+                    },
+                )
             charge_power = cp
+
+        # Optimistic UI update for select entity
+        self._attr_current_option = option
+        self.async_write_ha_state()
 
         # Only this entity presents the pending mode. Shared coordinator data
         # remains the last report, so failures cannot turn intent into telemetry.

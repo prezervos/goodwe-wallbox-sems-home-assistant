@@ -1,5 +1,16 @@
 # Development backlog and validation history
 
+## Unreleased: Fast power bounds on the legacy cloud path
+
+- The legacy cloud Fast path (no saved HA power limit, restore mode off) now
+  validates against the same range as the power number: reported
+  `min/max_charge_power`, else the rated power or model limits. SEMS+ detail on
+  HCA G2 (GW22K-HCA-20) reports neither, so the old 4.2-11 kW fallback turned a
+  valid 12.2 kW limit into 4.2 kW.
+- An unknown or out-of-range limit raises `invalid_power` before any optimistic
+  state or cloud write instead of sending the minimum, as the policy path never
+  substitutes a power either.
+
 ## 3.0.7b2 beta scope: cloud Stop transition reads
 
 - A physical Stop capture showed equipment `workStu=10` before `8` (standby).
