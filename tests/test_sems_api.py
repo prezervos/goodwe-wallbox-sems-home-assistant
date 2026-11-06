@@ -955,12 +955,7 @@ def test_detail_business_retries_are_bounded_without_login_for_b0001(codes, dela
         responses.append(response)
     with (patch.object(sems_api_module.requests, "post", side_effect=responses) as post,
           patch.object(api, "_wait_detail_retry") as delay):
-        if codes[-1] == "C0602":
-            with pytest.raises(sems_api_module.CloudAuthenticationError):
-                api.get_data_gen2("TEST")
-            result = None
-        else:
-            result = api.get_data_gen2("TEST")
+        result = api.get_data_gen2("TEST")
     assert (result is not None) is accepted
     assert post.call_count == len(codes)
     assert [call.args[0] for call in delay.call_args_list] == delays
@@ -1213,3 +1208,32 @@ def test_cloud_transition_real_wait_obeys_deadline_and_close(interruption):
         for token in reversed(tokens):
             budget_module.CURRENT_BUDGET.reset(token)
         api.close()
+
+
+def test_repeated_session_rejection_backs_off_without_claiming_bad_credentials(monkeypatch):
+    """A newly issued but rejected session remains a temporary read failure."""
+    api = _make_api()
+    api._plant_id = "plant"
+    api._web_token = {"uid": "user", "token": "old"}
+    clock = [100.0]
+    monkeypatch.setattr(sems_api_module.time, "monotonic", lambda: clock[0])
+    rejected = _data_response({"sn": "TEST"})
+    rejected.json.return_value["code"] = "C0602"
+    valid = _data_response({"sn": "TEST", "chargeMode": 0})
+    valid.json.return_value["code"] = "00000"
+    login = MagicMock(return_value={"uid": "user", "token": "fresh"})
+    api._fetch_web_token = login
+    with patch.object(api._request_gate, "request", side_effect=[rejected, rejected, valid]) as request:
+        assert api.get_data_gen2("TEST") is None
+        assert request.call_count == 2
+        assert login.call_count == 1
+        assert api._web_token is None
+        assert not api._web_login_auth_error
+        assert api.get_data_gen2("TEST") is None
+        assert request.call_count == 2
+        assert login.call_count == 1
+        clock[0] += 31
+        assert api.get_data_gen2("TEST")["sn"] == "TEST"
+        assert request.call_count == 3
+        assert login.call_count == 2
+    api.close()
