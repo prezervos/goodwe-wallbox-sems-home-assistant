@@ -997,7 +997,15 @@ class SemsApi:
                 break
 
             if code == "C0602":
-                raise CloudAuthenticationError("Cloud configuration authentication was rejected")
+                # A rejected session is not proof that the account credentials
+                # are wrong, even when a freshly issued session was rejected.
+                # Clear it and share a bounded cooldown with all API users.
+                self._invalidate_rejected_session()
+                self._web_login_retry_at = max(
+                    self._web_login_retry_at, time.monotonic() + 30.0
+                )
+                _LOGGER.warning("SEMS cloud session rejected after renewal; retrying later")
+                return None
             if code not in ("00000", "0") or not raw:
                 _LOGGER.warning(
                     "SEMS gen2 getData: unexpected code=%s, no data returned", code
