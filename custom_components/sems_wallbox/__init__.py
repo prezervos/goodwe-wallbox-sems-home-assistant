@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from importlib import import_module
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME, Platform
@@ -184,7 +185,7 @@ async def _async_setup_cloud(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     entry.async_on_unload(entry.add_update_listener(update_listener))
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-    _start_cloud_push(hass, entry, coordinator, api)
+    await _start_cloud_push(hass, entry, coordinator, api)
     return True
 
 
@@ -306,22 +307,21 @@ async def _async_setup_native(hass, entry):
     entry.async_on_unload(entry.add_update_listener(update_listener))
     await coordinator.async_refresh()
     if cloud is not None:
-        _start_cloud_push(hass, entry, coordinator, cloud)
+        await _start_cloud_push(hass, entry, coordinator, cloud)
     return True
 
 
-def _start_cloud_push(hass, entry, coordinator, api):
+async def _start_cloud_push(hass, entry, coordinator, api):
     """Reuse the entry's SEMS+ session; MQTT reconnect must not log controls out."""
     from homeassistant.const import EVENT_HOMEASSISTANT_STOP
-
-    from .cloud_push import CloudPush
 
     # The API serializes web operations, including credential renewal. A separate
     # MQTT client login raced with Stop during physical cloud return (A0201/C0602).
     # Alternate/test API implementations need not provide optional cloud events.
     if not callable(getattr(api, "fetch_mqtt_settings", None)):
         return
-    push = CloudPush(coordinator, entry.data[CONF_STATION_ID], api.fetch_mqtt_settings)
+    module = await hass.async_add_executor_job(import_module, f"{__package__}.cloud_push")
+    push = module.CloudPush(coordinator, entry.data[CONF_STATION_ID], api.fetch_mqtt_settings)
     coordinator.cloud_push = push
 
     async def shutdown(event):

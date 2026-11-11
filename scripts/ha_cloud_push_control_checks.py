@@ -1,6 +1,7 @@
 """Real HA service calls remain usable during an optional MQTT outage."""
 
 import asyncio
+import threading
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from custom_components.sems_wallbox.cloud_push import CloudPush
@@ -14,9 +15,21 @@ async def check_controls(hass, entry, gateway, switch):
 
     gateway.fetch_mqtt_settings = MagicMock(return_value={})
     shared_settings = gateway.fetch_mqtt_settings
-    with patch("custom_components.sems_wallbox.cloud_push.CloudPush") as factory:
+    from custom_components import sems_wallbox as integration
+
+    main_thread = threading.get_ident()
+    import_threads = []
+    original_import = integration.import_module
+
+    def tracked_import(name):
+        import_threads.append(threading.get_ident())
+        return original_import(name)
+
+    with (patch("custom_components.sems_wallbox.cloud_push.CloudPush") as factory,
+          patch.object(integration, "import_module", side_effect=tracked_import)):
         factory.return_value.close = AsyncMock()
-        _start_cloud_push(hass, entry, owner, gateway)
+        await _start_cloud_push(hass, entry, owner, gateway)
+        assert import_threads and all(thread != main_thread for thread in import_threads)
         assert factory.call_args.args[2] is shared_settings
         factory.return_value.start.assert_called_once()
     del gateway.fetch_mqtt_settings
