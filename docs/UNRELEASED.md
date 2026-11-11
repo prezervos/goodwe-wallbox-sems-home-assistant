@@ -11,6 +11,15 @@
   state or cloud write instead of sending the minimum, as the policy path never
   substitutes a power either.
 
+## 3.0.8b1 beta: repeated cloud session rejection
+
+If the detail endpoint rejects both an existing and a newly issued session with
+`C0602`, clear the session and apply a shared 30-second login cooldown. Treat it
+as temporarily unavailable rather than requesting new credentials. A definite
+login authentication rejection keeps its existing reauthentication behavior.
+No device command or uncertain write is replayed by this read-only recovery.
+The cause of the reporter's earlier reauthentication remains unconfirmed.
+
 ## 3.0.7b2 beta scope: cloud Stop transition reads
 
 - A physical Stop capture showed equipment `workStu=10` before `8` (standby).
