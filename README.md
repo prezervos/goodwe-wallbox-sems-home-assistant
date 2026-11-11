@@ -7,6 +7,17 @@
 
 Home Assistant custom integration for the **GoodWe Wallbox**.
 
+### HACS and Home Assistant Marketplace
+
+Home Assistant 2026.11 replaces HACS with the built-in Marketplace and migrates
+existing HACS repositories. On older Home Assistant versions, continue using
+HACS. Find **GoodWe Wallbox** in the store catalog; a GitHub account is not
+required for catalog installations in Marketplace. This repository retains
+`hacs.json` for both implementations. After installation or an update, restart
+Home Assistant.
+
+See the [Marketplace migration documentation](https://www.home-assistant.io/integrations/marketplace/#coming-from-hacs).
+
 Stable release: [latest stable](https://github.com/prezervos/goodwe-wallbox-sems-home-assistant/releases/latest).
 
 **3.0.7** also handles transient cloud state after Stop. It addresses cloud data changes after the SEMS update, adds bounded

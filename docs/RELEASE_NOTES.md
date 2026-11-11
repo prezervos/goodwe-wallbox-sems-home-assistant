@@ -1,3 +1,33 @@
+# 3.0.8 — Cloud reliability and Fast power limits
+
+## Fixes
+
+- Validate legacy cloud Fast-mode power against the device's available power range instead of substituting 4.2 kW when a higher limit is valid. Unknown or invalid limits produce an error without sending a substitute.
+- Treat a repeated `C0602` rejection after session renewal as temporarily unavailable, with a shared 30-second login cooldown, rather than immediately requesting credentials. Explicit login rejection still requests reauthentication.
+- Load the optional MQTT dependency outside the Home Assistant event loop to avoid blocking imports.
+- Document installation with Home Assistant Marketplace and earlier HACS versions.
+
+## Validation and limitations
+
+A GW22K-HCA-20 owner confirmed that selecting Fast preserved a 12.2 kW setting in the cloud; charging with a connected vehicle was not tested. The reported reauthentication issue has not yet been reproduced with sufficient logs to confirm its cause or that this release resolves every case.
+
+---
+
+# 3.0.8b1 — Cloud session recovery
+
+## Cloud session recovery
+
+- When the cloud detail endpoint rejects a newly renewed session with `C0602`, treat the session as temporarily unavailable instead of requesting credentials immediately. Clear the rejected session and share a 30-second login cooldown.
+- Existing handling of explicit login rejection remains unchanged. Read recovery never replays a device command.
+
+## Validation and limitations
+
+Focused API, cloud observation and fallback tests passed (444 tests). This addresses a verified code path; the cause of the reported reauthentication dialog has not yet been captured and is not confirmed fixed.
+
+Please test this prerelease. If Home Assistant requests reauthentication again, enable debug logging beforehand and share a redacted log covering the dialog and preceding minutes, along with integration diagnostics. Remove credentials, tokens and personal information before sharing.
+
+---
+
 # 3.0.7b2 — Cloud Stop telemetry recovery
 
 ## Fixes

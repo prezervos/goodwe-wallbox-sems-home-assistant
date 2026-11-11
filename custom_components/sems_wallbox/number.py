@@ -34,6 +34,43 @@ from .ui_errors import operation_error
 _LOGGER = logging.getLogger(__name__)
 
 
+def model_power_limits(rated_power, model) -> tuple[float, float]:
+    """Return (min_kW, max_kW) as fallback based on rated power or product model.
+
+    Per-model defaults when API doesn't return min/max (same as SEMS+):
+      GW7  → 1.4 -  7.0 kW
+      GW11 → 4.2 - 11.0 kW
+      GW22 → 4.2 - 22.0 kW
+    Defaults to GW7 range when model is unknown (smallest / safest).
+    """
+    try:
+        rated = float(rated_power)
+    except (TypeError, ValueError):
+        rated = None
+    if rated in (7.0, 11.0, 22.0):
+        return (1.4 if rated == 7.0 else 4.2), rated
+    model = (model or "").upper()
+    if "GW22" in model:
+        return 4.2, 22.0
+    if "GW11" in model:
+        return 4.2, 11.0
+    if "GW7" in model:
+        return 1.4, 7.0
+    return 1.4, 7.0  # safe default (smallest model)
+
+
+def charge_power_bounds(data, rated_power) -> tuple[float, float]:
+    """Return the Fast power range: reported values, else model limits."""
+    fallback = model_power_limits(rated_power, data.get("model"))
+    bounds = []
+    for key, default in zip(("min_charge_power", "max_charge_power"), fallback):
+        value = data.get(key)
+        try:
+            bounds.append(float(value) if value is not None else default)
+        except (TypeError, ValueError):
+            bounds.append(default)
+    return bounds[0], bounds[1]
+
 
 async def async_setup_entry(
     hass: HomeAssistant,
@@ -158,49 +195,17 @@ class SemsNumber(CoordinatorEntity, NumberEntity):
         """Return the step value."""
         return 0.1
 
-    def _model_limits(self) -> tuple[float, float]:
-        """Return (min_kW, max_kW) as fallback based on rated power or product model.
-
-        Per-model defaults when API doesn't return min/max (same as SEMS+):
-          GW7  → 1.4 -  7.0 kW
-          GW11 → 4.2 - 11.0 kW
-          GW22 → 4.2 - 22.0 kW
-        Defaults to GW7 range when model is unknown (smallest / safest).
-        """
-        try:
-            rated = float(self._rated_power)
-        except (TypeError, ValueError):
-            rated = None
-        if rated in (7.0, 11.0, 22.0):
-            return (1.4 if rated == 7.0 else 4.2), rated
-        model = ((self.coordinator.data.get(self.sn, {}) or {}).get("model") or "").upper()
-        if "GW22" in model:
-            return 4.2, 22.0
-        if "GW11" in model:
-            return 4.2, 11.0
-        if "GW7" in model:
-            return 1.4, 7.0
-        return 1.4, 7.0  # safe default (smallest model)
-
     @property
     def native_min_value(self) -> float:
         """Return the minimum value, read from API data when available."""
         data = self.coordinator.data.get(self.sn, {}) or {}
-        v = data.get("min_charge_power")
-        try:
-            return float(v) if v is not None else self._model_limits()[0]
-        except (TypeError, ValueError):
-            return self._model_limits()[0]
+        return charge_power_bounds(data, self._rated_power)[0]
 
     @property
     def native_max_value(self) -> float:
         """Return the maximum value, read from API data when available."""
         data = self.coordinator.data.get(self.sn, {}) or {}
-        v = data.get("max_charge_power")
-        try:
-            return float(v) if v is not None else self._model_limits()[1]
-        except (TypeError, ValueError):
-            return self._model_limits()[1]
+        return charge_power_bounds(data, self._rated_power)[1]
 
     @property
     def unique_id(self) -> str:

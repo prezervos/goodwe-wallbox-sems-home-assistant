@@ -136,7 +136,7 @@ class TestModeMapping:
 class TestSelectOption:
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
-        ("requested", "expected"), [(6.0, 6.0), (None, 4.2), (1.0, 4.2)]
+        ("requested", "expected"), [(6.0, 6.0), (11.0, 11.0)]
     )
     async def test_switch_to_fast_sends_valid_power_without_fabricating_report(
         self, requested, expected
@@ -151,6 +151,42 @@ class TestSelectOption:
             SAMPLE_SN, 0, expected
         )
         assert entity.coordinator.data[SAMPLE_SN]["set_charge_power"] == requested
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("requested", [None, 1.0, 12.0])
+    async def test_switch_to_fast_refuses_unusable_power_without_sending(self, requested):
+        """Like the verified policy path, the legacy path does not invent a limit."""
+        entity = _make_entity(
+            chargeMode=1, set_charge_power=requested,
+            min_charge_power=4.2, max_charge_power=11.0,
+        )
+        presented = []
+        entity.async_write_ha_state = MagicMock(
+            side_effect=lambda: presented.append(entity._attr_current_option)
+        )
+        with pytest.raises(HomeAssistantError):
+            await entity.async_select_option("fast")
+        entity.api.set_charge_mode_gen2.assert_not_called()
+        assert "fast" not in presented
+        assert entity._attr_current_option == "pv_priority"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("model", "rated_power", "requested"),
+        [("GW22K-HCA-20", None, 12.2), ("GW7K-HCA", None, 3.0), ("", 22.0, 12.2)],
+    )
+    async def test_switch_to_fast_uses_model_limits_when_range_is_missing(
+        self, model, rated_power, requested
+    ):
+        """SEMS+ detail on HCA G2 reports no min/max; use the power number's range."""
+        entity = _make_entity(
+            chargeMode=1, set_charge_power=requested,
+            min_charge_power=None, max_charge_power=None,
+        )
+        entity.coordinator.data[SAMPLE_SN]["model"] = model
+        entity._rated_power = rated_power
+        await entity.async_select_option("fast")
+        entity.api.set_charge_mode_gen2.assert_called_once_with(SAMPLE_SN, 0, requested)
 
 
     @pytest.mark.asyncio
