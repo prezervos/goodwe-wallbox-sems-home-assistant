@@ -225,6 +225,13 @@ stale charging state or session timer until stopped. Some HCA-20 users also
 report interruptions caused by Modbus connections themselves ([issue #16](https://github.com/prezervos/goodwe-wallbox-sems-home-assistant/issues/16)); removing the integration's automatic Stop does not establish a fix for that separate behavior.
 
 
+**HCA G2 firmware 6.3.83:** A GW11K-HCA-20 field test found that PV mode
+over Modbus did not regulate power against available solar surplus. With
+automatic phase switching enabled and a 1.4 kW request, the charger stayed at
+about 4 kW across three phases. For the test conditions, the reported 0 kW
+behavior, and why the integration does not refresh the power register
+periodically, see [G2 Modbus power and phase behavior](docs/MODBUS_TROUBLESHOOTING.md#hca-g2-power-setpoint-and-phase-switching).
+
 ### Prerequisites
 
 - The wallbox must have a static IP address -- set a DHCP reservation in your router.

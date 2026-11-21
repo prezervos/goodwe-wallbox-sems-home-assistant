@@ -51,9 +51,10 @@ phase-switching labels. See [current release notes](RELEASE_NOTES.md) and
 - Live GoodWe cloud commands remain intermittent. Verify cloud-only physical
   charging limits independently when the backend provides consistent configuration;
   native fallback validation is not proof of successful cloud-only operation.
-- HCA G2 Modbus/EMS setpoint and heartbeat support needs verified register details
-  and compatible hardware validation (#28/#16). Do not infer addresses or enable
-  an unverified heartbeat. Original-HCA Socket A is a separate transport.
+- HCA G2 Modbus/EMS (#28/#16): a GW11K-HCA-20 field test identified the power
+  setpoint register. Before adding periodic writes, confirm flash behavior and
+  the supported refresh interval with GoodWe, then validate Start, Stop and
+  power changes on hardware. See [G2 Modbus findings](MODBUS_TROUBLESHOOTING.md#hca-g2-power-setpoint-and-phase-switching).
 - Native hardware coverage remains model-specific; GW7/ACA/GW22 protocol/range
   tests do not substitute for physical compatibility testing.
 - Keep the remaining historical hardware questions below as investigation evidence;

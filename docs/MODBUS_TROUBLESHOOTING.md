@@ -70,6 +70,34 @@ Please include model, firmware, exact integration version, timestamps, the actio
 used to start charging, whether other HA controls/automations were active, and
 both the diagnostics JSON and redacted debug log when reporting results.
 
+## HCA G2 power setpoint and phase switching
+
+These observations are from a GW11K-HCA-20 using Modbus TCP on firmware 6.3.83
+(FW6383). They are specific to the reported setup.
+
+- [Fast charging and PV tests](https://github.com/prezervos/goodwe-wallbox-sems-home-assistant/issues/28#issuecomment-6924849844):
+  the reporter restored Fast charging by refreshing the power request in
+  register 10029. In PV mode, an 11 kW request resulted in about 10.4 kW of
+  charging with about 3 kW of solar production. Check measured power and
+  energy sources before relying on PV mode to track surplus in Modbus mode.
+- [Phase-switching follow-up](https://github.com/prezervos/goodwe-wallbox-sems-home-assistant/issues/28#issuecomment-7060930458):
+  with automatic phase switching enabled and a 1.4 kW request, the charger
+  drew about 4 kW across three phases for about nine minutes in each of Fast
+  and PV mode. The [v1.0.15 register map](modbus-protocol.md) describes 10023 as
+  an enable flag for automatic phase switching. Registers 10033 and 10034
+  configure reservation settings. The map does not document a command to
+  force one or three phases.
+- **Periodic writes are not part of the integration.** The same map marks
+  register 10029 as saved to flash, while the reporter relayed an earlier
+  RAM-only explanation from support. It remains unclear whether repeating
+  the same value causes a flash write and what refresh interval is supported.
+  Avoid scheduling periodic writes until GoodWe clarifies the behavior.
+
+Zero measured power on its own does not identify this issue. If charging
+stalls, include the firmware, charging mode, reported power setting, actual
+power and phase currents in a report, along with the diagnostics described
+above.
+
 ## Bounded EMS investigation: issue #21, 2026-09-24
 
 [Reporter follow-up](https://github.com/prezervos/goodwe-wallbox-sems-home-assistant/issues/21#issuecomment-5814983173)

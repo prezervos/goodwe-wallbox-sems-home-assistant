@@ -69,20 +69,23 @@ class ModbusUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._pending_refresh_cancel()
             self._pending_refresh_cancel = None
 
-    def schedule_delayed_refresh(self, delay: float = 3.0) -> None:
+    def schedule_delayed_refresh(self, delay: float = 3.0, *, reason: str = "readback") -> None:
         """Schedule a one-shot coordinator refresh after `delay` seconds."""
         if self._closed:
             return
         if self._pending_refresh_cancel is not None:
             self._pending_refresh_cancel()
+            _LOGGER.debug("Replacing pending Modbus refresh")
             self._pending_refresh_cancel = None
 
         @callback
         def _do_refresh(_now):
             self._pending_refresh_cancel = None
+            _LOGGER.debug("Modbus refresh timer fired (%s)", reason)
             self.hass.async_create_task(self.async_request_refresh())
 
         self._pending_refresh_cancel = async_call_later(self.hass, delay, _do_refresh)
+        _LOGGER.debug("Modbus refresh scheduled in %s s (%s)", delay, reason)
 
     @confirmation_read
     async def _async_update_data(self) -> dict[str, Any]:
@@ -90,11 +93,11 @@ class ModbusUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         try:
             result = await self.hass.async_add_executor_job(self._client.read_all)
         except Exception as err:  # noqa: BLE001
-            self.schedule_delayed_refresh(_RETRY_AFTER_ERROR_SECONDS)
+            self.schedule_delayed_refresh(_RETRY_AFTER_ERROR_SECONDS, reason="read exception")
             raise UpdateFailed(f"Modbus read error: {err}") from err
 
         if result is None:
-            self.schedule_delayed_refresh(_RETRY_AFTER_ERROR_SECONDS)
+            self.schedule_delayed_refresh(_RETRY_AFTER_ERROR_SECONDS, reason="no observation")
             raise UpdateFailed("No data received from Modbus -- check wallbox connectivity")
 
         if self._closed:

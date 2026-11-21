@@ -182,18 +182,21 @@ class WallboxModbusClient:
         # Never replay a possibly delivered mutating request after a lost ACK.
         # Read recovery is handled by later coordinator polls.
         client = ModbusTcpClient(self._host, port=self._port, timeout=request_timeout(2), retries=0)
+        started = time.monotonic()
         self._trace("connection_attempt")
         try:
             connected = client.connect()
-        except Exception:  # Preserve the library error and close an unreturned client.
-            self._trace("connection_failed")
+        except Exception as exc:  # Preserve the library error and close an unreturned client.
+            self._trace("connection_failed", elapsed_ms=round((time.monotonic() - started) * 1000, 1),
+                        error_type=type(exc).__name__)
             self._close_client(client)
             raise
+        elapsed_ms = round((time.monotonic() - started) * 1000, 1)
         if not connected:
-            self._trace("connection_failed")
+            self._trace("connection_failed", elapsed_ms=elapsed_ms)
             self._close_client(client)
             raise OSError(f"Cannot connect to wallbox Modbus at {self._host}:{self._port}")
-        self._trace("connection_open")
+        self._trace("connection_open", elapsed_ms=elapsed_ms)
         return client
 
     def close(self) -> None:
@@ -215,18 +218,26 @@ class WallboxModbusClient:
 
     def _read(self, client, address: int, count: int) -> list[int] | None:
         """Read `count` holding registers starting at `address`."""
+        started = time.monotonic()
         self._trace("read_request", function=3, address=address, count=count)
         try:
             result = client.read_holding_registers(address, count=count,
                                                    device_id=self._device_id)
             if not result.isError():
-                self._trace("read_result", address=address, outcome="success")
-                return list(result.registers)
-            self._trace("read_result", address=address, outcome="error")
+                registers = list(result.registers)
+                self._trace("read_result", address=address, outcome="success",
+                            elapsed_ms=round((time.monotonic() - started) * 1000, 1),
+                            response_count=len(registers))
+                return registers
+            self._trace("read_result", address=address, outcome="error",
+                        elapsed_ms=round((time.monotonic() - started) * 1000, 1),
+                        error_type=type(result).__name__)
             _LOGGER.warning("Modbus read error at %d count=%d: %s", address, count, result)
             return None
         except Exception as exc:  # Library failures are represented as a failed observation.
-            self._trace("read_result", address=address, outcome="exception")
+            self._trace("read_result", address=address, outcome="exception",
+                        elapsed_ms=round((time.monotonic() - started) * 1000, 1),
+                        error_type=type(exc).__name__)
             _LOGGER.warning("Modbus read exception at %d: %s", address, exc)
             return None
 

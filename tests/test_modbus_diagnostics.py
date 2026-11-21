@@ -41,13 +41,32 @@ def test_cached_diagnostics_are_bounded_detached_and_hide_register_payloads():
     assert result["read_requests"] == 80 and result["write_requests"] == 0
     assert len(result["recent_events"]) == 128
     assert all(item["age_seconds"] >= 0 for item in result["recent_events"])
-    assert all(set(item) <= {"age_seconds", "event", "function", "address", "count", "outcome"}
+    assert all(set(item) <= {"age_seconds", "event", "function", "address", "count",
+                             "outcome", "elapsed_ms", "response_count"}
                for item in result["recent_events"])
+    reads = [item for item in result["recent_events"] if item["event"] == "read_result"]
+    assert all(item["elapsed_ms"] >= 0 and item["response_count"] == 2 for item in reads)
     encoded = json.dumps(result)
     assert all(value not in encoded for value in (serial, "private-host", "registers"))
     result["recent_events"].clear()
     assert len(client.diagnostics()["recent_events"]) == 128
     assert wire.read_holding_registers.call_count == 80
+
+
+def test_timed_out_read_records_duration_and_class_without_private_error():
+    client = module.WallboxModbusClient("private-host")
+    wire = Mock()
+    wire.read_holding_registers.side_effect = TimeoutError("private address")
+    assert client._read(wire, 10060, 20) is None
+    trace = client.diagnostics()
+    result = trace["recent_events"][-1]
+    assert result["address"] == 10060
+    assert result["outcome"] == "exception"
+    assert result["elapsed_ms"] >= 0
+    assert result["error_type"] == "TimeoutError"
+    assert "private" not in json.dumps(trace)
+    assert trace["read_requests"] == 1
+    assert trace["write_requests"] == 0
 
 
 @pytest.mark.parametrize("failure", ["error", "exception"])

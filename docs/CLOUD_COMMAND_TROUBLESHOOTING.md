@@ -84,8 +84,10 @@ with Modbus enabled, even when HA is entirely disconnected. Disabling Modbus
 restores charging. See the [correction](https://github.com/prezervos/goodwe-wallbox-sems-home-assistant/issues/28#issuecomment-5992125484).
 The integration cannot repair this by changing polling when no client is present.
 Do not automatically write EMS dispatch, grid limits or fabricated PV setpoints.
-GoodWe firmware-specific Modbus/EMS documentation and a hardware retest remain
-necessary. Original-HCA Socket A validation does not certify this G2 combination.
+A later [G2 Modbus field test](MODBUS_TROUBLESHOOTING.md#hca-g2-power-setpoint-and-phase-switching)
+restored Fast charging by refreshing the power setpoint. That test also found
+limits to PV regulation and raised an unresolved question about flash writes.
+Original-HCA Socket A validation does not certify this G2 combination.
 
 The [evcc implementation](https://github.com/evcc-io/evcc/blob/master/charger/goodwe.go)
 forces Fast during setup and then manages power itself. That is a different
